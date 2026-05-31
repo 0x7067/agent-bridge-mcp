@@ -1,6 +1,10 @@
 # Agent Bridge MCP
 
-Dependency-free stdio MCP server for asking local agent CLIs for second opinions or bounded delegated work from Codex.
+Dependency-free stdio MCP server for spawning task-native coding agents from Codex.
+
+This is a breaking redesign. The old `ask_*` and `dispatch_*` tools were removed.
+The public surface is now a provider-neutral task lifecycle API modeled after
+Claude/Codex-style delegated tasks.
 
 This repo lives at:
 
@@ -10,20 +14,45 @@ This repo lives at:
 
 ## Tools
 
-- `ask_claude`: read-only Claude Code second opinion through `claude-p`.
-- `ask_kimi`: read-only Kimi/Pi consult through `kimi.sh`; supports `contextFiles`.
-- `ask_cursor`: read-only Cursor Agent second opinion through `cursor-agent --mode ask`.
-- `dispatch_claude`: bounded Claude Code dispatch with explicit safe capability options.
-- `dispatch_cursor`: bounded Cursor Agent dispatch with optional model selection.
+- `providers_list`: list first-class providers and their capabilities.
+- `task_spawn`: start a background task and return a `taskId`.
+- `task_list`: list tracked tasks.
+- `task_status`: inspect one task lifecycle state.
+- `task_logs`: read capped stdout/stderr slices.
+- `task_result`: read final result metadata, logs, git status, diff, changed files, and exit data.
+- `task_stop`: terminate a running task.
+- `task_remove`: remove a completed/stopped task; managed worktree cleanup is mandatory.
+
+`task_spawn` returns immediately. Callers must poll `task_status`, `task_logs`, or
+`task_result` with the returned `taskId`.
+
+## Providers
+
+First-class providers:
+
+- `claude`: local Claude Code through `claude-p` by default; set `CLAUDE_BIN` to use native `claude -p` instead.
+- `cursor`: local Cursor Agent through `cursor-agent -p`.
+- `kimi`: local Pi/Kimi through `pi -p`.
+- `codex`: local Codex through `codex exec`.
+
+Supported modes:
+
+- `research`: read/analyze only.
+- `review`: read-only review.
+- `implement`: write-capable implementation.
+- `command`: bounded command-oriented work.
+
+Provider/mode combinations are validated. For example, Cursor does not support
+`command` mode in v1.
 
 ## Requirements
 
 - Node.js 24 or newer.
 - `claude-p` on `PATH`, or set `CLAUDE_P_BIN`.
-- Kimi wrapper at `~/.claude/skills/kimi-review/kimi.sh`, or set `KIMI_WRAPPER_PATH`.
+- Optional: set `CLAUDE_BIN` to use native `claude -p` instead of `claude-p`.
 - `cursor-agent` on `PATH`, or set `CURSOR_AGENT_BIN`.
-
-`ask_kimi` covers Pi/Kimi through the existing hardened wrapper. This server intentionally does not expose raw write-capable Pi.
+- `pi` on `PATH`, or set `PI_BIN`.
+- `codex` on `PATH`, or set `CODEX_BIN`.
 
 ## Install
 
@@ -52,18 +81,46 @@ Then the executable is:
 agent-bridge-mcp
 ```
 
-## Safety
+## Safety And State
 
 - Public tool arguments are whitelisted; unknown fields are rejected.
-- Read-only tools reject capability overrides.
-- Dispatch tools accept only `permissionMode: "dontAsk"` or `"default"`.
-- `cwd` and `contextFiles` are validated with `fs.realpath` to block symlink escapes.
-- Set `AGENT_BRIDGE_ALLOWED_ROOT` to confine calls to a workspace root.
+- `cwd` is validated with `fs.realpath` to block symlink escapes.
+- Set `AGENT_BRIDGE_ALLOWED_ROOT` to confine task cwd values to one workspace root.
 - Prompts are capped at 100 KiB UTF-8.
-- Provider stdout/stderr are capped at 1 MiB each.
-- Provider processes use ignored stdin, timeouts, and the current local session environment. This is required for Claude/Cursor auth and PTY startup; run this MCP server only with trusted local agent CLIs.
+- Task stdout/stderr, git status, and git diff are capped at 1 MiB each.
+- Provider processes use ignored stdin and timeouts. Most providers receive a restricted environment allowlist.
+- Claude provider receives the local CLI environment so Claude Code and `claude-p` can find the same auth/config as your terminal, but the bridge strips injected `ANTHROPIC_BASE_URL` values that can point Claude at Codex-local proxy endpoints. `claude-p` is the default; set `CLAUDE_BIN` to opt into native `claude -p`.
+- Active task state is persisted under `AGENT_BRIDGE_STATE_DIR`, defaulting to:
 
-Live provider calls can spend tokens. Use `dryRun: true` to inspect commands without launching providers.
+```text
+~/.agent-bridge-mcp/state
+```
+
+State is written atomically. On MCP server restart, any previously running task is
+marked `failed_stale`; v1 does not reconnect to or resume provider sessions.
+
+Task states:
+
+```text
+queued
+running
+succeeded
+failed
+stopped
+failed_stale
+removed
+```
+
+## Isolation
+
+`task_spawn` supports:
+
+- `isolation: "none"`: run in the validated `cwd`.
+- `isolation: "worktree"`: create a unique git worktree under the state directory.
+
+Managed worktrees are preserved after task completion for inspection. `task_remove`
+must successfully run `git worktree remove -f <worktree>` before removing the task
+record. If cleanup fails, the task remains tracked.
 
 ## Codex MCP Config
 
@@ -96,36 +153,64 @@ codex mcp add \
 
 ## Examples
 
-Dry-run a Claude call:
+List providers:
 
 ```json
 {
-  "name": "ask_claude",
-  "arguments": {
-    "prompt": "Review this plan for correctness risks.",
-    "dryRun": true
-  }
+  "name": "providers_list",
+  "arguments": {}
 }
 ```
 
-Ask Kimi with local context:
+Spawn a Claude implementation task:
 
 ```json
 {
-  "name": "ask_kimi",
+  "name": "task_spawn",
   "arguments": {
-    "prompt": "Review this MCP server implementation.",
+    "provider": "claude",
+    "mode": "implement",
+    "title": "Fix parser bug",
+    "prompt": "Reproduce and fix the parser bug described in the failing tests. Keep the change minimal and report verification evidence.",
     "cwd": "/Users/pedro/Development/agent-bridge-mcp",
-    "contextFiles": ["src/server.mjs", "test/server.test.mjs"]
+    "timeoutSeconds": 600,
+    "isolation": "worktree"
   }
 }
 ```
 
-Live smoke-test prompts used during verification:
+Poll task status:
 
-- `ask_claude`: returned `CLAUDE_BRIDGE_LIVE_OK`
-- `ask_kimi`: returned `KIMI_BRIDGE_LIVE_OK`
-- `ask_cursor`: returned `CURSOR_BRIDGE_LIVE_OK`
+```json
+{
+  "name": "task_status",
+  "arguments": {
+    "taskId": "task_..."
+  }
+}
+```
+
+Read final result:
+
+```json
+{
+  "name": "task_result",
+  "arguments": {
+    "taskId": "task_..."
+  }
+}
+```
+
+Remove a finished task and clean its managed worktree:
+
+```json
+{
+  "name": "task_remove",
+  "arguments": {
+    "taskId": "task_..."
+  }
+}
+```
 
 Run tests:
 
