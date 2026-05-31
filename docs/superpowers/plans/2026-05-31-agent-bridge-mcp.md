@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Historical note:** This plan records the original implementation path and still references the removed `ask_*` / `dispatch_*` surface. The current public API is the task lifecycle API documented in `README.md`; use the active OpenSpec changes and current tests as source of truth for future work.
+
 **Goal:** Build a stdio MCP server that lets Codex ask Claude Code, Pi/Kimi, and Cursor for bounded second opinions or delegated work through local CLI wrappers.
 
 **Architecture:** Implement a dependency-free Node.js JSON-RPC MCP server with a small tool registry, a command runner with timeout, cwd controls, isolated child-process stdin, and provider wrappers for `claude-p`, `kimi.sh`, and `cursor-agent`. Default tools are second-opinion/read-only; dispatch tools are explicit and still bounded by timeout, cwd, byte caps, and provider flags.

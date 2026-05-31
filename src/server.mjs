@@ -7,6 +7,19 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import {
+  buildProviderCommand,
+  buildProviderEnv,
+  buildProviderSmokeCommand,
+  buildProviderVersionCommand,
+  getProviderCapabilities,
+  hasProvider,
+  providerNames,
+  providerTaskModes,
+  validateProviderTaskOptions
+} from "./provider-registry.mjs";
+
+export { buildProviderEnv } from "./provider-registry.mjs";
 
 const PROTOCOL_VERSION = "2024-11-05";
 const DEFAULT_TIMEOUT_SECONDS = 120;
@@ -16,50 +29,12 @@ const MAX_PROMPT_BYTES = 100 * 1024;
 const MAX_LOG_BYTES = 1024 * 1024;
 const MAX_WAIT_MS = 60000;
 const DEFAULT_PROVIDER_CHECK_TIMEOUT_MS = 5000;
-const PROVIDER_SMOKE_PROMPT = "Reply with exactly: AGENT_BRIDGE_PROVIDER_SMOKE_OK";
 const STARTUP_CWD = process.cwd();
 
 const TASK_STATES = new Set(["queued", "running", "succeeded", "failed", "stopped", "failed_stale", "removed"]);
 const TOOL_NAMES = ["providers_list", "providers_check", "task_preview", "task_spawn", "task_list", "task_status", "task_wait", "task_logs", "task_result", "task_stop", "task_remove"];
 const FINAL_STATES = new Set(["succeeded", "failed", "stopped", "failed_stale"]);
 const activeChildren = new Set();
-
-const PROVIDERS = {
-  claude: {
-    modes: ["research", "review", "implement", "command"],
-    supportsReply: false,
-    supportsResume: false,
-    supportsWorktreeIsolation: true,
-    effort: ["low", "medium", "high", "xhigh", "max"]
-  },
-  cursor: {
-    modes: ["research", "review", "implement"],
-    supportsReply: false,
-    supportsResume: false,
-    supportsWorktreeIsolation: true
-  },
-  kimi: {
-    modes: ["research", "review", "implement", "command"],
-    supportsReply: false,
-    supportsResume: false,
-    supportsWorktreeIsolation: true,
-    thinking: ["off", "minimal", "low", "medium", "high", "xhigh"]
-  },
-  codex: {
-    modes: ["research", "review", "implement", "command"],
-    supportsReply: false,
-    supportsResume: false,
-    supportsWorktreeIsolation: true,
-    thinking: ["low", "medium", "high", "xhigh"]
-  }
-};
-
-const MODE_DESCRIPTIONS = {
-  research: "Read and analyze. Do not edit files.",
-  review: "Review the requested code or plan. Do not edit files.",
-  implement: "Make the requested code changes, keep scope tight, and report verification evidence.",
-  command: "Run the requested bounded command-oriented task and report evidence."
-};
 
 const COMMON_SPAWN_FIELDS = new Set([
   "provider",
@@ -104,8 +79,8 @@ const toolDefinitions = [
     name: "task_preview",
     description: "Preview the command that would be run for a task without actually spawning it.",
     inputSchema: objectSchema({
-      provider: { type: "string", enum: Object.keys(PROVIDERS) },
-      mode: { type: "string", enum: ["research", "review", "implement", "command"] },
+      provider: { type: "string", enum: providerNames() },
+      mode: { type: "string", enum: providerTaskModes() },
       prompt: { type: "string", description: "Task prompt. Maximum 100 KiB UTF-8." },
       title: { type: "string" },
       cwd: { type: "string", description: "Workspace directory under the allowed root." },
@@ -121,8 +96,8 @@ const toolDefinitions = [
     name: "task_spawn",
     description: "Start a background provider task. Returns immediately; poll task_status/task_logs/task_result using the returned taskId.",
     inputSchema: objectSchema({
-      provider: { type: "string", enum: Object.keys(PROVIDERS) },
-      mode: { type: "string", enum: ["research", "review", "implement", "command"] },
+      provider: { type: "string", enum: providerNames() },
+      mode: { type: "string", enum: providerTaskModes() },
       prompt: { type: "string", description: "Task prompt. Maximum 100 KiB UTF-8." },
       title: { type: "string" },
       cwd: { type: "string", description: "Workspace directory under the allowed root." },
@@ -230,7 +205,7 @@ async function callTool(params) {
     rejectUnknownToolArguments(name, args);
 
     if (name === "providers_list") {
-      return toolJson({ providers: PROVIDERS });
+      return toolJson({ providers: getProviderCapabilities() });
     }
 
     const manager = await getDefaultTaskManager();
@@ -292,17 +267,12 @@ export async function validateTaskSpawnArguments(input = {}, options = {}) {
   }
 
   const provider = input.provider;
-  if (!Object.hasOwn(PROVIDERS, provider)) {
-    throw new Error(`provider must be one of: ${Object.keys(PROVIDERS).join(", ")}`);
+  if (!hasProvider(provider)) {
+    throw new Error(`provider must be one of: ${providerNames().join(", ")}`);
   }
 
   const mode = input.mode;
-  if (!["research", "review", "implement", "command"].includes(mode)) {
-    throw new Error("mode must be one of: research, review, implement, command");
-  }
-  if (!PROVIDERS[provider].modes.includes(mode)) {
-    throw new Error(`${provider} does not support mode: ${mode}`);
-  }
+  validateProviderTaskOptions({ provider, mode, effort: input.effort, thinking: input.thinking });
 
   const prompt = input.prompt;
   if (typeof prompt !== "string" || prompt.length === 0) {
@@ -317,15 +287,6 @@ export async function validateTaskSpawnArguments(input = {}, options = {}) {
   }
   if (input.model !== undefined && typeof input.model !== "string") {
     throw new Error("model must be a string");
-  }
-  if (input.effort !== undefined && (provider !== "claude" || !PROVIDERS.claude.effort.includes(input.effort))) {
-    throw new Error(`effort is only supported for claude and must be one of: ${PROVIDERS.claude.effort.join(", ")}`);
-  }
-  if (input.thinking !== undefined) {
-    const allowed = PROVIDERS[provider].thinking;
-    if (!allowed?.includes(input.thinking)) {
-      throw new Error(`thinking is not supported for ${provider}`);
-    }
   }
 
   const isolation = input.isolation ?? "none";
@@ -354,167 +315,7 @@ export async function validateTaskSpawnArguments(input = {}, options = {}) {
 
 export async function buildTaskCommand(input = {}, options = {}) {
   const task = await validateTaskSpawnArguments(input, options);
-  const timeout = String(task.timeoutSeconds);
-  const prompt = renderTaskPrompt(task);
-  const bins = options.providerBins ?? {};
-
-  switch (task.provider) {
-    case "claude":
-      return buildClaudeCommand(task, prompt, timeout, bins);
-    case "cursor":
-      return {
-        command: bins.cursor ?? process.env.CURSOR_AGENT_BIN ?? "cursor-agent",
-        args: [
-          "-p",
-          "--output-format", "json",
-          "--workspace", task.cwd,
-          ...cursorModeFlags(task.mode),
-          ...(task.model ? ["--model", task.model] : []),
-          "--trust",
-          "--",
-          prompt
-        ],
-        cwd: task.cwd,
-        timeoutSeconds: task.timeoutSeconds,
-        task
-      };
-    case "kimi":
-      return {
-        command: bins.kimi ?? process.env.PI_BIN ?? "pi",
-        args: [
-          "-p",
-          "--no-session",
-          "--no-context-files",
-          "--tools", kimiTools(task.mode),
-          ...(task.model ? ["--model", task.model] : []),
-          ...(task.thinking ? ["--thinking", task.thinking] : []),
-          prompt
-        ],
-        cwd: task.cwd,
-        timeoutSeconds: task.timeoutSeconds,
-        task
-      };
-    case "codex":
-      return {
-        command: bins.codex ?? process.env.CODEX_BIN ?? "codex",
-        args: [
-          "exec",
-          "--cd", task.cwd,
-          "--json",
-          "--sandbox", codexSandbox(task.mode),
-          ...codexEnvironmentConfigArgs(),
-          ...(task.model ? ["--model", task.model] : []),
-          ...(task.thinking ? ["--config", `model_reasoning_effort="${task.thinking}"`] : []),
-          prompt
-        ],
-        cwd: task.cwd,
-        timeoutSeconds: task.timeoutSeconds,
-        task
-      };
-    default:
-      throw new Error(`Unknown provider: ${task.provider}`);
-  }
-}
-
-function buildClaudeCommand(task, prompt, timeout, bins = {}) {
-  const claudePBin = bins.claudeP ?? process.env.CLAUDE_P_BIN;
-  const nativeClaudeBin = bins.claude ?? process.env.CLAUDE_BIN;
-  if (claudePBin || !nativeClaudeBin) {
-    return maybeWrapWithShellInit({
-      command: claudePBin ?? "claude-p",
-      args: [
-        "--cwd", task.cwd,
-        "--timeout", timeout,
-        "--output-format", "json",
-        ...claudeModeFlags(task.mode),
-        ...(task.model ? ["--model", task.model] : []),
-        ...(task.effort ? ["--effort", task.effort] : []),
-        "--",
-        prompt
-      ],
-      cwd: task.cwd,
-      timeoutSeconds: task.timeoutSeconds,
-      task
-    });
-  }
-
-  return maybeWrapWithShellInit({
-    command: nativeClaudeBin,
-    args: [
-      "-p",
-      "--output-format", "json",
-      ...claudeModeFlags(task.mode),
-      ...(task.model ? ["--model", task.model] : []),
-      ...(task.effort ? ["--effort", task.effort] : []),
-      "--",
-      prompt
-    ],
-    cwd: task.cwd,
-    timeoutSeconds: task.timeoutSeconds,
-    task
-  });
-}
-
-function maybeWrapWithShellInit(command) {
-  return {
-    ...command,
-    command: "/bin/zsh",
-    args: [
-      "-lc",
-      "source ~/.zshenv 2>/dev/null || true; source ~/.zprofile 2>/dev/null || true; source ~/.zshrc 2>/dev/null || true; exec \"$@\"",
-      "agent-bridge-provider",
-      command.command,
-      ...command.args
-    ]
-  };
-}
-
-function claudeModeFlags(mode) {
-  if (mode === "review" || mode === "research") {
-    return ["--permission-mode", "dontAsk", "--allowedTools", "Read,Grep,Glob", "--disallowedTools", "Bash,Edit,Write"];
-  }
-  if (mode === "command") {
-    return ["--permission-mode", "default", "--allowedTools", "Read,Grep,Glob,Bash", "--disallowedTools", "Edit,Write"];
-  }
-  return ["--permission-mode", "default"];
-}
-
-function cursorModeFlags(mode) {
-  if (mode === "review" || mode === "research") {
-    return ["--mode", "ask"];
-  }
-  return [];
-}
-
-function kimiTools(mode) {
-  if (mode === "implement") {
-    return "read,bash,edit,write,grep,find,ls";
-  }
-  if (mode === "command") {
-    return "read,bash,grep,find,ls";
-  }
-  return "read,grep,find,ls";
-}
-
-function codexSandbox(mode) {
-  if (mode === "review" || mode === "research") {
-    return "read-only";
-  }
-  return "workspace-write";
-}
-
-function renderTaskPrompt(task) {
-  const title = task.title ? `Title: ${task.title}\n` : "";
-  return [
-    title,
-    `Mode: ${task.mode}`,
-    `Provider: ${task.provider}`,
-    `Instruction: ${MODE_DESCRIPTIONS[task.mode]}`,
-    "",
-    task.prompt,
-    "",
-    "Return a concise final report with: summary, changed files if any, evidence, risks, and next steps."
-  ].join("\n");
+  return buildProviderCommand(task, { providerBins: options.providerBins });
 }
 
 export async function createTaskManager(options = {}) {
@@ -585,11 +386,11 @@ class TaskManager {
     const smoke = options.smoke === true;
     const timeoutMs = normalizeProviderCheckTimeoutMs(options.timeoutMs);
     const results = {};
-    for (const [name] of Object.entries(PROVIDERS)) {
-      const command = this.resolveProviderCommand(name);
-      const versionResult = await runCommand(command, ["--version"], {
+    for (const name of providerNames()) {
+      const versionCommand = buildProviderVersionCommand(name, { providerBins: this.providerBins });
+      const versionResult = await runCommand(versionCommand.command, versionCommand.args, {
         cwd: this.defaultCwd,
-        env: buildProviderEnv(name),
+        env: versionCommand.env,
         timeoutMs,
         maxBufferBytes: 8192,
         spawnProcess: this.spawnProcess
@@ -597,7 +398,7 @@ class TaskManager {
       if (!versionResult.ok) {
         results[name] = {
           available: false,
-          command,
+          command: versionCommand.command,
           probe: "version",
           startupVerified: false,
           error: versionResult.stderr.trim() || versionResult.error || `exited with code ${versionResult.exitCode}`
@@ -607,7 +408,7 @@ class TaskManager {
 
       const baseResult = {
         available: true,
-        command,
+        command: versionCommand.command,
         version: versionResult.stdout.trim(),
         probe: smoke ? "version+smoke" : "version",
         startupVerified: false
@@ -617,7 +418,7 @@ class TaskManager {
         continue;
       }
 
-      const smokeCommand = await this.providerSmokeCommand(name, timeoutMs);
+      const smokeCommand = this.providerSmokeCommand(name, timeoutMs);
       const smokeResult = await runCommand(smokeCommand.command, smokeCommand.args, {
         cwd: smokeCommand.cwd,
         env: buildCommandEnv(name, smokeCommand),
@@ -883,33 +684,13 @@ class TaskManager {
     return result.stdout;
   }
 
-  resolveProviderCommand(name) {
-    const bins = this.providerBins ?? {};
-    switch (name) {
-      case "claude": {
-        const claudePBin = bins.claudeP ?? process.env.CLAUDE_P_BIN;
-        const nativeClaudeBin = bins.claude ?? process.env.CLAUDE_BIN;
-        return claudePBin || !nativeClaudeBin ? (claudePBin ?? "claude-p") : nativeClaudeBin;
-      }
-      case "cursor":
-        return bins.cursor ?? process.env.CURSOR_AGENT_BIN ?? "cursor-agent";
-      case "kimi":
-        return bins.kimi ?? process.env.PI_BIN ?? "pi";
-      case "codex":
-        return bins.codex ?? process.env.CODEX_BIN ?? "codex";
-      default:
-        throw new Error(`Unknown provider: ${name}`);
-    }
-  }
-
-  async providerSmokeCommand(provider, timeoutMs) {
-    return buildTaskCommand({
+  providerSmokeCommand(provider, timeoutMs) {
+    return buildProviderSmokeCommand(provider, {
       provider,
-      mode: "research",
-      prompt: PROVIDER_SMOKE_PROMPT,
       cwd: this.defaultCwd,
-      timeoutSeconds: Math.max(MIN_TIMEOUT_SECONDS, Math.ceil(timeoutMs / 1000))
-    }, { providerBins: this.providerBins });
+      timeoutSeconds: Math.max(MIN_TIMEOUT_SECONDS, Math.ceil(timeoutMs / 1000)),
+      providerBins: this.providerBins
+    });
   }
 
   publicTask(task) {
@@ -1049,10 +830,6 @@ function normalizeProviderCheckTimeoutMs(value) {
   return Math.min(MAX_WAIT_MS, Math.max(1, Math.trunc(numeric)));
 }
 
-function codexEnvironmentConfigArgs() {
-  return ["--config", "shell_environment_policy.inherit=\"all\""];
-}
-
 export async function readCappedFile(file, maxBytes = MAX_LOG_BYTES) {
   try {
     const buffer = await fs.readFile(file);
@@ -1122,86 +899,6 @@ function inferErrorType(task) {
     return "provider_exit_error";
   }
   return undefined;
-}
-
-export function buildProviderEnv(provider) {
-  if (provider === "claude") {
-    const env = pickEnv([
-      "PATH",
-      "HOME",
-      "TMPDIR",
-      "TERM",
-      "COLORTERM",
-      "USER",
-      "LOGNAME",
-      "SHELL",
-      "LANG",
-      "LC_ALL",
-      "LC_CTYPE",
-      "XDG_CONFIG_DIRS",
-      "XDG_DATA_DIRS",
-      "NIX_PROFILES",
-      "NIX_SSL_CERT_FILE",
-      "NIX_USER_PROFILE_DIR",
-      "SSL_CERT_FILE",
-      "CLAUDE_CONFIG_DIR",
-      "CLAUDE_BIN",
-      "CLAUDE_P_BIN",
-      "ANTHROPIC_API_KEY",
-      "ANTHROPIC_OAUTH_TOKEN",
-      "AGENT_BRIDGE_ALLOWED_ROOT",
-      "AGENT_BRIDGE_STATE_DIR"
-    ]);
-    // Codex Desktop can inject an Anthropic proxy endpoint that breaks Claude Code auth.
-    delete env.ANTHROPIC_BASE_URL;
-    return env;
-  }
-
-  const names = [
-    "PATH",
-    "HOME",
-    "TMPDIR",
-    "TERM",
-    "COLORTERM",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "LANG",
-    "LC_ALL",
-    "CLAUDE_CONFIG_DIR",
-    "CLAUDE_BIN",
-    "CLAUDE_P_BIN",
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_OAUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "CURSOR_AGENT_BIN",
-    "CURSOR_API_KEY",
-    "PI_BIN",
-    "PI_CODING_AGENT_DIR",
-    "PI_CODING_AGENT_SESSION_DIR",
-    "KIMI_API_KEY",
-    "FIREWORKS_API_KEY",
-    "GEMINI_API_KEY",
-    "OPENROUTER_API_KEY",
-    "TOGETHER_API_KEY",
-    "OPENAI_BASE_URL",
-    "CODEX_BIN",
-    "CODEX_HOME",
-    "OPENAI_API_KEY",
-    "AGENT_BRIDGE_ALLOWED_ROOT",
-    "AGENT_BRIDGE_STATE_DIR"
-  ];
-  return pickEnv(names);
-}
-
-function pickEnv(names) {
-  const env = {};
-  for (const name of names) {
-    if (process.env[name] !== undefined) {
-      env[name] = process.env[name];
-    }
-  }
-  return env;
 }
 
 function buildCommandEnv(provider, command) {

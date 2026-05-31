@@ -51,6 +51,10 @@ First-class providers:
 - `kimi`: local Pi/Kimi through `pi -p`.
 - `codex`: local Codex through `codex exec`.
 
+Provider-specific capabilities, command construction, smoke probes, and
+environment allowlists live in `src/provider-registry.mjs`. Keep provider changes
+there first, then let the task lifecycle call through the registry.
+
 Supported modes:
 
 - `research`: read/analyze only.
