@@ -14,10 +14,13 @@ const MAX_TIMEOUT_SECONDS = 1800;
 const MIN_TIMEOUT_SECONDS = 1;
 const MAX_PROMPT_BYTES = 100 * 1024;
 const MAX_LOG_BYTES = 1024 * 1024;
+const MAX_WAIT_MS = 60000;
+const DEFAULT_PROVIDER_CHECK_TIMEOUT_MS = 5000;
+const PROVIDER_SMOKE_PROMPT = "Reply with exactly: AGENT_BRIDGE_PROVIDER_SMOKE_OK";
 const STARTUP_CWD = process.cwd();
 
 const TASK_STATES = new Set(["queued", "running", "succeeded", "failed", "stopped", "failed_stale", "removed"]);
-const TOOL_NAMES = ["providers_list", "task_spawn", "task_list", "task_status", "task_logs", "task_result", "task_stop", "task_remove"];
+const TOOL_NAMES = ["providers_list", "providers_check", "task_preview", "task_spawn", "task_list", "task_status", "task_wait", "task_logs", "task_result", "task_stop", "task_remove"];
 const FINAL_STATES = new Set(["succeeded", "failed", "stopped", "failed_stale"]);
 const activeChildren = new Set();
 
@@ -74,10 +77,13 @@ const COMMON_SPAWN_FIELDS = new Set([
 
 const TOOL_ARGUMENT_FIELDS = {
   providers_list: new Set(),
+  providers_check: new Set(["smoke", "timeoutMs"]),
+  task_preview: COMMON_SPAWN_FIELDS,
   task_spawn: COMMON_SPAWN_FIELDS,
   task_list: new Set(),
   task_status: new Set(["taskId"]),
-  task_logs: new Set(["taskId", "maxBytes"]),
+  task_wait: new Set(["taskId", "timeoutMs"]),
+  task_logs: new Set(["taskId", "maxBytes", "stdoutLine", "stderrLine"]),
   task_result: new Set(["taskId", "maxBytes"]),
   task_stop: new Set(["taskId"]),
   task_remove: new Set(["taskId"])
@@ -88,6 +94,28 @@ const toolDefinitions = [
     name: "providers_list",
     description: "List first-class delegation providers and their task capabilities.",
     inputSchema: objectSchema({})
+  },
+  {
+    name: "providers_check",
+    description: "Check availability of each provider by running their command with --version, optionally with a startup smoke probe.",
+    inputSchema: objectSchema({ smoke: { type: "boolean" }, timeoutMs: { type: "number" } })
+  },
+  {
+    name: "task_preview",
+    description: "Preview the command that would be run for a task without actually spawning it.",
+    inputSchema: objectSchema({
+      provider: { type: "string", enum: Object.keys(PROVIDERS) },
+      mode: { type: "string", enum: ["research", "review", "implement", "command"] },
+      prompt: { type: "string", description: "Task prompt. Maximum 100 KiB UTF-8." },
+      title: { type: "string" },
+      cwd: { type: "string", description: "Workspace directory under the allowed root." },
+      timeoutSeconds: { type: "number" },
+      model: { type: "string" },
+      effort: { type: "string" },
+      thinking: { type: "string" },
+      isolation: { type: "string", enum: ["none", "worktree"] },
+      worktreeName: { type: "string" }
+    }, ["provider", "mode", "prompt"])
   },
   {
     name: "task_spawn",
@@ -117,9 +145,19 @@ const toolDefinitions = [
     inputSchema: objectSchema({ taskId: { type: "string" } }, ["taskId"])
   },
   {
+    name: "task_wait",
+    description: "Wait for a task to reach a final state or timeout.",
+    inputSchema: objectSchema({ taskId: { type: "string" }, timeoutMs: { type: "number" } }, ["taskId"])
+  },
+  {
     name: "task_logs",
     description: "Return capped stdout/stderr log slices for a task.",
-    inputSchema: objectSchema({ taskId: { type: "string" }, maxBytes: { type: "number" } }, ["taskId"])
+    inputSchema: objectSchema({
+      taskId: { type: "string" },
+      maxBytes: { type: "number" },
+      stdoutLine: { type: "number" },
+      stderrLine: { type: "number" }
+    }, ["taskId"])
   },
   {
     name: "task_result",
@@ -197,14 +235,20 @@ async function callTool(params) {
 
     const manager = await getDefaultTaskManager();
     switch (name) {
+      case "providers_check":
+        return toolJson(await manager.checkProviders(args));
+      case "task_preview":
+        return toolJson(await manager.preview(args));
       case "task_spawn":
         return toolJson(await manager.spawn(args));
       case "task_list":
         return toolJson(await manager.list());
       case "task_status":
         return toolJson(await manager.status(requireTaskId(args)));
+      case "task_wait":
+        return toolJson(await manager.wait(requireTaskId(args), args.timeoutMs));
       case "task_logs":
-        return toolJson(await manager.logs(requireTaskId(args), args.maxBytes));
+        return toolJson(await manager.logs(requireTaskId(args), args.maxBytes, { stdoutLine: args.stdoutLine, stderrLine: args.stderrLine }));
       case "task_result":
         return toolJson(await manager.result(requireTaskId(args), args.maxBytes));
       case "task_stop":
@@ -358,6 +402,7 @@ export async function buildTaskCommand(input = {}, options = {}) {
           "--cd", task.cwd,
           "--json",
           "--sandbox", codexSandbox(task.mode),
+          ...codexEnvironmentConfigArgs(),
           ...(task.model ? ["--model", task.model] : []),
           ...(task.thinking ? ["--config", `model_reasoning_effort="${task.thinking}"`] : []),
           prompt
@@ -375,7 +420,7 @@ function buildClaudeCommand(task, prompt, timeout, bins = {}) {
   const claudePBin = bins.claudeP ?? process.env.CLAUDE_P_BIN;
   const nativeClaudeBin = bins.claude ?? process.env.CLAUDE_BIN;
   if (claudePBin || !nativeClaudeBin) {
-    return {
+    return maybeWrapWithShellInit({
       command: claudePBin ?? "claude-p",
       args: [
         "--cwd", task.cwd,
@@ -390,10 +435,10 @@ function buildClaudeCommand(task, prompt, timeout, bins = {}) {
       cwd: task.cwd,
       timeoutSeconds: task.timeoutSeconds,
       task
-    };
+    });
   }
 
-  return {
+  return maybeWrapWithShellInit({
     command: nativeClaudeBin,
     args: [
       "-p",
@@ -407,6 +452,20 @@ function buildClaudeCommand(task, prompt, timeout, bins = {}) {
     cwd: task.cwd,
     timeoutSeconds: task.timeoutSeconds,
     task
+  });
+}
+
+function maybeWrapWithShellInit(command) {
+  return {
+    ...command,
+    command: "/bin/zsh",
+    args: [
+      "-lc",
+      "source ~/.zshenv 2>/dev/null || true; source ~/.zprofile 2>/dev/null || true; source ~/.zshrc 2>/dev/null || true; exec \"$@\"",
+      "agent-bridge-provider",
+      command.command,
+      ...command.args
+    ]
   };
 }
 
@@ -502,6 +561,93 @@ class TaskManager {
     }
   }
 
+  async preview(input) {
+    const validated = await validateTaskSpawnArguments(input, {
+      allowedRoot: this.allowedRoot,
+      defaultCwd: this.defaultCwd
+    });
+    const command = await buildTaskCommand(validated, { providerBins: this.providerBins });
+    const redactedArgs = command.args.map((arg) => {
+      if (arg.includes(validated.prompt)) return "<prompt redacted>";
+      return arg;
+    });
+    const env = buildCommandEnv(validated.provider, command);
+    return {
+      command: command.command,
+      cwd: command.cwd,
+      timeoutSeconds: command.timeoutSeconds,
+      args: redactedArgs,
+      envKeys: Object.keys(env)
+    };
+  }
+
+  async checkProviders(options = {}) {
+    const smoke = options.smoke === true;
+    const timeoutMs = normalizeProviderCheckTimeoutMs(options.timeoutMs);
+    const results = {};
+    for (const [name] of Object.entries(PROVIDERS)) {
+      const command = this.resolveProviderCommand(name);
+      const versionResult = await runCommand(command, ["--version"], {
+        cwd: this.defaultCwd,
+        env: buildProviderEnv(name),
+        timeoutMs,
+        maxBufferBytes: 8192,
+        spawnProcess: this.spawnProcess
+      });
+      if (!versionResult.ok) {
+        results[name] = {
+          available: false,
+          command,
+          probe: "version",
+          startupVerified: false,
+          error: versionResult.stderr.trim() || versionResult.error || `exited with code ${versionResult.exitCode}`
+        };
+        continue;
+      }
+
+      const baseResult = {
+        available: true,
+        command,
+        version: versionResult.stdout.trim(),
+        probe: smoke ? "version+smoke" : "version",
+        startupVerified: false
+      };
+      if (!smoke) {
+        results[name] = baseResult;
+        continue;
+      }
+
+      const smokeCommand = await this.providerSmokeCommand(name, timeoutMs);
+      const smokeResult = await runCommand(smokeCommand.command, smokeCommand.args, {
+        cwd: smokeCommand.cwd,
+        env: buildCommandEnv(name, smokeCommand),
+        timeoutMs,
+        maxBufferBytes: 8192,
+        spawnProcess: this.spawnProcess
+      });
+      results[name] = smokeResult.ok
+        ? { ...baseResult, startupVerified: true }
+        : {
+            ...baseResult,
+            available: false,
+            error: smokeResult.stderr.trim() || smokeResult.error || `exited with code ${smokeResult.exitCode}`
+          };
+    }
+    return { providers: results };
+  }
+
+  async wait(taskId, timeoutMs = 30000) {
+    const task = this.requireTask(taskId);
+    const deadline = Date.now() + normalizeWaitMs(timeoutMs);
+    while (Date.now() < deadline) {
+      if (FINAL_STATES.has(task.status)) {
+        return { ...this.publicTask(task), timedOut: undefined };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return { ...this.publicTask(task), timedOut: true };
+  }
+
   async spawn(input) {
     const validated = await validateTaskSpawnArguments(input, {
       allowedRoot: this.allowedRoot,
@@ -551,7 +697,7 @@ class TaskManager {
     const stderrPath = path.join(record.taskDir, "stderr.log");
     const child = this.spawnProcess(command.command, command.args, {
       cwd: command.cwd,
-      env: buildProviderEnv(record.provider),
+      env: buildCommandEnv(record.provider, command),
       stdio: ["ignore", "pipe", "pipe"]
     });
     activeChildren.add(child);
@@ -576,7 +722,7 @@ class TaskManager {
       clearTimeout(timeout);
       this.active.delete(record.taskId);
       activeChildren.delete(child);
-      this.finish(record.taskId, { status: "failed", error: error.message }).catch((finishError) => this.logPersistError(record.taskId, finishError));
+      this.finish(record.taskId, { status: "failed", error: error.message, errorType: "provider_start_error" }).catch((finishError) => this.logPersistError(record.taskId, finishError));
     });
     child.on("close", (exitCode, signal) => {
       clearTimeout(timeout);
@@ -594,7 +740,7 @@ class TaskManager {
         status = "failed";
         error = `command exited with code ${exitCode}`;
       }
-      this.finish(record.taskId, { status, error, exitCode, signal }).catch((finishError) => this.logPersistError(record.taskId, finishError));
+      this.finish(record.taskId, { status, error, errorType: inferErrorType({ status, timedOut, stopRequested }), exitCode, signal }).catch((finishError) => this.logPersistError(record.taskId, finishError));
     });
   }
 
@@ -624,19 +770,25 @@ class TaskManager {
     return this.publicTask(this.requireTask(taskId));
   }
 
-  async logs(taskId, maxBytes = MAX_LOG_BYTES) {
+  async logs(taskId, maxBytes = MAX_LOG_BYTES, options = {}) {
     const task = this.requireTask(taskId);
     const [stdout, stderr] = await Promise.all([
       readCappedFile(path.join(task.taskDir, "stdout.log"), normalizeMaxBytes(maxBytes)),
       readCappedFile(path.join(task.taskDir, "stderr.log"), normalizeMaxBytes(maxBytes))
     ]);
+    const stdoutLine = options.stdoutLine ?? 0;
+    const stderrLine = options.stderrLine ?? 0;
+    const slicedStdout = sliceLines(stdout.text, stdoutLine);
+    const slicedStderr = sliceLines(stderr.text, stderrLine);
     return {
       taskId,
       status: task.status,
-      stdout: stdout.text,
-      stderr: stderr.text,
+      stdout: slicedStdout.text,
+      stderr: slicedStderr.text,
       stdoutTruncated: stdout.truncated,
-      stderrTruncated: stderr.truncated
+      stderrTruncated: stderr.truncated,
+      nextStdoutLine: slicedStdout.nextLine,
+      nextStderrLine: slicedStderr.nextLine
     };
   }
 
@@ -731,7 +883,48 @@ class TaskManager {
     return result.stdout;
   }
 
+  resolveProviderCommand(name) {
+    const bins = this.providerBins ?? {};
+    switch (name) {
+      case "claude": {
+        const claudePBin = bins.claudeP ?? process.env.CLAUDE_P_BIN;
+        const nativeClaudeBin = bins.claude ?? process.env.CLAUDE_BIN;
+        return claudePBin || !nativeClaudeBin ? (claudePBin ?? "claude-p") : nativeClaudeBin;
+      }
+      case "cursor":
+        return bins.cursor ?? process.env.CURSOR_AGENT_BIN ?? "cursor-agent";
+      case "kimi":
+        return bins.kimi ?? process.env.PI_BIN ?? "pi";
+      case "codex":
+        return bins.codex ?? process.env.CODEX_BIN ?? "codex";
+      default:
+        throw new Error(`Unknown provider: ${name}`);
+    }
+  }
+
+  async providerSmokeCommand(provider, timeoutMs) {
+    return buildTaskCommand({
+      provider,
+      mode: "research",
+      prompt: PROVIDER_SMOKE_PROMPT,
+      cwd: this.defaultCwd,
+      timeoutSeconds: Math.max(MIN_TIMEOUT_SECONDS, Math.ceil(timeoutMs / 1000))
+    }, { providerBins: this.providerBins });
+  }
+
   publicTask(task) {
+    const isFinal = FINAL_STATES.has(task.status);
+    let phase;
+    if (task.status === "queued") phase = "pending";
+    else if (task.status === "running") phase = "active";
+    else phase = "done";
+    let durationMs;
+    if (task.startedAt && task.completedAt) {
+      durationMs = new Date(task.completedAt) - new Date(task.startedAt);
+    } else if (task.startedAt && task.status === "running") {
+      durationMs = Date.now() - new Date(task.startedAt);
+    }
+    const errorType = task.errorType ?? inferErrorType(task);
     return {
       taskId: task.taskId,
       provider: task.provider,
@@ -745,7 +938,11 @@ class TaskManager {
       createdAt: task.createdAt,
       updatedAt: task.updatedAt,
       startedAt: task.startedAt,
-      completedAt: task.completedAt
+      completedAt: task.completedAt,
+      isFinal,
+      phase,
+      durationMs,
+      errorType
     };
   }
 
@@ -842,6 +1039,20 @@ function normalizeMaxBytes(value) {
   return Math.min(MAX_LOG_BYTES, Math.max(1, Math.trunc(numeric)));
 }
 
+function normalizeWaitMs(value) {
+  const numeric = Number.isFinite(value) ? value : 30000;
+  return Math.min(MAX_WAIT_MS, Math.max(0, Math.trunc(numeric)));
+}
+
+function normalizeProviderCheckTimeoutMs(value) {
+  const numeric = Number.isFinite(value) ? value : DEFAULT_PROVIDER_CHECK_TIMEOUT_MS;
+  return Math.min(MAX_WAIT_MS, Math.max(1, Math.trunc(numeric)));
+}
+
+function codexEnvironmentConfigArgs() {
+  return ["--config", "shell_environment_policy.inherit=\"all\""];
+}
+
 export async function readCappedFile(file, maxBytes = MAX_LOG_BYTES) {
   try {
     const buffer = await fs.readFile(file);
@@ -878,14 +1089,74 @@ function capBuffer(buffer, maxBytes) {
   return { buffer: capped, text: capped.toString("utf8"), truncated: true };
 }
 
+function sliceLines(text, startLine) {
+  if (text === "") {
+    return { text: "", nextLine: 0 };
+  }
+  const lines = text.split(/\r?\n/);
+  const endsWithNewline = text.endsWith("\n") || text.endsWith("\r\n");
+  const totalLines = endsWithNewline ? lines.length - 1 : lines.length;
+  const endIndex = endsWithNewline ? lines.length - 1 : lines.length;
+  const sliced = lines.slice(startLine, endIndex);
+  let result = sliced.join("\n");
+  if (endsWithNewline && sliced.length > 0) {
+    result += "\n";
+  }
+  return { text: result, nextLine: totalLines };
+}
+
+function inferErrorType(task) {
+  if (task.errorType) {
+    return task.errorType;
+  }
+  if (task.timedOut) {
+    return "timeout";
+  }
+  if (task.stopRequested || task.status === "stopped") {
+    return "stopped";
+  }
+  if (task.status === "failed_stale") {
+    return "stale";
+  }
+  if (task.status === "failed") {
+    return "provider_exit_error";
+  }
+  return undefined;
+}
+
 export function buildProviderEnv(provider) {
   if (provider === "claude") {
-    const env = { ...process.env };
+    const env = pickEnv([
+      "PATH",
+      "HOME",
+      "TMPDIR",
+      "TERM",
+      "COLORTERM",
+      "USER",
+      "LOGNAME",
+      "SHELL",
+      "LANG",
+      "LC_ALL",
+      "LC_CTYPE",
+      "XDG_CONFIG_DIRS",
+      "XDG_DATA_DIRS",
+      "NIX_PROFILES",
+      "NIX_SSL_CERT_FILE",
+      "NIX_USER_PROFILE_DIR",
+      "SSL_CERT_FILE",
+      "CLAUDE_CONFIG_DIR",
+      "CLAUDE_BIN",
+      "CLAUDE_P_BIN",
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_OAUTH_TOKEN",
+      "AGENT_BRIDGE_ALLOWED_ROOT",
+      "AGENT_BRIDGE_STATE_DIR"
+    ]);
+    // Codex Desktop can inject an Anthropic proxy endpoint that breaks Claude Code auth.
     delete env.ANTHROPIC_BASE_URL;
     return env;
   }
 
-  const env = {};
   const names = [
     "PATH",
     "HOME",
@@ -920,12 +1191,21 @@ export function buildProviderEnv(provider) {
     "AGENT_BRIDGE_ALLOWED_ROOT",
     "AGENT_BRIDGE_STATE_DIR"
   ];
+  return pickEnv(names);
+}
+
+function pickEnv(names) {
+  const env = {};
   for (const name of names) {
     if (process.env[name] !== undefined) {
       env[name] = process.env[name];
     }
   }
   return env;
+}
+
+function buildCommandEnv(provider, command) {
+  return { ...buildProviderEnv(provider), ...(command.env ?? {}) };
 }
 
 export async function runCommand(command, args, options = {}) {
@@ -939,7 +1219,8 @@ export async function runCommand(command, args, options = {}) {
     let stderrTruncated = false;
     let timedOut = false;
 
-    const child = spawn(command, args, {
+    const spawnProcess = options.spawnProcess ?? spawn;
+    const child = spawnProcess(command, args, {
       cwd: options.cwd,
       env: options.env ?? buildProviderEnv(),
       stdio: ["ignore", "pipe", "pipe"]

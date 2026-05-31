@@ -25,17 +25,35 @@ function fakeChild({ stdout = "", stderr = "", exitCode = 0, signal = null, dela
   child.stdout = Readable.from([stdout]);
   child.stderr = Readable.from([stderr]);
   child.killCalls = [];
+  let closed = false;
+  const closeOnce = (closeExitCode, closeSignal) => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    child.emit("close", closeExitCode, closeSignal);
+  };
   child.kill = (killSignal = "SIGTERM") => {
     child.killCalls.push(killSignal);
-    setTimeout(() => child.emit("close", null, killSignal), 0);
+    setTimeout(() => closeOnce(null, killSignal), 0);
     return true;
   };
-  setTimeout(() => child.emit("close", exitCode, signal), delayMs);
+  setTimeout(() => closeOnce(exitCode, signal), delayMs);
+  return child;
+}
+
+function fakeErrorChild(error = new Error("spawn failed")) {
+  const child = new EventEmitter();
+  child.pid = undefined;
+  child.stdout = Readable.from([]);
+  child.stderr = Readable.from([]);
+  child.kill = () => true;
+  setTimeout(() => child.emit("error", error), 0);
   return child;
 }
 
 async function waitForStatus(manager, taskId, expectedStatus) {
-  const deadline = Date.now() + 1000;
+  const deadline = Date.now() + 2000;
   let status;
   do {
     status = await manager.status(taskId);
@@ -71,14 +89,23 @@ test("tools/list exposes only task-native tools", async () => {
   const names = response.result.tools.map((tool) => tool.name);
   assert.deepEqual(names, [
     "providers_list",
+    "providers_check",
+    "task_preview",
     "task_spawn",
     "task_list",
     "task_status",
+    "task_wait",
     "task_logs",
     "task_result",
     "task_stop",
     "task_remove"
   ]);
+  const taskLogs = response.result.tools.find((tool) => tool.name === "task_logs");
+  assert.ok(taskLogs.inputSchema.properties.stdoutLine);
+  assert.ok(taskLogs.inputSchema.properties.stderrLine);
+  const providersCheck = response.result.tools.find((tool) => tool.name === "providers_check");
+  assert.ok(providersCheck.inputSchema.properties.smoke);
+  assert.ok(providersCheck.inputSchema.properties.timeoutMs);
 });
 
 test("providers_list reports first-class provider capabilities", async () => {
@@ -114,6 +141,17 @@ test("tools/call rejects unknown arguments on lifecycle tools", async () => {
   assert.match(response.result.content[0].text, /Unknown argument/);
 });
 
+test("tools/call accepts task_logs line cursor arguments", async () => {
+  const response = await handleRequest({
+    jsonrpc: "2.0",
+    id: 4,
+    method: "tools/call",
+    params: { name: "task_logs", arguments: { taskId: "task_missing", stdoutLine: 1, stderrLine: 2 } }
+  });
+  assert.equal(response.result.isError, true);
+  assert.match(response.result.content[0].text, /Unknown task/);
+});
+
 test("validates cwd with allowed root and rejects symlink escapes", async () => {
   const root = await tempDir("agent-bridge-root-");
   const outside = await tempDir("agent-bridge-outside-");
@@ -147,8 +185,9 @@ test("builds provider commands for explicit modes", async () => {
     process.env.CLAUDE_P_BIN = previousClaudeP;
   }
 
-  assert.equal(claude.command, "claude-p");
-  assert.deepEqual(claude.args.slice(0, 8), ["--cwd", cwd, "--timeout", "120", "--output-format", "json", "--permission-mode", "dontAsk"]);
+  assert.equal(claude.command, "/bin/zsh");
+  assert.equal(claude.args[0], "-lc");
+  assert.ok(claude.args.includes("claude-p"));
   assert.ok(claude.args.includes("--allowedTools"));
 
   const cursor = await buildTaskCommand({ provider: "cursor", mode: "implement", prompt: "Implement", cwd, model: "gpt-5" });
@@ -167,21 +206,33 @@ test("builds provider commands for explicit modes", async () => {
   assert.equal(codex.command, "codex");
   assert.deepEqual(codex.args.slice(0, 3), ["exec", "--cd", cwd]);
   assert.ok(codex.args.includes("--json"));
+  assert.ok(codex.args.includes("shell_environment_policy.inherit=\"all\""));
 });
 
-test("builds Claude command through claude-p when explicitly configured", async () => {
+test("builds Codex command with shell environment inheritance", async () => {
   const cwd = process.cwd();
-  const previous = process.env.CLAUDE_P_BIN;
+  const codex = await buildTaskCommand({ provider: "codex", mode: "command", prompt: "Diagnose", cwd });
+  const configIndex = codex.args.indexOf("--config");
+  assert.notEqual(configIndex, -1);
+  assert.equal(codex.args[configIndex + 1], "shell_environment_policy.inherit=\"all\"");
+});
+
+test("builds Claude claude-p command through shell init", async () => {
+  const cwd = process.cwd();
+  const previousClaudeP = process.env.CLAUDE_P_BIN;
   process.env.CLAUDE_P_BIN = "/custom/claude-p";
   try {
-    const claude = await buildTaskCommand({ provider: "claude", mode: "review", prompt: "Review", cwd });
-    assert.equal(claude.command, "/custom/claude-p");
-    assert.deepEqual(claude.args.slice(0, 8), ["--cwd", cwd, "--timeout", "120", "--output-format", "json", "--permission-mode", "dontAsk"]);
+    const claude = await buildTaskCommand({ provider: "claude", mode: "command", prompt: "Review", cwd });
+    assert.equal(claude.command, "/bin/zsh");
+    assert.equal(claude.args[0], "-lc");
+    assert.match(claude.args[1], /source ~\/\.zshenv/);
+    assert.ok(claude.args.includes("/custom/claude-p"));
+    assert.ok(claude.args.includes("--cwd"));
   } finally {
-    if (previous === undefined) {
+    if (previousClaudeP === undefined) {
       delete process.env.CLAUDE_P_BIN;
     } else {
-      process.env.CLAUDE_P_BIN = previous;
+      process.env.CLAUDE_P_BIN = previousClaudeP;
     }
   }
 });
@@ -194,9 +245,9 @@ test("builds native Claude command when CLAUDE_BIN is explicitly configured", as
   delete process.env.CLAUDE_P_BIN;
   try {
     const claude = await buildTaskCommand({ provider: "claude", mode: "review", prompt: "Review", cwd });
-    assert.equal(claude.command, "/custom/claude");
-    assert.deepEqual(claude.args.slice(0, 5), ["-p", "--output-format", "json", "--permission-mode", "dontAsk"]);
-    assert.ok(!claude.args.includes("--cwd"));
+    assert.equal(claude.command, "/bin/zsh");
+    assert.ok(claude.args.includes("/custom/claude"));
+    assert.ok(claude.args.includes("-p"));
   } finally {
     if (previousClaude === undefined) {
       delete process.env.CLAUDE_BIN;
@@ -218,6 +269,129 @@ test("clamps task timeout seconds", async () => {
   assert.equal(high.timeoutSeconds, 1800);
 });
 
+test("task_preview validates spawn args and redacts prompt", async () => {
+  const response = await handleRequest({
+    jsonrpc: "2.0",
+    id: 10,
+    method: "tools/call",
+    params: {
+      name: "task_preview",
+      arguments: {
+        provider: "codex",
+        mode: "review",
+        prompt: "secret prompt body",
+        cwd: process.cwd(),
+        thinking: "medium"
+      }
+    }
+  });
+
+  assert.equal(response.result.isError, false);
+  const payload = JSON.parse(response.result.content[0].text);
+  assert.equal(payload.command, "codex");
+  assert.equal(payload.cwd, process.cwd());
+  assert.equal(payload.timeoutSeconds, 120);
+  assert.ok(payload.args.includes("<prompt redacted>"));
+  assert.ok(!payload.args.includes("secret prompt body"));
+  assert.ok(Array.isArray(payload.envKeys));
+});
+
+test("providers_check reports available and unavailable providers", async () => {
+  const manager = await createTaskManager({
+    stateDir: await tempDir(),
+    defaultCwd: process.cwd(),
+    providerBins: {
+      claudeP: "claude-ok",
+      cursor: "cursor-missing",
+      kimi: "kimi-ok",
+      codex: "codex-ok"
+    },
+    spawnProcess: (command) => {
+      if (command === "cursor-missing") {
+        return fakeErrorChild(new Error("ENOENT"));
+      }
+      return fakeChild({ stdout: `${command} 1.2.3\n`, exitCode: 0 });
+    }
+  });
+
+  const result = await manager.checkProviders();
+  assert.equal(result.providers.claude.available, true);
+  assert.equal(result.providers.claude.command, "claude-ok");
+  assert.match(result.providers.claude.version, /1\.2\.3/);
+  assert.equal(result.providers.claude.probe, "version");
+  assert.equal(result.providers.claude.startupVerified, false);
+  assert.equal(result.providers.cursor.available, false);
+  assert.equal(result.providers.cursor.command, "cursor-missing");
+  assert.match(result.providers.cursor.error, /ENOENT/);
+});
+
+test("providers_check can run startup smoke probes", async () => {
+  const calls = [];
+  const manager = await createTaskManager({
+    stateDir: await tempDir(),
+    defaultCwd: process.cwd(),
+    providerBins: {
+      claudeP: "claude-ok",
+      cursor: "cursor-ok",
+      kimi: "kimi-ok",
+      codex: "codex-ok"
+    },
+    spawnProcess: (command, args) => {
+      calls.push({ command, args });
+      if (args.includes("--version")) {
+        return fakeChild({ stdout: `${command} version\n`, exitCode: 0 });
+      }
+      if (command === "kimi-ok") {
+        return fakeChild({ stderr: "startup failed", exitCode: 2 });
+      }
+      return fakeChild({ stdout: "AGENT_BRIDGE_PROVIDER_SMOKE_OK\n", exitCode: 0 });
+    }
+  });
+
+  const result = await manager.checkProviders({ smoke: true, timeoutMs: 1000 });
+  assert.equal(result.providers.claude.available, true);
+  assert.equal(result.providers.claude.probe, "version+smoke");
+  assert.equal(result.providers.claude.startupVerified, true);
+  assert.equal(result.providers.kimi.available, false);
+  assert.equal(result.providers.kimi.startupVerified, false);
+  assert.match(result.providers.kimi.error, /startup failed/);
+  assert.ok(calls.some((call) => call.command === "codex-ok" && call.args.some((arg) => arg.includes("AGENT_BRIDGE_PROVIDER_SMOKE_OK"))));
+});
+
+test("providers_check mirrors native Claude bin selection", async () => {
+  const previousClaude = process.env.CLAUDE_BIN;
+  const previousClaudeP = process.env.CLAUDE_P_BIN;
+  process.env.CLAUDE_BIN = "/custom/claude";
+  delete process.env.CLAUDE_P_BIN;
+  try {
+    const manager = await createTaskManager({
+      stateDir: await tempDir(),
+      defaultCwd: process.cwd(),
+      providerBins: {
+        cursor: "cursor-ok",
+        kimi: "kimi-ok",
+        codex: "codex-ok"
+      },
+      spawnProcess: (command) => fakeChild({ stdout: `${command} version\n`, exitCode: 0 })
+    });
+
+    const result = await manager.checkProviders();
+    assert.equal(result.providers.claude.command, "/custom/claude");
+    assert.equal(result.providers.claude.available, true);
+  } finally {
+    if (previousClaude === undefined) {
+      delete process.env.CLAUDE_BIN;
+    } else {
+      process.env.CLAUDE_BIN = previousClaude;
+    }
+    if (previousClaudeP === undefined) {
+      delete process.env.CLAUDE_P_BIN;
+    } else {
+      process.env.CLAUDE_P_BIN = previousClaudeP;
+    }
+  }
+});
+
 test("task manager persists lifecycle state and captures logs", async () => {
   const stateDir = await tempDir();
   const manager = await createTaskManager({
@@ -231,6 +405,9 @@ test("task manager persists lifecycle state and captures logs", async () => {
   const status = await waitForStatus(manager, task.taskId, "succeeded");
   assert.equal(status.status, "succeeded");
   assert.equal(status.title, "review task");
+  assert.equal(status.isFinal, true);
+  assert.equal(status.phase, "done");
+  assert.equal(typeof status.durationMs, "number");
 
   const logs = await manager.logs(task.taskId);
   assert.equal(logs.stdout, "done");
@@ -254,8 +431,57 @@ test("task manager records failed processes and result metadata", async () => {
   const result = await manager.result(task.taskId);
   assert.equal(result.status, "failed");
   assert.equal(result.exitCode, 7);
+  assert.equal(result.errorType, "provider_exit_error");
   assert.match(result.stderr, /boom/);
   assert.ok(Array.isArray(result.changedFiles));
+});
+
+test("task manager records timeout and provider start error types", async () => {
+  const timeoutManager = await createTaskManager({
+    stateDir: await tempDir(),
+    defaultCwd: process.cwd(),
+    spawnProcess: () => fakeChild({ stdout: "later", delayMs: 1500 })
+  });
+  const timeoutTask = await timeoutManager.spawn({ provider: "codex", mode: "review", prompt: "Review", cwd: process.cwd(), timeoutSeconds: 1 });
+  await waitForStatus(timeoutManager, timeoutTask.taskId, "failed");
+  assert.equal((await timeoutManager.result(timeoutTask.taskId)).errorType, "timeout");
+
+  const errorManager = await createTaskManager({
+    stateDir: await tempDir(),
+    defaultCwd: process.cwd(),
+    spawnProcess: () => fakeErrorChild(new Error("missing binary"))
+  });
+  const errorTask = await errorManager.spawn({ provider: "kimi", mode: "review", prompt: "Review", cwd: process.cwd() });
+  await waitForStatus(errorManager, errorTask.taskId, "failed");
+  assert.equal((await errorManager.result(errorTask.taskId)).errorType, "provider_start_error");
+});
+
+test("task_wait resolves completed tasks and times out running tasks", async () => {
+  const stateDir = await tempDir();
+  const manager = await createTaskManager({
+    stateDir,
+    defaultCwd: process.cwd(),
+    spawnProcess: () => fakeChild({ stdout: "done", exitCode: 0, delayMs: 20 })
+  });
+
+  const task = await manager.spawn({ provider: "kimi", mode: "review", prompt: "Review", cwd: process.cwd() });
+  const completed = await manager.wait(task.taskId, 1000);
+  assert.equal(completed.status, "succeeded");
+  assert.equal(completed.isFinal, true);
+  assert.equal(completed.timedOut, undefined);
+
+  const slowManager = await createTaskManager({
+    stateDir: await tempDir(),
+    defaultCwd: process.cwd(),
+    spawnProcess: () => fakeChild({ stdout: "later", delayMs: 1000 })
+  });
+  const slowTask = await slowManager.spawn({ provider: "claude", mode: "review", prompt: "Review", cwd: process.cwd() });
+  const waiting = await slowManager.wait(slowTask.taskId, 5);
+  assert.equal(waiting.status, "running");
+  assert.equal(waiting.phase, "active");
+  assert.equal(waiting.isFinal, false);
+  assert.equal(waiting.timedOut, true);
+  await slowManager.stop(slowTask.taskId);
 });
 
 test("task_stop terminates running tasks", async () => {
@@ -273,6 +499,7 @@ test("task_stop terminates running tasks", async () => {
   const task = await manager.spawn({ provider: "claude", mode: "implement", prompt: "Implement", cwd: process.cwd() });
   const stopped = await manager.stop(task.taskId);
   assert.equal(stopped.status, "stopped");
+  assert.equal(stopped.errorType, "stopped");
   assert.deepEqual(child.killCalls, ["SIGTERM"]);
 });
 
@@ -301,6 +528,7 @@ test("startup recovery marks stale running tasks failed_stale", async () => {
   const manager = await createTaskManager({ stateDir, defaultCwd: process.cwd(), spawnProcess: () => fakeChild() });
   const status = await manager.status("task_stale");
   assert.equal(status.status, "failed_stale");
+  assert.equal(status.errorType, "stale");
 });
 
 test("readCappedFile truncates large logs", async () => {
@@ -310,6 +538,30 @@ test("readCappedFile truncates large logs", async () => {
   const result = await readCappedFile(file, 10);
   assert.equal(result.text.length, 10);
   assert.equal(result.truncated, true);
+});
+
+test("task_logs supports line cursors while preserving full reads", async () => {
+  const stateDir = await tempDir();
+  const manager = await createTaskManager({
+    stateDir,
+    defaultCwd: process.cwd(),
+    spawnProcess: () => fakeChild({ stdout: "one\ntwo\nthree\n", stderr: "warn\nagain\n", exitCode: 0 })
+  });
+
+  const task = await manager.spawn({ provider: "kimi", mode: "review", prompt: "Review", cwd: process.cwd() });
+  await waitForStatus(manager, task.taskId, "succeeded");
+
+  const full = await manager.logs(task.taskId);
+  assert.equal(full.stdout, "one\ntwo\nthree\n");
+  assert.equal(full.stderr, "warn\nagain\n");
+  assert.equal(full.nextStdoutLine, 3);
+  assert.equal(full.nextStderrLine, 2);
+
+  const incremental = await manager.logs(task.taskId, undefined, { stdoutLine: 1, stderrLine: 1 });
+  assert.equal(incremental.stdout, "two\nthree\n");
+  assert.equal(incremental.stderr, "again\n");
+  assert.equal(incremental.nextStdoutLine, 3);
+  assert.equal(incremental.nextStderrLine, 2);
 });
 
 test("task_remove fails when managed worktree cleanup fails", async () => {
@@ -365,7 +617,7 @@ test("provider env preserves local CLI credentials and bins", () => {
     assert.equal(env.ANTHROPIC_BASE_URL, "http://127.0.0.1:8787");
     assert.equal(claudeEnv.ANTHROPIC_API_KEY, "test-anthropic-key");
     assert.equal(claudeEnv.ANTHROPIC_BASE_URL, undefined);
-    assert.equal(claudeEnv.CLAUDE_PROVIDER_CUSTOM_ENV, "preserved");
+    assert.equal(claudeEnv.CLAUDE_PROVIDER_CUSTOM_ENV, undefined);
   } finally {
     if (previousTerm === undefined) {
       delete process.env.TERM;
