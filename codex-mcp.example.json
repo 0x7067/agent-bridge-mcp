@@ -3,10 +3,10 @@
     "agent-bridge": {
       "command": "node",
       "args": [
-        "/Users/pedro/Documents/Codex/2026-05-31/figure-out-a-way-that-you/src/server.mjs"
+        "/Users/pedro/Development/agent-bridge-mcp/src/server.mjs"
       ],
       "env": {
-        "AGENT_BRIDGE_ALLOWED_ROOT": "/Users/pedro/Documents/Codex/2026-05-31/figure-out-a-way-that-you"
+        "AGENT_BRIDGE_ALLOWED_ROOT": "/Users/pedro/Development/agent-bridge-mcp"
       }
     }
   }

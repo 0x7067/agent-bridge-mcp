@@ -2,6 +2,12 @@
 
 Dependency-free stdio MCP server for asking local agent CLIs for second opinions or bounded delegated work from Codex.
 
+This repo lives at:
+
+```text
+/Users/pedro/Development/agent-bridge-mcp
+```
+
 ## Tools
 
 - `ask_claude`: read-only Claude Code second opinion through `claude-p`.
@@ -18,6 +24,33 @@ Dependency-free stdio MCP server for asking local agent CLIs for second opinions
 - `cursor-agent` on `PATH`, or set `CURSOR_AGENT_BIN`.
 
 `ask_kimi` covers Pi/Kimi through the existing hardened wrapper. This server intentionally does not expose raw write-capable Pi.
+
+## Install
+
+From this repo:
+
+```bash
+npm test
+npm run pack:local
+```
+
+The local package artifact is written to:
+
+```text
+outputs/agent-bridge-mcp-0.1.0.tgz
+```
+
+Install from the tarball elsewhere with:
+
+```bash
+npm install -g /Users/pedro/Development/agent-bridge-mcp/outputs/agent-bridge-mcp-0.1.0.tgz
+```
+
+Then the executable is:
+
+```bash
+agent-bridge-mcp
+```
 
 ## Safety
 
@@ -42,14 +75,23 @@ Use an absolute path to `src/server.mjs`:
     "agent-bridge": {
       "command": "node",
       "args": [
-        "/Users/pedro/Documents/Codex/2026-05-31/figure-out-a-way-that-you/src/server.mjs"
+        "/Users/pedro/Development/agent-bridge-mcp/src/server.mjs"
       ],
       "env": {
-        "AGENT_BRIDGE_ALLOWED_ROOT": "/Users/pedro/Documents/Codex/2026-05-31/figure-out-a-way-that-you"
+        "AGENT_BRIDGE_ALLOWED_ROOT": "/Users/pedro/Development/agent-bridge-mcp"
       }
     }
   }
 }
+```
+
+Or register it with Codex:
+
+```bash
+codex mcp add \
+  --env AGENT_BRIDGE_ALLOWED_ROOT=/Users/pedro/Development/agent-bridge-mcp \
+  agent-bridge \
+  -- node /Users/pedro/Development/agent-bridge-mcp/src/server.mjs
 ```
 
 ## Examples
@@ -73,11 +115,17 @@ Ask Kimi with local context:
   "name": "ask_kimi",
   "arguments": {
     "prompt": "Review this MCP server implementation.",
-    "cwd": "/Users/pedro/Documents/Codex/2026-05-31/figure-out-a-way-that-you",
+    "cwd": "/Users/pedro/Development/agent-bridge-mcp",
     "contextFiles": ["src/server.mjs", "test/server.test.mjs"]
   }
 }
 ```
+
+Live smoke-test prompts used during verification:
+
+- `ask_claude`: returned `CLAUDE_BRIDGE_LIVE_OK`
+- `ask_kimi`: returned `KIMI_BRIDGE_LIVE_OK`
+- `ask_cursor`: returned `CURSOR_BRIDGE_LIVE_OK`
 
 Run tests:
 
