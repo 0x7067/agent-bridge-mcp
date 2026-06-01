@@ -16,6 +16,7 @@ This repo lives at:
 
 - `providers_list`: list first-class providers and their capabilities.
 - `providers_check`: check availability of each provider with `--version`, and optionally run startup smoke probes.
+- `doctor`: return a structured setup report for server, workspace, state, providers, Claude host-runner, and recommendations.
 - `task_preview`: preview the command, args, and environment that would be used for a task without spawning it.
 - `task_spawn`: start a background task and return a `taskId`.
 - `task_list`: list tracked tasks.
@@ -33,15 +34,30 @@ exact command, arguments, and environment keys before spawning.
 
 Recommended caller workflow:
 
-1. Call `providers_check` to catch missing or misconfigured CLIs before delegation. Use `smoke: true` when debugging provider startup, not just binary presence.
-2. Call `task_preview` when debugging provider flags or cwd/env behavior.
-3. Call `task_spawn` for the real task.
-4. Call `task_wait` with a bounded `timeoutMs`; if it times out, use `task_logs`
+1. Call `doctor` first when setup, workspace, state, provider, or Claude host-runner readiness is uncertain.
+2. Call `providers_check` to catch missing or misconfigured CLIs before delegation. Use `smoke: true` when debugging provider startup, not just binary presence.
+3. Call `task_preview` when debugging provider flags or cwd/env behavior.
+4. Call `task_spawn` for the real task.
+5. Call `task_wait` with a bounded `timeoutMs`; if it times out, use `task_logs`
    with line cursors to inspect progress without rereading the whole log.
-5. Once the task is final, call `task_result` once for logs, git status, diff,
+6. Once the task is final, call `task_result` once for logs, git status, diff,
    changed files, exit metadata, structured `errorType`, and the derived
    `reviewPacket` inspection summary.
-6. Call `task_remove` intentionally after any managed worktree has been inspected.
+7. Call `task_remove` intentionally after any managed worktree has been inspected.
+
+For setup troubleshooting, `doctor` is the broad first check:
+
+```json
+{
+  "name": "doctor",
+  "arguments": {
+    "cwd": "/path/to/workspace",
+    "providers": ["claude", "codex"]
+  }
+}
+```
+
+Use `summary.status` to triage: `error` means fix workspace, state, or host-runner blockers first; `warning` usually means a provider or optional readiness concern needs follow-up; `ok` means the bridge setup checks did not find a setup problem. `doctor` does not verify delegated task output or project tests.
 
 Real-world delegation workflow:
 

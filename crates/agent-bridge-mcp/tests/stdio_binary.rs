@@ -6,6 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 static PROVIDER_READINESS_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -45,6 +46,10 @@ impl McpClient {
 
     fn start_with_legacy_allowed_root_only(env: &FixtureEnv) -> Self {
         Self::start_with_options(env, false, None, Some(env.root.clone()), BTreeMap::new())
+    }
+
+    fn start_without_workspace(env: &FixtureEnv) -> Self {
+        Self::start_with_options(env, false, None, None, BTreeMap::new())
     }
 
     fn start_with_extra_env(env: &FixtureEnv, extra_env: BTreeMap<String, OsString>) -> Self {
@@ -363,11 +368,12 @@ fn stdio_protocol_and_tool_schema_smoke() {
 
     let tools = client.request("tools/list", json!({}));
     let tools = tools["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 11);
+    assert_eq!(tools.len(), 12);
     let task_preview = tools
         .iter()
         .find(|tool| tool["name"] == "task_preview")
         .unwrap();
+    let doctor = tools.iter().find(|tool| tool["name"] == "doctor").unwrap();
     let providers_check = tools
         .iter()
         .find(|tool| tool["name"] == "providers_check")
@@ -383,6 +389,12 @@ fn stdio_protocol_and_tool_schema_smoke() {
     assert_eq!(
         providers_check["inputSchema"]["properties"]["providerTimeoutMs"]["additionalProperties"]["maximum"],
         90000
+    );
+    assert_eq!(doctor["inputSchema"]["additionalProperties"], json!(false));
+    assert_eq!(doctor["inputSchema"]["required"], json!([]));
+    assert_eq!(
+        doctor["inputSchema"]["properties"]["providers"]["items"]["enum"],
+        json!(["claude", "cursor", "kimi", "codex"])
     );
     assert_eq!(
         task_preview["inputSchema"]["properties"]["provider"]["enum"],
@@ -568,6 +580,21 @@ fn stdio_tools_call_keeps_envelope_and_argument_validation_strict() {
             .unwrap()
             .contains("Unknown argument")
     );
+
+    let unknown_doctor_argument = client.tool_response_with_params(json!({
+        "name": "doctor",
+        "arguments": {
+            "smoke": true,
+            "maxTurns": 2
+        }
+    }));
+    assert_eq!(unknown_doctor_argument["result"]["isError"], true);
+    assert!(
+        unknown_doctor_argument["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Unknown argument for doctor: maxTurns")
+    );
 }
 
 #[test]
@@ -682,6 +709,243 @@ fn stdio_providers_preview_and_safety_checks() {
 }
 
 #[test]
+fn stdio_doctor_default_report_shape_and_side_effects() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    assert_eq!(client.tool("task_list", json!({}))["tasks"], json!([]));
+
+    let doctor = client.tool("doctor", json!({}));
+    for section in [
+        "summary",
+        "server",
+        "workspace",
+        "state",
+        "providers",
+        "claudeHostRunner",
+        "recommendations",
+    ] {
+        assert!(
+            doctor.get(section).is_some(),
+            "missing doctor section: {section}"
+        );
+    }
+    assert!(matches!(
+        doctor["summary"]["status"].as_str(),
+        Some("ok" | "warning" | "error")
+    ));
+    assert_eq!(doctor["server"]["name"], "agent-bridge-mcp");
+    assert_eq!(doctor["server"]["protocolVersion"], "2024-11-05");
+    assert_eq!(doctor["providers"]["claude"]["startupVerified"], false);
+    assert_eq!(doctor["providers"]["codex"]["startupVerified"], false);
+    assert_eq!(doctor["claudeHostRunner"]["status"], "not_configured");
+    assert_eq!(doctor["claudeHostRunner"]["launchStrategy"], "direct");
+    assert!(doctor["recommendations"].is_array());
+
+    assert_eq!(client.tool("task_list", json!({}))["tasks"], json!([]));
+    let provider_stdin = std::fs::read_to_string(env.log_dir.join("stdin.txt")).unwrap();
+    assert!(!provider_stdin.contains("AGENT_BRIDGE_PROVIDER_SMOKE_OK"));
+}
+
+#[test]
+fn stdio_doctor_redacts_secret_environment_values() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let doctor = client.tool("doctor", json!({"cwd": env.root}));
+    let server = &doctor["server"];
+    assert_eq!(server["environment"]["ANTHROPIC_API_KEY"]["present"], true);
+    assert_eq!(
+        server["environment"]["ANTHROPIC_AUTH_TOKEN"]["present"],
+        true
+    );
+    assert_eq!(
+        server["environment"]["CLAUDE_CODE_OAUTH_TOKEN"]["present"],
+        true
+    );
+    assert_eq!(
+        server["environment"]["ANTHROPIC_API_KEY"]["value"],
+        "<redacted>"
+    );
+
+    let serialized = serde_json::to_string(&doctor).unwrap();
+    assert!(!serialized.contains("test-key"));
+    assert!(!serialized.contains("test-auth-token"));
+    assert!(!serialized.contains("test-code-oauth-token"));
+}
+
+#[test]
+fn stdio_doctor_summary_status_reflects_errors_and_warnings() {
+    let env = fixture_env();
+
+    let mut ok_client = McpClient::start(&env);
+    let ok = ok_client.tool("doctor", json!({"cwd": env.root}));
+    assert_eq!(ok["summary"]["status"], "ok");
+
+    let mut warning_env = BTreeMap::new();
+    warning_env.insert("CODEX_BIN".to_string(), OsString::from("/missing/codex"));
+    let mut warning_client = McpClient::start_with_extra_env(&env, warning_env);
+    let warning = warning_client.tool("doctor", json!({"cwd": env.root, "providers": ["codex"]}));
+    assert_eq!(warning["summary"]["status"], "warning");
+
+    let mut error_client = McpClient::start_without_workspace(&env);
+    let error = error_client.tool("doctor", json!({"cwd": env.root}));
+    assert_eq!(error["summary"]["status"], "error");
+    assert!(
+        error["recommendations"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("AGENT_BRIDGE_WORKSPACES")
+    );
+}
+
+#[test]
+fn stdio_doctor_reports_workspace_diagnostic_errors() {
+    let env = fixture_env();
+    let outside = temp_dir("agent-bridge-doctor-outside");
+    let mut client = McpClient::start(&env);
+    let outside_report = client.tool("doctor", json!({"cwd": outside}));
+    assert_eq!(outside_report["workspace"]["status"], "error");
+    assert!(
+        outside_report["workspace"]["cwd"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("outside configured workspaces")
+    );
+
+    let missing = env.root.join("missing-cwd");
+    let invalid_cwd = client.tool("doctor", json!({"cwd": missing}));
+    assert_eq!(invalid_cwd["workspace"]["status"], "error");
+    assert_eq!(
+        invalid_cwd["workspace"]["cwd"]["insideConfiguredWorkspace"],
+        false
+    );
+
+    let invalid_root = env.root.join("missing-root");
+    let mut invalid_client =
+        McpClient::start_with_workspace_value(&env, OsString::from(invalid_root));
+    let invalid_root_report = invalid_client.tool("doctor", json!({"cwd": env.root}));
+    assert_eq!(invalid_root_report["workspace"]["status"], "error");
+}
+
+#[test]
+fn stdio_doctor_reports_state_dir_creation_and_registry_errors() {
+    let env = fixture_env();
+    let missing_state_dir = env.root.join("new-state-dir");
+    let mut extra_env = BTreeMap::new();
+    extra_env.insert(
+        "AGENT_BRIDGE_STATE_DIR".to_string(),
+        OsString::from(&missing_state_dir),
+    );
+    let mut client = McpClient::start_with_extra_env(&env, extra_env);
+    let created = client.tool("doctor", json!({"cwd": env.root}));
+    assert_eq!(created["state"]["status"], "ok");
+    assert!(missing_state_dir.is_dir());
+
+    std::fs::write(env.state_dir.join("registry.json"), "{not-json").unwrap();
+    let mut invalid_client = McpClient::start(&env);
+    let invalid = invalid_client.tool("doctor", json!({"cwd": env.root}));
+    assert_eq!(invalid["state"]["status"], "error");
+    assert!(
+        invalid["state"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("registry")
+    );
+}
+
+#[test]
+fn stdio_doctor_orders_recommendations_from_blockers_to_followups() {
+    let env = fixture_env();
+    std::fs::write(env.state_dir.join("registry.json"), "{not-json").unwrap();
+    let mut extra_env = BTreeMap::new();
+    extra_env.insert(
+        "AGENT_BRIDGE_CLAUDE_HOST_SOCKET".to_string(),
+        OsString::from(env.root.join("missing-host.sock")),
+    );
+    extra_env.insert("CODEX_BIN".to_string(), OsString::from("/missing/codex"));
+    let mut client = McpClient::start_with_extra_env(&env, extra_env);
+
+    let report = client.tool("doctor", json!({"cwd": env.root, "providers": ["codex"]}));
+    let messages: Vec<_> = report["recommendations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|recommendation| recommendation["message"].as_str().unwrap())
+        .collect();
+
+    assert!(messages[0].contains("AGENT_BRIDGE_STATE_DIR"));
+    assert!(messages[1].contains("host runner"));
+    assert!(messages[2].contains("providers"));
+}
+
+#[test]
+fn stdio_doctor_reuses_provider_readiness_controls() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let default = client.tool("doctor", json!({"cwd": env.root, "providers": ["codex"]}));
+    assert_eq!(
+        provider_keys(&json!({"providers": default["providers"]})),
+        vec!["codex"]
+    );
+    assert_eq!(
+        default["providers"]["codex"]["version"],
+        "fake-provider 1.0.0"
+    );
+    assert_eq!(default["providers"]["codex"]["startupVerified"], false);
+    assert!(
+        default["providers"]["codex"]
+            .get("smokeDurationMs")
+            .is_none()
+    );
+
+    let smoke = client.tool(
+        "doctor",
+        json!({"cwd": env.root, "providers": ["codex"], "smoke": true, "aggregateTimeoutMs": 5000, "providerTimeoutMs": {"codex": 5000}}),
+    );
+    assert_eq!(smoke["providers"]["codex"]["startupVerified"], true);
+    assert!(smoke["providers"]["codex"]["smokeDurationMs"].is_number());
+}
+
+#[test]
+fn stdio_doctor_deduplicates_provider_filter_before_checking() {
+    let env = fixture_env();
+    write_fake_provider(
+        &env,
+        &[
+            "#!/bin/sh",
+            "stdin=$(cat)",
+            "if [ -n \"$AGENT_BRIDGE_STATE_DIR\" ]; then",
+            "  mkdir -p \"$AGENT_BRIDGE_STATE_DIR/provider-log\"",
+            "  printf '%s\\n' \"$*\" >> \"$AGENT_BRIDGE_STATE_DIR/provider-log/argv.txt\"",
+            "  printf '%s' \"$stdin\" > \"$AGENT_BRIDGE_STATE_DIR/provider-log/stdin.txt\"",
+            "fi",
+            "if [ \"$1\" = \"--version\" ]; then",
+            "  echo fake-provider 1.0.0",
+            "  exit 0",
+            "fi",
+            "printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"AGENT_BRIDGE_PROVIDER_SMOKE_OK\"}'",
+            "exit 0",
+            "",
+        ],
+    );
+    let mut client = McpClient::start(&env);
+
+    let report = client.tool(
+        "doctor",
+        json!({"cwd": env.root, "providers": ["cursor", "cursor"]}),
+    );
+    assert_eq!(
+        provider_keys(&json!({"providers": report["providers"]})),
+        vec!["cursor"]
+    );
+
+    let argv = std::fs::read_to_string(env.log_dir.join("argv.txt")).unwrap();
+    assert_eq!(argv.lines().filter(|line| *line == "--version").count(), 1);
+}
+
+#[test]
 fn stdio_claude_host_runner_preview_and_unavailable_smoke_are_explicit() {
     let env = fixture_env();
     let mut extra_env = BTreeMap::new();
@@ -712,6 +976,22 @@ fn stdio_claude_host_runner_preview_and_unavailable_smoke_are_explicit() {
         claude["diagnostic"]["failureCategory"],
         "host_runner_unavailable"
     );
+}
+
+#[test]
+fn stdio_doctor_reports_claude_host_runner_states() {
+    let env = fixture_env();
+
+    let mut missing_env = BTreeMap::new();
+    missing_env.insert(
+        "AGENT_BRIDGE_CLAUDE_HOST_SOCKET".to_string(),
+        OsString::from(env.root.join("missing-host.sock")),
+    );
+    let mut missing_client = McpClient::start_with_extra_env(&env, missing_env);
+    let started = Instant::now();
+    let missing = missing_client.tool("doctor", json!({"cwd": env.root, "providers": ["codex"]}));
+    assert_eq!(missing["claudeHostRunner"]["status"], "error");
+    assert!(started.elapsed() < Duration::from_millis(1500));
 }
 
 #[test]

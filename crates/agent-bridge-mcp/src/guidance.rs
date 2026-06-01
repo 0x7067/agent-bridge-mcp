@@ -181,22 +181,24 @@ fn resource_definition(uri: &str, name: &str, description: &str) -> Value {
 const REVIEW_PROMPT: &str = r#"Use Agent Bridge for a read-only provider review.
 
 Suggested flow:
-1. Call providers_check when provider readiness is uncertain.
-2. Use task_spawn with mode "review" or "research" and a bounded prompt.
-3. Poll task_wait with a bounded timeout, then task_logs if more progress detail is needed.
-4. Read task_result once the task is final and inspect logs, gitStatus, diff, changedFiles, exit metadata, and errorType.
-5. Treat provider output as evidence; the main caller remains responsible for deciding whether findings are valid."#;
+1. Call doctor first when setup, workspace, state, provider, or host-runner readiness is uncertain.
+2. Call providers_check when provider readiness needs focused follow-up.
+3. Use task_spawn with mode "review" or "research" and a bounded prompt.
+4. Poll task_wait with a bounded timeout, then task_logs if more progress detail is needed.
+5. Read task_result once the task is final and inspect logs, gitStatus, diff, changedFiles, exit metadata, and errorType.
+6. Treat provider output as evidence; the main caller remains responsible for deciding whether findings are valid."#;
 
 const IMPLEMENTATION_PROMPT: &str = r#"Use Agent Bridge for isolated implementation work.
 
 Suggested flow:
-1. Call providers_check first if provider readiness is uncertain.
-2. Call task_preview when command flags, cwd, environment, or isolation need inspection.
-3. Call task_spawn with mode "implement", a clear task prompt, cwd under an allowed workspace, and isolation "worktree" by default.
-4. Use task_wait, task_logs, and task_status to monitor the task without assuming it is finished.
-5. When final, call task_result and inspect the report, logs, gitStatus, diff, changedFiles, exit metadata, and errorType.
-6. The main caller remains responsible for running relevant tests, lint, typecheck, build, or OpenSpec validation before claiming work complete.
-7. Call task_remove only after the managed worktree has been inspected and cleanup is intentional."#;
+1. Call doctor first when setup, workspace, state, provider, or host-runner readiness is uncertain.
+2. Call providers_check if provider readiness needs focused follow-up.
+3. Call task_preview when command flags, cwd, environment, or isolation need inspection.
+4. Call task_spawn with mode "implement", a clear task prompt, cwd under an allowed workspace, and isolation "worktree" by default.
+5. Use task_wait, task_logs, and task_status to monitor the task without assuming it is finished.
+6. When final, call task_result and inspect the report, logs, gitStatus, diff, changedFiles, exit metadata, and errorType.
+7. The main caller remains responsible for running relevant tests, lint, typecheck, build, or OpenSpec validation before claiming work complete.
+8. Call task_remove only after the managed worktree has been inspected and cleanup is intentional."#;
 
 const INSPECT_RESULT_PROMPT: &str = r#"Inspect an Agent Bridge task result.
 
@@ -225,11 +227,12 @@ Use this when Claude Code auth depends on macOS Keychain or another host resourc
 
 Suggested flow:
 1. Start `agent-bridge-mcp claude-host-runner <socket>` outside the Codex sandbox with the same AGENT_BRIDGE_WORKSPACES value used by the MCP server.
-2. Use the host-runner `ping` request or a Claude-only providers_check smoke to confirm readiness.
-3. If diagnostics report workspace_policy_mismatch, restart the host runner after updating AGENT_BRIDGE_WORKSPACES.
-4. Stop the runner with SIGTERM or SIGINT so active Claude child processes are terminated and reaped.
-5. If startup finds a stale socket, let the runner remove it only when the connection probe confirms no live runner is listening.
-6. If AGENT_BRIDGE_CLAUDE_HOST_SOCKET is configured but unavailable, do not silently fall back; inspect diagnostics and restart the runner."#;
+2. Call doctor from the MCP client to confirm the server sees the socket, workspace policy, and host-runner status.
+3. Use the host-runner `ping` request or a Claude-only providers_check smoke for focused follow-up when doctor reports a host-runner problem.
+4. If diagnostics report workspace_policy_mismatch, restart the host runner after updating AGENT_BRIDGE_WORKSPACES.
+5. Stop the runner with SIGTERM or SIGINT so active Claude child processes are terminated and reaped.
+6. If startup finds a stale socket, let the runner remove it only when the connection probe confirms no live runner is listening.
+7. If AGENT_BRIDGE_CLAUDE_HOST_SOCKET is configured but unavailable, do not silently fall back; inspect diagnostics and restart the runner."#;
 
 const DOGFOOD_WORKFLOWS_PROMPT: &str = r#"Run Agent Bridge dogfood workflows.
 
@@ -256,13 +259,14 @@ const CALLER_WORKFLOW_RESOURCE: &str = r#"# Agent Bridge Caller Workflow
 Use Agent Bridge when a separate coding agent can provide useful research, review, command execution, or isolated implementation work.
 
 Recommended flow:
-1. Call `providers_check` to catch missing or misconfigured provider CLIs. Use smoke checks when debugging startup.
-2. Call `task_preview` when cwd, flags, environment, prompt transport, or worktree isolation need inspection.
-3. Call `task_spawn` for the real delegated task.
-4. Call `task_wait` with a bounded timeout. If it times out, call `task_logs` with line cursors to inspect progress.
-5. Once final, call `task_result` for `reviewPacket`, logs, git status, diff, changed files, exit metadata, diagnostics, and `errorType`.
-6. Treat provider output as evidence for the main caller, not as final verification.
-7. Call `task_remove` intentionally after any managed worktree has been inspected.
+1. Call `doctor` first when setup, workspace, state, provider, or host-runner readiness is uncertain.
+2. Call `providers_check` to catch missing or misconfigured provider CLIs. Use smoke checks when debugging startup.
+3. Call `task_preview` when cwd, flags, environment, prompt transport, or worktree isolation need inspection.
+4. Call `task_spawn` for the real delegated task.
+5. Call `task_wait` with a bounded timeout. If it times out, call `task_logs` with line cursors to inspect progress.
+6. Once final, call `task_result` for `reviewPacket`, logs, git status, diff, changed files, exit metadata, diagnostics, and `errorType`.
+7. Treat provider output as evidence for the main caller, not as final verification.
+8. Call `task_remove` intentionally after any managed worktree has been inspected.
 "#;
 
 const SAFETY_RESOURCE: &str = r#"# Agent Bridge Safety Guidance
@@ -299,7 +303,7 @@ Use `agent-bridge-mcp claude-host-runner <socket>` when Claude provider calls ne
 
 Lifecycle:
 1. Start the runner outside the sandbox with the same `AGENT_BRIDGE_WORKSPACES` value as the MCP server.
-2. Confirm readiness with the host-runner `ping` request or a Claude-only `providers_check` smoke.
+2. Confirm readiness with `doctor`, then use the host-runner `ping` request or a Claude-only `providers_check` smoke for focused follow-up.
 3. Configure the MCP server with `AGENT_BRIDGE_CLAUDE_HOST_SOCKET`.
 4. Restart the runner after workspace-policy changes; a `workspace_policy_mismatch` diagnostic means the runner and MCP server disagree about `AGENT_BRIDGE_WORKSPACES`.
 5. Stop the runner with SIGTERM or SIGINT so it stops accepting new connections and terminates active Claude children.

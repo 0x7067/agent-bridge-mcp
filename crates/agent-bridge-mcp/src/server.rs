@@ -68,6 +68,7 @@ async fn call_tool(params: Value) -> Value {
             }
             ToolName::ProvidersList => tool_json(json!({ "providers": provider::capabilities() })),
             ToolName::ProvidersCheck => tool_result(providers_check(params.arguments).await),
+            ToolName::Doctor => tool_result(doctor(params.arguments).await),
             ToolName::TaskPreview => match task_preview(params.arguments) {
                 Ok(payload) => tool_json(payload),
                 Err(error) => tool_error(error),
@@ -170,6 +171,13 @@ fn reject_unknown_arguments(name: ToolName, arguments: &Value) -> Result<(), Str
             "aggregateTimeoutMs",
             "providerTimeoutMs",
         ][..],
+        ToolName::Doctor => &[
+            "smoke",
+            "providers",
+            "aggregateTimeoutMs",
+            "providerTimeoutMs",
+            "cwd",
+        ][..],
         ToolName::TaskPreview | ToolName::TaskSpawn => &[
             "provider",
             "mode",
@@ -207,6 +215,7 @@ fn tool_name_str(name: ToolName) -> &'static str {
     match name {
         ToolName::ProvidersList => "providers_list",
         ToolName::ProvidersCheck => "providers_check",
+        ToolName::Doctor => "doctor",
         ToolName::TaskPreview => "task_preview",
         ToolName::TaskSpawn => "task_spawn",
         ToolName::TaskList => "task_list",
@@ -228,6 +237,364 @@ struct ProvidersCheckInput {
     providers: Option<Vec<ProviderKind>>,
     aggregate_timeout_ms: Option<i64>,
     provider_timeout_ms: Option<BTreeMap<String, i64>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DoctorInput {
+    #[serde(default)]
+    smoke: bool,
+    providers: Option<Vec<ProviderKind>>,
+    aggregate_timeout_ms: Option<i64>,
+    provider_timeout_ms: Option<BTreeMap<String, i64>>,
+    cwd: Option<String>,
+}
+
+async fn doctor(arguments: Value) -> Result<Value, String> {
+    let input: DoctorInput =
+        serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+    let workspace = doctor_workspace(input.cwd.as_deref());
+    let state = doctor_state();
+    let claude_host_runner = doctor_claude_host_runner().await;
+    let provider_report = providers_check(doctor_provider_arguments(&input)).await?;
+    let providers = provider_report
+        .get("providers")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let provider_status = providers_status(&providers);
+    let recommendations = doctor_recommendations(
+        workspace["status"].as_str().unwrap_or("ok"),
+        state["status"].as_str().unwrap_or("ok"),
+        provider_status,
+        claude_host_runner["status"].as_str().unwrap_or("ok"),
+    );
+    let summary_status = aggregate_status([
+        workspace["status"].as_str().unwrap_or("ok"),
+        state["status"].as_str().unwrap_or("ok"),
+        provider_status,
+        claude_host_runner["status"].as_str().unwrap_or("ok"),
+    ]);
+
+    Ok(json!({
+        "summary": {
+            "status": summary_status,
+            "checkedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        },
+        "server": {
+            "name": "agent-bridge-mcp",
+            "version": "0.1.0",
+            "protocolVersion": PROTOCOL_VERSION,
+            "environment": doctor_environment()
+        },
+        "workspace": workspace,
+        "state": state,
+        "providers": providers,
+        "claudeHostRunner": claude_host_runner,
+        "recommendations": recommendations
+    }))
+}
+
+fn doctor_provider_arguments(input: &DoctorInput) -> Value {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("smoke".to_string(), json!(input.smoke));
+    if let Some(providers) = input.providers.as_ref() {
+        arguments.insert("providers".to_string(), json!(providers));
+    }
+    if let Some(aggregate_timeout_ms) = input.aggregate_timeout_ms {
+        arguments.insert(
+            "aggregateTimeoutMs".to_string(),
+            json!(aggregate_timeout_ms),
+        );
+    }
+    if let Some(provider_timeout_ms) = input.provider_timeout_ms.as_ref() {
+        arguments.insert("providerTimeoutMs".to_string(), json!(provider_timeout_ms));
+    }
+    Value::Object(arguments)
+}
+
+fn doctor_workspace(cwd: Option<&str>) -> Value {
+    let roots = match doctor_configured_workspace_roots() {
+        Ok(roots) => roots,
+        Err(error) => {
+            return json!({
+                "status": "error",
+                "error": error
+            });
+        }
+    };
+    let cwd_report = match safe_cwd(cwd) {
+        Ok(path) => json!({
+            "status": "ok",
+            "path": path,
+            "insideConfiguredWorkspace": true
+        }),
+        Err(error) => json!({
+            "status": "error",
+            "error": error,
+            "insideConfiguredWorkspace": false
+        }),
+    };
+    let status = if cwd_report["status"] == "error" {
+        "error"
+    } else {
+        "ok"
+    };
+    json!({
+        "status": status,
+        "roots": roots
+            .iter()
+            .map(|root| root.display().to_string())
+            .collect::<Vec<_>>(),
+        "cwd": cwd_report
+    })
+}
+
+fn doctor_configured_workspace_roots() -> Result<Vec<PathBuf>, String> {
+    let Some(value) = env::var_os("AGENT_BRIDGE_WORKSPACES") else {
+        return Err(
+            "AGENT_BRIDGE_WORKSPACES is required for doctor workspace diagnostics".to_string(),
+        );
+    };
+    let roots: Vec<PathBuf> = env::split_paths(&value)
+        .filter(|path| !path.as_os_str().is_empty())
+        .collect();
+    if roots.is_empty() {
+        return Err(
+            "AGENT_BRIDGE_WORKSPACES is required for doctor workspace diagnostics".to_string(),
+        );
+    }
+    roots
+        .into_iter()
+        .map(|root| root.canonicalize().map_err(|error| error.to_string()))
+        .collect()
+}
+
+fn doctor_environment() -> Value {
+    const KEYS: &[&str] = &[
+        "AGENT_BRIDGE_WORKSPACES",
+        "AGENT_BRIDGE_STATE_DIR",
+        "AGENT_BRIDGE_CLAUDE_HOST_SOCKET",
+        "CODEX_BIN",
+        "CURSOR_AGENT_BIN",
+        "PI_BIN",
+        "CLAUDE_BIN",
+        "CLAUDE_P_BIN",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+    ];
+    let mut environment = serde_json::Map::new();
+    for key in KEYS {
+        let present = env::var_os(key).is_some_and(|value| !value.is_empty());
+        let mut entry = json!({ "present": present });
+        if present && is_sensitive_env_key(key) {
+            entry["value"] = json!("<redacted>");
+        }
+        environment.insert((*key).to_string(), entry);
+    }
+    Value::Object(environment)
+}
+
+fn is_sensitive_env_key(key: &str) -> bool {
+    let key = key.to_ascii_uppercase();
+    ["TOKEN", "API_KEY", "OAUTH", "AUTH", "PASSWORD", "SECRET"]
+        .iter()
+        .any(|needle| key.contains(needle))
+}
+
+fn doctor_state() -> Value {
+    let path = env::var("AGENT_BRIDGE_STATE_DIR")
+        .map(|value| expand_home(&value))
+        .unwrap_or_else(|_| expand_home("~/.agent-bridge"));
+    if let Err(error) = std::fs::create_dir_all(&path) {
+        return json!({
+            "status": "error",
+            "path": path.display().to_string(),
+            "exists": false,
+            "error": error.to_string()
+        });
+    }
+    match std::fs::metadata(&path) {
+        Ok(metadata) if metadata.is_dir() => match doctor_registry_status(&path) {
+            Ok(()) => json!({
+                "status": "ok",
+                "path": path.display().to_string(),
+                "exists": true
+            }),
+            Err(error) => json!({
+                "status": "error",
+                "path": path.display().to_string(),
+                "exists": true,
+                "error": error
+            }),
+        },
+        Ok(_) => json!({
+            "status": "error",
+            "path": path.display().to_string(),
+            "exists": true,
+            "error": "state path is not a directory"
+        }),
+        Err(error) => json!({
+            "status": "error",
+            "path": path.display().to_string(),
+            "exists": false,
+            "error": error.to_string()
+        }),
+    }
+}
+
+fn doctor_registry_status(state_dir: &Path) -> Result<(), String> {
+    let registry_path = state_dir.join("registry.json");
+    match std::fs::read_to_string(&registry_path) {
+        Ok(contents) => serde_json::from_str::<Value>(&contents)
+            .map(|_| ())
+            .map_err(|error| format!("registry parse error: {error}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("registry read error: {error}")),
+    }
+}
+
+async fn doctor_claude_host_runner() -> Value {
+    let Some(socket_path) = crate::claude_host::socket_path_from_env() else {
+        return json!({
+            "status": "not_configured",
+            "configured": false,
+            "launchStrategy": "direct"
+        });
+    };
+    let started = Instant::now();
+    match timeout(
+        Duration::from_millis(1_000),
+        crate::claude_host::ping(&socket_path),
+    )
+    .await
+    {
+        Ok(Ok(response)) => doctor_claude_host_runner_response(
+            &socket_path,
+            started.elapsed().as_millis() as u64,
+            response,
+        ),
+        Ok(Err(error)) => json!({
+            "status": "error",
+            "configured": true,
+            "launchStrategy": "host_runner",
+            "socketPath": socket_path.display().to_string(),
+            "pingDurationMs": started.elapsed().as_millis() as u64,
+            "error": error
+        }),
+        Err(_) => json!({
+            "status": "error",
+            "configured": true,
+            "launchStrategy": "host_runner",
+            "socketPath": socket_path.display().to_string(),
+            "pingDurationMs": started.elapsed().as_millis() as u64,
+            "error": "host runner ping timed out after 1000ms"
+        }),
+    }
+}
+
+fn doctor_claude_host_runner_response(
+    socket_path: &Path,
+    ping_duration_ms: u64,
+    response: crate::claude_host::HostResponse,
+) -> Value {
+    if response.ok {
+        let mut report = json!({
+            "status": "ok",
+            "configured": true,
+            "launchStrategy": "host_runner",
+            "socketPath": socket_path.display().to_string(),
+            "pingDurationMs": ping_duration_ms
+        });
+        if let Some(crate::claude_host::HostResult::Pong {
+            protocol_version,
+            workspace_policy_id,
+            ready,
+        }) = response.result
+        {
+            report["protocolVersion"] = json!(protocol_version);
+            report["workspacePolicyId"] = json!(workspace_policy_id);
+            report["ready"] = json!(ready);
+        }
+        return report;
+    }
+    json!({
+        "status": "error",
+        "configured": true,
+        "launchStrategy": "host_runner",
+        "socketPath": socket_path.display().to_string(),
+        "pingDurationMs": ping_duration_ms,
+        "errorCode": response.error.as_ref().map(|error| error.code.as_str()).unwrap_or("host_runner_error"),
+        "error": response.error.map(|error| error.message).unwrap_or_else(|| "host runner ping failed".to_string())
+    })
+}
+
+fn providers_status(providers: &Value) -> &'static str {
+    let Some(providers) = providers.as_object() else {
+        return "error";
+    };
+    if providers.values().any(|provider| {
+        provider
+            .get("available")
+            .and_then(Value::as_bool)
+            .is_some_and(|available| !available)
+    }) {
+        "warning"
+    } else {
+        "ok"
+    }
+}
+
+fn doctor_recommendations(
+    workspace_status: &str,
+    state_status: &str,
+    provider_status: &str,
+    host_status: &str,
+) -> Value {
+    let mut recommendations = Vec::new();
+    if workspace_status == "error" {
+        recommendations.push(json!({
+            "severity": "error",
+            "message": "Set AGENT_BRIDGE_WORKSPACES or pass a cwd inside a configured workspace."
+        }));
+    }
+    if state_status == "error" {
+        recommendations.push(json!({
+            "severity": "error",
+            "message": "Fix AGENT_BRIDGE_STATE_DIR so Agent Bridge can read and write task state."
+        }));
+    } else if state_status == "warning" {
+        recommendations.push(json!({
+            "severity": "warning",
+            "message": "Create AGENT_BRIDGE_STATE_DIR before spawning delegated tasks."
+        }));
+    }
+    if host_status == "error" {
+        recommendations.push(json!({
+            "severity": "warning",
+            "message": "Restart or reconfigure the Claude host runner with matching AGENT_BRIDGE_WORKSPACES, then rerun doctor."
+        }));
+    }
+    if provider_status == "warning" {
+        recommendations.push(json!({
+            "severity": "warning",
+            "message": "Install or configure unavailable providers, or pass providers to focus doctor output."
+        }));
+    }
+    Value::Array(recommendations)
+}
+
+fn aggregate_status<'a>(statuses: impl IntoIterator<Item = &'a str>) -> &'static str {
+    let mut aggregate = "ok";
+    for status in statuses {
+        match status {
+            "error" => return "error",
+            "warning" if aggregate == "ok" => aggregate = "warning",
+            _ => {}
+        }
+    }
+    aggregate
 }
 
 async fn providers_check(arguments: Value) -> Result<Value, String> {
@@ -977,6 +1344,20 @@ fn configured_workspace_roots() -> Result<Vec<PathBuf>, String> {
         .collect()
 }
 
+fn expand_home(value: &str) -> PathBuf {
+    if value == "~" {
+        return env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(value));
+    }
+    if let Some(rest) = value.strip_prefix("~/") {
+        return env::var("HOME")
+            .map(|home| PathBuf::from(home).join(rest))
+            .unwrap_or_else(|_| PathBuf::from(value));
+    }
+    PathBuf::from(value)
+}
+
 fn is_inside(candidate: &Path, root: &Path) -> bool {
     candidate == root || candidate.strip_prefix(root).is_ok()
 }
@@ -1009,4 +1390,78 @@ fn require_task_id(arguments: &Value) -> Result<String, String> {
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .ok_or_else(|| "taskId is required".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doctor_host_runner_response_reports_successful_ping_metadata() {
+        let report = doctor_claude_host_runner_response(
+            Path::new("/tmp/agent-bridge-host.sock"),
+            12,
+            crate::claude_host::HostResponse {
+                version: 1,
+                ok: true,
+                result: Some(crate::claude_host::HostResult::Pong {
+                    protocol_version: 1,
+                    workspace_policy_id: "fixture-policy".to_string(),
+                    ready: true,
+                }),
+                error: None,
+            },
+        );
+
+        assert_eq!(report["status"], "ok");
+        assert_eq!(report["protocolVersion"], 1);
+        assert_eq!(report["workspacePolicyId"], "fixture-policy");
+        assert_eq!(report["ready"], true);
+    }
+
+    #[test]
+    fn doctor_host_runner_response_reports_protocol_and_workspace_mismatch() {
+        let protocol = doctor_claude_host_runner_response(
+            Path::new("/tmp/agent-bridge-host.sock"),
+            12,
+            crate::claude_host::HostResponse {
+                version: 1,
+                ok: false,
+                result: None,
+                error: Some(crate::claude_host::HostError {
+                    code: "protocol_mismatch".to_string(),
+                    message: "unsupported protocol version".to_string(),
+                }),
+            },
+        );
+        assert_eq!(protocol["status"], "error");
+        assert_eq!(protocol["errorCode"], "protocol_mismatch");
+
+        let workspace = doctor_claude_host_runner_response(
+            Path::new("/tmp/agent-bridge-host.sock"),
+            12,
+            crate::claude_host::HostResponse {
+                version: 1,
+                ok: false,
+                result: None,
+                error: Some(crate::claude_host::HostError {
+                    code: "workspace_policy_mismatch".to_string(),
+                    message: "workspace policy mismatch".to_string(),
+                }),
+            },
+        );
+        assert_eq!(workspace["status"], "error");
+        assert_eq!(workspace["errorCode"], "workspace_policy_mismatch");
+        let recommendations = doctor_recommendations("ok", "ok", "ok", "error");
+        assert!(
+            recommendations
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|recommendation| recommendation["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("AGENT_BRIDGE_WORKSPACES"))
+        );
+    }
 }

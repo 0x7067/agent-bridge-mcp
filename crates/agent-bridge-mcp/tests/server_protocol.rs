@@ -70,6 +70,7 @@ async fn guidance_prompts_are_listed_and_retrievable() {
 
     assert!(text.contains("claude-host-runner"));
     assert!(text.contains("ping"));
+    assert!(text.contains("doctor"));
     assert!(text.contains("workspace_policy_mismatch"));
 }
 
@@ -126,8 +127,20 @@ async fn guidance_resources_are_listed_and_read_from_allowlist() {
             .unwrap()
             .contains("providers_check")
     );
+    assert!(content["text"].as_str().unwrap().contains("doctor"));
     assert!(content["text"].as_str().unwrap().contains("reviewPacket"));
     assert!(content["text"].as_str().unwrap().contains("task_remove"));
+
+    let response = handle_request(request(
+        "resources/read",
+        11,
+        serde_json::json!({ "uri": "agent-bridge://guidance/claude-host-lifecycle" }),
+    ))
+    .await;
+    let result = response.unwrap().result.unwrap();
+    let text = result["contents"][0]["text"].as_str().unwrap();
+    assert!(text.contains("doctor"));
+    assert!(text.contains("workspace_policy_mismatch"));
 
     let response = handle_request(request(
         "resources/read",
@@ -179,6 +192,7 @@ async fn tools_list_returns_current_public_tool_names() {
         vec![
             "providers_list",
             "providers_check",
+            "doctor",
             "task_preview",
             "task_spawn",
             "task_list",
@@ -189,6 +203,56 @@ async fn tools_list_returns_current_public_tool_names() {
             "task_stop",
             "task_remove"
         ]
+    );
+}
+
+#[tokio::test]
+async fn doctor_is_listed_with_strict_schema_and_rejects_unknown_arguments() {
+    let response = handle_request(request("tools/list", 9, serde_json::json!({}))).await;
+    let result = response.unwrap().result.unwrap();
+    let tools = result["tools"].as_array().unwrap();
+    let doctor = tools
+        .iter()
+        .find(|tool| tool["name"] == "doctor")
+        .expect("doctor tool should be listed");
+
+    assert_eq!(doctor["inputSchema"]["additionalProperties"], false);
+    assert_eq!(doctor["inputSchema"]["required"], serde_json::json!([]));
+    assert_eq!(
+        doctor["inputSchema"]["properties"]["smoke"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        doctor["inputSchema"]["properties"]["providers"]["items"]["enum"],
+        serde_json::json!(["claude", "cursor", "kimi", "codex"])
+    );
+    assert_eq!(
+        doctor["inputSchema"]["properties"]["aggregateTimeoutMs"]["maximum"],
+        120000
+    );
+    assert_eq!(
+        doctor["inputSchema"]["properties"]["providerTimeoutMs"]["additionalProperties"]["maximum"],
+        90000
+    );
+
+    let response = handle_request(request(
+        "tools/call",
+        10,
+        serde_json::json!({
+            "name": "doctor",
+            "arguments": { "smoke": true, "maxTurns": 2 }
+        }),
+    ))
+    .await
+    .unwrap();
+    let result = response.result.unwrap();
+
+    assert_eq!(result["isError"], true);
+    assert!(
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Unknown argument for doctor: maxTurns")
     );
 }
 

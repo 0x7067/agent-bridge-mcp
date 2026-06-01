@@ -8,6 +8,8 @@ pub enum ToolName {
     ProvidersList,
     #[serde(rename = "providers_check")]
     ProvidersCheck,
+    #[serde(rename = "doctor")]
+    Doctor,
     #[serde(rename = "task_preview")]
     TaskPreview,
     #[serde(rename = "task_spawn")]
@@ -76,6 +78,21 @@ pub fn tool_definitions() -> Vec<Value> {
                     "propertyNames": {"enum": provider_enum},
                     "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 90000}
                 }
+            }), Vec::<&str>::new())
+        }),
+        json!({
+            "name": "doctor",
+            "description": "Diagnose Agent Bridge MCP server, workspace, state, provider, and Claude host-runner readiness.",
+            "inputSchema": object_schema(json!({
+                "smoke": {"type": "boolean"},
+                "providers": {"type": "array", "items": {"type": "string", "enum": provider_enum}},
+                "aggregateTimeoutMs": {"type": "integer", "minimum": 1, "maximum": 120000},
+                "providerTimeoutMs": {
+                    "type": "object",
+                    "propertyNames": {"enum": provider_enum},
+                    "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 90000}
+                },
+                "cwd": {"type": "string", "description": "Workspace directory to validate against configured workspace roots."}
             }), Vec::<&str>::new())
         }),
         spawn_like_tool(
