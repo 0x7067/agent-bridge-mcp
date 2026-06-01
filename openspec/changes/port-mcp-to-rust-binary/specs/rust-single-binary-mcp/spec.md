@@ -5,17 +5,17 @@ The system SHALL provide a Rust-built MCP server binary that preserves the curre
 
 #### Scenario: MCP protocol smoke
 - **WHEN** a caller sends `initialize`, `tools/list`, `providers_list`, `providers_check`, and `task_preview` requests over stdio to the Rust binary
-- **THEN** the responses match the current Node server's public JSON-RPC behavior for those requests.
+- **THEN** the responses match the migrated public JSON-RPC behavior for those requests.
 
 #### Scenario: Unknown public input
 - **WHEN** a caller passes an unknown field to a tool input object
-- **THEN** the Rust binary rejects the input with the same tool-level error semantics as the current Node server.
+- **THEN** the Rust binary rejects the input with tool-level error semantics.
 
 ### Requirement: Stdio transport compatibility fixtures
-The system SHALL define golden stdio fixtures that can run against both the Node server and the Rust binary during migration.
+The system SHALL define Rust stdio tests that exercise the production binary.
 
 #### Scenario: Fixture parity
-- **WHEN** the fixture suite runs against the Node server and the Rust binary
+- **WHEN** the stdio test suite runs against the Rust binary
 - **THEN** the suite compares public MCP responses for protocol initialization, tool listing, provider listing, validation failures, task preview, task lifecycle states, logs, results, stale startup recovery, and worktree cleanup failures.
 
 #### Scenario: Fixture normalization
@@ -69,19 +69,11 @@ The system SHALL preserve the existing provider adapter contract in the Rust imp
 - **THEN** environment allowlists and provider-specific exclusions match the current provider adapter behavior, including Claude `ANTHROPIC_BASE_URL` stripping.
 
 ### Requirement: State compatibility and migration
-The system SHALL preserve compatibility with existing Node-created task state or provide an explicit migration path before replacing the Node entrypoint.
+The system SHALL preserve inspectability of existing task state or provide an explicit migration path.
 
 #### Scenario: Existing registry startup
-- **WHEN** the Rust binary starts with an existing Node-created `registry.json`
+- **WHEN** the Rust binary starts with an existing `registry.json`
 - **THEN** it either loads the registry safely with compatible field names or performs a versioned migration that preserves inspectable completed tasks.
-
-#### Scenario: Rollback-compatible writes before switch
-- **WHEN** the Rust binary runs before the final production entrypoint switch
-- **THEN** it writes task registry data in a format the current Node server can still read, unless an explicit post-switch migration flag has been enabled.
-
-#### Scenario: Node reads Rust-written state before switch
-- **WHEN** the Rust binary writes task registry state before the final production entrypoint switch
-- **THEN** the current Node server can start against that state directory and inspect persisted tasks successfully.
 
 #### Scenario: Unknown registry fields
 - **WHEN** the Rust binary reads a registry record with fields it does not use
@@ -99,6 +91,14 @@ The system SHALL preserve compatibility with existing Node-created task state or
 - **WHEN** the Rust binary starts after a crash during registry persistence
 - **THEN** it removes or ignores known temporary registry files before loading canonical registry state.
 
+#### Scenario: Same-directory atomic registry writes
+- **WHEN** the Rust binary persists `registry.json`
+- **THEN** it writes temporary registry files in the same directory as the canonical registry file before atomically renaming them into place.
+
+#### Scenario: Corrupted registry startup
+- **WHEN** the Rust binary starts with a present but invalid canonical `registry.json`
+- **THEN** it fails startup with a clear diagnostic instead of silently replacing existing state with an empty registry.
+
 ### Requirement: Process and log safety
 The system SHALL preserve current provider process safety while avoiding Rust-specific pipe and shutdown regressions.
 
@@ -108,7 +108,7 @@ The system SHALL preserve current provider process safety while avoiding Rust-sp
 
 #### Scenario: Invalid provider UTF-8
 - **WHEN** provider stdout or stderr contains invalid UTF-8 bytes
-- **THEN** the Rust binary decodes logs lossy in a Node-compatible way instead of failing the task solely because of log decoding.
+- **THEN** the Rust binary decodes logs lossy instead of failing the task solely because of log decoding.
 
 #### Scenario: Timeout and stop
 - **WHEN** a task times out or a caller stops a running task
@@ -122,12 +122,16 @@ The system SHALL preserve current provider process safety while avoiding Rust-sp
 - **WHEN** the Rust MCP process receives `SIGINT` or `SIGTERM`
 - **THEN** it sends termination to tracked active provider processes before exiting.
 
+#### Scenario: Bounded shutdown cleanup
+- **WHEN** provider processes ignore termination during server shutdown
+- **THEN** the Rust binary waits only for a bounded cleanup deadline before escalating remaining children and continuing shutdown.
+
 ### Requirement: Final runtime is one MCP binary
 The system SHALL make the final production MCP entrypoint a single built executable named `agent-bridge-mcp`.
 
 #### Scenario: Final MCP config
 - **WHEN** a user configures the MCP server after migration
-- **THEN** the config can point directly at the built `agent-bridge-mcp` binary without requiring Node.js to run the server.
+- **THEN** the config can point directly at the built `agent-bridge-mcp` binary.
 
 #### Scenario: Direct binary release path
 - **WHEN** release artifacts are produced for the first Rust migration
@@ -138,12 +142,8 @@ The system SHALL make the final production MCP entrypoint a single built executa
 - **THEN** documentation and provider checks make clear that `git`, `claude-p` or `claude`, `cursor-agent`, `pi`, and `codex` remain external runtime dependencies.
 
 ### Requirement: Packaging smoke coverage
-The system SHALL verify the built or packaged artifact through stdio smoke tests before replacing the Node entrypoint.
+The system SHALL verify the built or packaged artifact through stdio smoke tests before release.
 
 #### Scenario: Built binary smoke
 - **WHEN** the release candidate binary is built
 - **THEN** a smoke test executes that binary and verifies `initialize`, `tools/list`, `providers_list`, `providers_check`, and `task_preview`.
-
-#### Scenario: Installed entrypoint smoke
-- **WHEN** the project still offers an npm-based install path
-- **THEN** a smoke test verifies the installed `agent-bridge-mcp` command dispatches to the Rust binary and passes the same stdio smoke checks.

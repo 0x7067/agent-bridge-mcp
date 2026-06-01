@@ -48,9 +48,9 @@
 
 ## 7. Verification
 
-- [ ] 7.1 Run `rtk npm test`.
+- [ ] 7.1 Run `rtk cargo test`.
 - [ ] 7.2 Run `rtk openspec validate harden-claude-p-integration`.
 - [ ] 7.3 Run a local MCP smoke check for `providers_check` and `providers_check(smoke: true)` using fake Claude fixtures.
 - [ ] 7.4 If local Claude auth is available and the user opts in, run an optional live `claude-p` and native `claude -p` smoke comparison and record the result in implementation notes.
 - [ ] 7.5 Add or update a short implementation note that pins the accepted Claude provider reliability contract for the Rust port to consume.
-- [ ] 7.6 Confirm the Rust migration plan references or preserves the accepted Claude provider reliability contract before starting the Rust port.
+- [ ] 7.6 Confirm the Rust implementation references or preserves the accepted Claude provider reliability contract.

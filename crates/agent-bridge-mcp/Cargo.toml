@@ -1,0 +1,22 @@
+[package]
+name = "agent-bridge-mcp"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[[bin]]
+name = "agent-bridge-mcp"
+path = "src/main.rs"
+
+[[bin]]
+name = "agent-bridge-mcp-rs"
+path = "src/bin/agent-bridge-mcp-rs.rs"
+
+[dependencies]
+chrono = { version = "0.4.44", default-features = false, features = ["clock", "serde"] }
+libc = "0.2.186"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.150", features = ["preserve_order"] }
+tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "io-std", "io-util", "signal", "time", "process", "sync", "fs"] }
+uuid = { version = "1.23.2", features = ["v4"] }

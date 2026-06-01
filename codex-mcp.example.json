@@ -1,10 +1,8 @@
 {
   "mcpServers": {
     "agent-bridge": {
-      "command": "node",
-      "args": [
-        "/Users/pedro/Development/agent-bridge-mcp/src/server.mjs"
-      ],
+      "command": "agent-bridge-mcp",
+      "args": [],
       "env": {
         "AGENT_BRIDGE_ALLOWED_ROOT": "/Users/pedro/Development/agent-bridge-mcp"
       }

@@ -1,6 +1,6 @@
 ## Context
 
-`src/server.mjs` currently owns the whole MCP server: tool definitions, argument allowlists, provider capability metadata, task validation, provider command construction, environment allowlists, provider availability checks, task lifecycle management, git snapshots, log handling, and stdio transport.
+One runtime module previously owned the whole MCP server: tool definitions, argument allowlists, provider capability metadata, task validation, provider command construction, environment allowlists, provider availability checks, task lifecycle management, git snapshots, log handling, and stdio transport.
 
 The provider concern is the best first maintainability boundary because it is both cohesive and repeatedly touched. A provider change currently crosses these areas:
 
@@ -21,7 +21,7 @@ The refactor should preserve public behavior while making that provider concept 
 - Create a small provider adapter interface that hides provider-specific decisions behind provider-neutral calls.
 - Keep `TaskManager` focused on task lifecycle: persistence, process launch, logs, status, results, worktrees, and git snapshots.
 - Keep public MCP tool names, argument names, defaults, returned shapes, and safety behavior unchanged.
-- Preserve the existing dependency-free Node.js stdlib posture.
+- Preserve the existing low-dependency posture.
 - Make provider behavior easier to test directly without exercising the whole MCP request path.
 
 **Non-Goals:**
@@ -79,11 +79,11 @@ The refactor should preserve public behavior while making that provider concept 
 
 ## Migration Plan
 
-1. Add tests that pin current provider adapter behavior while the implementation is still in `src/server.mjs`.
+1. Add tests that pin current provider adapter behavior before extracting it.
 2. Extract provider registry and adapter modules behind the existing exported functions.
 3. Update `TaskManager` to call the registry instead of provider-specific switch logic.
 4. Keep README behavior unchanged; add a short maintainer note only if useful.
-5. Run `rtk npm test` and a lightweight MCP smoke check.
+5. Run the project test suite and a lightweight MCP smoke check.
 
 Rollback is straightforward because this is internal restructuring: revert the extraction commit and keep existing public tests as the safety net.
 

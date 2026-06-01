@@ -96,11 +96,11 @@ Alternative considered: add a new `claude_diagnose` tool. That may be useful lat
 - Smoke probes spend user quota or take too long -> Mitigation: keep smoke opt-in through `providers_check(smoke: true)`, honor caller timeout, and use a minimal prompt.
 - Shell initialization remains a source of nondeterminism -> Mitigation: test shell-wrapped command construction and report command selection clearly; avoid exposing full environment.
 - Native Claude fallback differs from `claude-p` behavior -> Mitigation: recommend rather than silently switch in this change, and document the trade-off.
-- Rust migration diverges from Node behavior -> Mitigation: make this spec testable and reference it from the Rust implementation tasks once accepted.
+- Claude reliability behavior drifts during future refactors -> Mitigation: make this spec testable and reference it from Rust implementation tasks once accepted.
 
 ## Migration Plan
 
-1. Characterize the current Node Claude provider path with fake fixtures before changing behavior.
+1. Characterize the current Rust Claude provider path with fake fixtures before changing behavior.
 2. Add characterization tests against the unmodified adapter and record the failing baseline for each current reliability/security gap.
 3. Add failure classification and bounded diagnostics for provider version checks, smoke checks, task exits, timeouts, and malformed output.
 4. Add prompt transport tests and update command construction only after verifying upstream-supported non-argv transport.
@@ -114,4 +114,4 @@ Rollback is straightforward because this change is confined to provider adapter 
 
 - Does upstream `claude-p` currently support stdin or input-file prompt transport in the installed versions this project needs to support, and if not, should this project require native `claude -p` for Claude provider task execution?
 - Should native `claude -p` become the default in a later change if smoke data shows it is consistently more reliable than `claude-p`?
-- Should the Rust port implement this hardening before replacing the Node server, or should this change land first in Node and then be ported as a golden behavior suite?
+- None.

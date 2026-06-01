@@ -1,6 +1,6 @@
 # Agent Bridge MCP
 
-Dependency-free stdio MCP server for spawning task-native coding agents from Codex.
+Rust stdio MCP server for spawning task-native coding agents from Codex.
 
 This is a breaking redesign. The old `ask_*` and `dispatch_*` tools were removed.
 The public surface is now a provider-neutral task lifecycle API modeled after
@@ -52,8 +52,7 @@ First-class providers:
 - `codex`: local Codex through `codex exec`.
 
 Provider-specific capabilities, command construction, smoke probes, and
-environment allowlists live in `src/provider-registry.mjs`. Keep provider changes
-there first, then let the task lifecycle call through the registry.
+environment allowlists are implemented in the Rust provider module.
 
 Supported modes:
 
@@ -67,39 +66,57 @@ Provider/mode combinations are validated. For example, Cursor does not support
 
 ## Requirements
 
-- Node.js 24 or newer.
+- Rust-built `agent-bridge-mcp` binary for the MCP runtime.
+- `git` on `PATH`.
 - `claude-p` on `PATH`, or set `CLAUDE_P_BIN`.
 - Optional: set `CLAUDE_BIN` to use native `claude -p` instead of `claude-p`.
 - `cursor-agent` on `PATH`, or set `CURSOR_AGENT_BIN`.
 - `pi` on `PATH`, or set `PI_BIN`.
 - `codex` on `PATH`, or set `CODEX_BIN`.
 
-## Install
-
-From this repo:
-
-```bash
-npm test
-npm run pack:local
-```
-
-The local package artifact is written to:
+Supported first-release binary targets:
 
 ```text
-outputs/agent-bridge-mcp-0.1.0.tgz
+macOS arm64
+macOS x64
+Linux x64
 ```
 
-Install from the tarball elsewhere with:
+Provider CLIs may have narrower platform support than the bridge binary. Windows
+is not a first-release target for the Rust migration.
+
+## Install
+
+Build and install the Rust binary from this repo:
 
 ```bash
-npm install -g /Users/pedro/Development/agent-bridge-mcp/outputs/agent-bridge-mcp-0.1.0.tgz
+cargo test
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo build --release --bin agent-bridge-mcp
+install -m 0755 target/release/agent-bridge-mcp ~/.local/bin/agent-bridge-mcp
 ```
 
-Then the executable is:
+Run the Rust-only stdio and lifecycle tests with:
+
+```bash
+cargo test
+```
+
+The temporary side-by-side Rust command is also buildable as:
+
+```bash
+cargo build --release --bin agent-bridge-mcp-rs
+```
+
+The MCP runtime command is the built Rust binary:
 
 ```bash
 agent-bridge-mcp
 ```
+
+Release artifacts are produced by `.github/workflows/release-rust.yml` for the
+supported targets.
 
 ## Safety And State
 
@@ -157,16 +174,14 @@ record. If cleanup fails, the task remains tracked.
 
 ## Codex MCP Config
 
-Use an absolute path to `src/server.mjs`:
+Use the installed Rust binary:
 
 ```json
 {
   "mcpServers": {
     "agent-bridge": {
-      "command": "node",
-      "args": [
-        "/Users/pedro/Development/agent-bridge-mcp/src/server.mjs"
-      ],
+      "command": "agent-bridge-mcp",
+      "args": [],
       "env": {
         "AGENT_BRIDGE_ALLOWED_ROOT": "/Users/pedro/Development/agent-bridge-mcp"
       }
@@ -181,7 +196,7 @@ Or register it with Codex:
 codex mcp add \
   --env AGENT_BRIDGE_ALLOWED_ROOT=/Users/pedro/Development/agent-bridge-mcp \
   agent-bridge \
-  -- node /Users/pedro/Development/agent-bridge-mcp/src/server.mjs
+  -- agent-bridge-mcp
 ```
 
 ## Examples
@@ -313,5 +328,5 @@ Remove a finished task and clean its managed worktree:
 Run tests:
 
 ```bash
-npm test
+cargo test
 ```

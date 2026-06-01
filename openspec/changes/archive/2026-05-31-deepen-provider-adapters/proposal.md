@@ -1,6 +1,6 @@
 ## Why
 
-Provider-specific behavior is spread across validation, JSON schema construction, command building, environment policy, provider checks, and tests inside `src/server.mjs`. That makes adding or changing a provider risky because one conceptual change currently requires coordinated edits across unrelated sections of a 1,300+ line module.
+Provider-specific behavior was previously spread across validation, JSON schema construction, command building, environment policy, provider checks, and tests inside one runtime module. That made adding or changing a provider risky because one conceptual change required coordinated edits across unrelated sections of a large module.
 
 ## What Changes
 
@@ -22,7 +22,7 @@ Provider-specific behavior is spread across validation, JSON schema construction
 
 ## Impact
 
-- Affected code: `src/server.mjs` initially, with likely extraction into small internal modules under `src/`.
-- Affected tests: `test/server.test.mjs` may be split or augmented with provider-adapter focused tests.
+- Affected code: provider adapter/runtime modules.
+- Affected tests: provider-adapter focused tests.
 - Affected documentation: `README.md` only if the provider extension model needs a short maintainer note.
 - Public API impact: none intended; this is a maintainability refactor around existing provider behavior.

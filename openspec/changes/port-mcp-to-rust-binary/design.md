@@ -1,13 +1,13 @@
 ## Context
 
-The server is currently a dependency-free Node.js stdio MCP server. The provider-specific surface is now isolated in `src/provider-registry.mjs`, while `src/server.mjs` still owns protocol routing, tool dispatch, task lifecycle, persistence, process management, logs, git snapshots, worktree cleanup, and stdio transport.
+The final runtime is now the Rust `agent-bridge-mcp` binary; the former runtime has been removed.
 
 The Rust refactor has two primary objectives:
 
 - **Type safety:** replace runtime string/object validation with typed protocol, task, provider, error, and state models.
-- **Single binary:** ship the MCP server as a built `agent-bridge-mcp` executable instead of requiring Node.js to run the server.
+- **Single binary:** ship the MCP server as a built `agent-bridge-mcp` executable.
 
-Agent input converged on the same constraint: this must be a compatibility migration, not a greenfield rewrite. The Node implementation and its current tests are the reference behavior until golden stdio fixtures prove Rust parity.
+Agent input converged on the same constraint: this was a compatibility migration, not a greenfield rewrite. Legacy behavior was captured during the migration, and ongoing verification is Rust-only.
 
 Official MCP docs define stdio as UTF-8 JSON-RPC messages over stdin/stdout, newline-delimited, with no non-MCP stdout output. The official SDK docs list Rust as a Tier 2 SDK, so the implementation should evaluate `rmcp` but not let SDK convenience override exact compatibility with the current wire shape.
 
@@ -16,11 +16,11 @@ Official MCP docs define stdio as UTF-8 JSON-RPC messages over stdin/stdout, new
 **Goals:**
 - Produce a Rust MCP server binary that preserves the public task lifecycle API.
 - Use typed Rust models for providers, task modes, task statuses, task phases, error types, isolation, command descriptors, tool inputs, tool outputs, and persisted task records.
-- Build a golden stdio fixture suite that runs against both Node and Rust.
+- Build Rust stdio and lifecycle tests that preserve the migrated public behavior.
 - Preserve provider adapter behavior, including Claude shell initialization, provider command args, env allowlists, provider checks, and smoke probes.
 - Preserve or explicitly migrate existing task registry and task directory state.
 - Keep the final user-facing MCP runtime as one built executable named `agent-bridge-mcp`.
-- Keep side-by-side Node/Rust execution temporary and test-oriented.
+- Remove side-by-side execution after Rust parity is proven.
 
 **Non-Goals:**
 - No public tool rename or task API redesign.
@@ -33,14 +33,13 @@ Official MCP docs define stdio as UTF-8 JSON-RPC messages over stdin/stdout, new
 
 1. **Compatibility fixtures first.**
 
-   Before implementing substantial Rust behavior, extract the current public behavior into stdio fixtures that can execute against:
+   Before implementing substantial Rust behavior, extract the current public behavior into stdio fixtures. After the final switch, keep equivalent coverage in Rust-only tests against:
 
    ```text
-   node src/server.mjs
    target/debug/agent-bridge-mcp
    ```
 
-   Fixtures should cover `initialize`, `tools/list`, `providers_list`, `providers_check`, validation errors, `task_preview`, lifecycle states, `task_logs`, `task_result`, stale startup recovery, and managed worktree cleanup failure. This addresses the agents' strongest warning: direct Node module tests will not prove Rust parity.
+   Tests should cover `initialize`, `tools/list`, `providers_list`, `providers_check`, validation errors, `task_preview`, lifecycle states, `task_logs`, `task_result`, stale startup recovery, and managed worktree cleanup failure. This addresses the agents' strongest warning: implementation-module tests alone do not prove MCP stdio behavior.
 
    Fixture comparison should be semantic, not brittle byte-for-byte comparison. Normalize dynamic fields such as task IDs, timestamps, durations, process IDs, map ordering, and environment key ordering. Do not normalize away command arguments, error text/type, required fields, schema properties, cap/truncation flags, or state transitions.
 
@@ -79,13 +78,17 @@ Official MCP docs define stdio as UTF-8 JSON-RPC messages over stdin/stdout, new
 
 3. **Serialize task state access through a non-blocking actor.**
 
-   Node currently gets mutation serialization from the single-threaded event loop. Rust must not rely on accidental mutex usage scattered across handlers. The Rust `TaskManager` should use one explicit model:
+   The Rust `TaskManager` should use one explicit model:
 
    - required: a single task-manager actor that receives commands over channels and owns the registry plus active task map.
 
    The actor model matches the current single-writer semantics and avoids lock-order problems when process events, waits, stops, and result reads happen concurrently. The actor must not await long-running child processes, git commands, or worktree cleanup directly. Those operations should run in background tasks and report completion back to the actor through messages. The actor loop should continue servicing independent requests while background work is in progress.
 
-   Actor failure policy: if the actor panics, abort the server process rather than leaving request handlers blocked on dropped response channels. This is harsher than restart, but it is easier to reason about and avoids a silently unhealthy MCP server.
+   Actor failure policy: if the actor panics, abort the server process rather than leaving request handlers blocked on dropped response channels. This is harsher than restart, but it is easier to reason about and avoids a silently unhealthy MCP server. The implementation must not rely on Tokio's default spawned-task panic behavior, because a panic in a detached spawned task can otherwise leave the runtime alive. The actor `JoinHandle` must be monitored by a watchdog that calls `std::process::abort()` on panic, or the binary must use an equivalent process-wide abort strategy. Panic tests must verify diagnostics on stderr and a non-zero process exit.
+
+   Actor command and completion channels must be bounded. Public request handlers should apply backpressure by awaiting channel capacity instead of buffering unbounded work. Background completion senders must not silently drop final state updates; if the actor cannot accept completion messages, the server should surface a clear internal error or fail fast rather than losing lifecycle state.
+
+   The initial Rust port preserves the current unbounded task concurrency behavior for compatibility. A maximum concurrent task limit can be introduced later as a separate safety change after public behavior has parity fixtures.
 
 4. **Guard MCP stdout.**
 
@@ -128,17 +131,17 @@ Official MCP docs define stdio as UTF-8 JSON-RPC messages over stdin/stdout, new
 
    This keeps the Rust implementation aligned with the archived `provider-adapter-contract` spec.
 
-8. **Keep persisted state rollback-compatible before replacing Node.**
+8. **Keep persisted state inspectable.**
 
-   Current `registry.json` has no schema version. Before the final entrypoint switch, Rust must write a Node-readable registry shape so rollback to the Node server remains possible. A versioned migration can be introduced only behind an explicit post-switch migration flag or after the Node rollback path is no longer required. Completed tasks must remain inspectable. Previously `queued` or `running` tasks must still become `failed_stale` at startup. Startup should also clean up or ignore known temporary registry files left by crashed atomic writes.
+   Current `registry.json` has no schema version. Completed tasks must remain inspectable. Previously `queued` or `running` tasks must still become `failed_stale` at startup. Startup should also clean up or ignore known temporary registry files left by crashed atomic writes.
 
    Registry deserialization should tolerate unknown fields. Strict unknown-field rejection belongs on public tool request DTOs, not persisted state. Task IDs should keep the existing `task_` plus UUID-v4 hex-without-hyphens shape and retry on collision if an ID already exists in the registry.
 
-   Atomic writes are required on the supported targets. First release targets are macOS arm64, macOS x64, and Linux x64. Windows support is explicitly out of scope for the first Rust migration unless a Windows-safe atomic write and process model are selected before implementation.
+   Atomic writes are required on the supported targets. Temporary registry files must be created in the same directory as the canonical `registry.json` before rename, so replacement stays atomic on one filesystem. If the canonical `registry.json` is present but corrupted, the Rust server must fail startup with a clear stderr diagnostic instead of silently starting with empty state; missing registry files still initialize to an empty registry. First release targets are macOS arm64, macOS x64, and Linux x64. Windows support is explicitly out of scope for the first Rust migration unless a Windows-safe atomic write and process model are selected before implementation.
 
-9. **Single binary final shape, npm optional as distribution wrapper.**
+9. **Single binary final shape.**
 
-   The long-term MCP command should be the built binary. The first packaging path is direct prebuilt binary release for supported targets. If preserving npm install UX matters after that, npm should distribute or launch platform-specific prebuilt binaries rather than run the server through Node. The transition may expose a temporary `agent-bridge-mcp-rs`, but final docs should point at `agent-bridge-mcp`.
+   The long-term MCP command should be the built binary. The packaging path is direct prebuilt binary release for supported targets. The transition may expose a temporary `agent-bridge-mcp-rs`, but final docs should point at `agent-bridge-mcp`.
 
 10. **Preserve remove semantics for active tasks.**
 
@@ -146,21 +149,21 @@ Official MCP docs define stdio as UTF-8 JSON-RPC messages over stdin/stdout, new
 
 11. **Preserve current stdio shutdown semantics.**
 
-   Current Node behavior exits when stdin reaches EOF and ignores unknown notifications without a response. The Rust implementation should preserve that baseline. Do not add behavior for `notifications/exit` unless a fixture first defines the desired public behavior and a compatibility reason exists.
+   The server exits when stdin reaches EOF and ignores unknown notifications without a response. Do not add behavior for `notifications/exit` unless a fixture first defines the desired public behavior and a compatibility reason exists.
 
 12. **Preserve signal child cleanup.**
 
-   Current Node behavior sends `SIGTERM` to tracked active provider children on `SIGINT` or `SIGTERM`. The Rust binary should keep equivalent cleanup for supported Unix targets.
+   The Rust binary sends `SIGTERM` to tracked active provider children on `SIGINT` or `SIGTERM` for supported Unix targets. Do not use Rust's default child-kill primitive as the compatibility mechanism unless it is proven to send `SIGTERM` on the supported target; use a Unix signal helper (`libc` or equivalent selected during implementation) that sends `SIGTERM` to the tracked provider PID. After sending termination, the background process task must continue to await child exit so the process is reaped and does not become a zombie. Shutdown handling must wait for active-child cleanup for a bounded grace period, defaulting to 5 seconds, then escalate remaining children to SIGKILL and continue reaping before exiting the server process.
 
-13. **Reject Node single-binary compilers for this change.**
+13. **Reject non-Rust single-binary compilers for this change.**
 
-   Tools that package JavaScript into a standalone executable could satisfy part of the single-executable goal, but they do not address the type-safety objective. They also preserve the same runtime validation and stringly state model. This change should use Rust unless implementation discovers a blocker severe enough to revisit the language decision.
+   Tools that package an existing dynamic runtime into a standalone executable could satisfy part of the single-executable goal, but they do not address the type-safety objective. They also preserve the same runtime validation and stringly state model. This change should use Rust unless implementation discovers a blocker severe enough to revisit the language decision.
 
 ## Risks / Trade-offs
 
-- **Risk: protocol drift** -> Mitigation: golden stdio fixtures become the migration gate; Rust cannot replace Node until fixture parity passes.
+- **Risk: protocol drift** -> Mitigation: Rust stdio fixtures become the migration gate.
 - **Risk: SDK mismatch** -> Mitigation: evaluate `rmcp` behind fixtures; fall back to local JSON-RPC DTOs if exact compatibility is hard.
-- **Risk: state migration loses inspectability or rollback** -> Mitigation: keep Rust registry writes Node-readable until final switch; gate any versioned migration behind a post-switch flag.
+- **Risk: state migration loses inspectability** -> Mitigation: keep persisted records tolerant of unknown fields and avoid implicit destructive migrations.
 - **Risk: provider process deadlock** -> Mitigation: log readers keep draining stdout/stderr even after cap.
 - **Risk: task state races under Rust async runtime** -> Mitigation: choose an actor or single-lock state model before implementing lifecycle methods.
 - **Risk: actor blocks all task APIs on one long operation** -> Mitigation: actor owns state only; process/git/worktree operations run in background tasks and report completion by message.
@@ -174,7 +177,7 @@ Official MCP docs define stdio as UTF-8 JSON-RPC messages over stdin/stdout, new
 
 ## Migration Plan
 
-1. Add stdio fixture harness for the current Node implementation.
+1. Capture the legacy public behavior in stdio fixtures before removing the legacy runtime.
 2. Add Rust crate skeleton, runtime choice, stderr-only diagnostics, typed DTO/domain modules, and minimal `initialize`/`tools/list`.
 3. Run fixtures against the minimal Rust skeleton and record expected failures before implementing green behavior.
 4. Implement provider adapter parity in Rust and prove with command/env fixtures.
@@ -182,12 +185,11 @@ Official MCP docs define stdio as UTF-8 JSON-RPC messages over stdin/stdout, new
 6. Implement process/log/git/worktree behavior.
 7. Add packaging path and built/installed binary smoke tests.
 8. Audit public API parity and document either "no break" or exact migration notes.
-9. Switch the primary `agent-bridge-mcp` entrypoint to the Rust binary after fixture parity, `cargo test`, Node compatibility tests, and direct smoke checks pass.
-10. Remove or demote Node runtime code only after a rollback point is available.
+9. Switch the primary `agent-bridge-mcp` entrypoint to the Rust binary after fixture parity, `cargo test`, Rust lifecycle tests, and direct smoke checks pass.
+10. Remove the former runtime code after the Rust binary is the final server.
 
-Rollback: keep the Node server runnable until the final switch. If Rust parity or packaging fails, continue shipping the Node entrypoint while the Rust binary remains experimental.
+Rollback: use version control or a released artifact if a rollback is needed. The repo no longer keeps the former MCP server.
 
 ## Open Questions
 
-- Should the npm install UX remain supported with prebuilt platform binaries, or should distribution move to direct binary releases first?
-- Should the Rust implementation add a maximum concurrent task limit during the port, or preserve unbounded behavior until a later safety change?
+- None.

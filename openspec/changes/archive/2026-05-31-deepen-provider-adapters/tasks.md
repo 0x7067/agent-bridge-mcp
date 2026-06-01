@@ -32,6 +32,6 @@
 
 ## 5. Verification
 
-- [x] 5.1 Run `rtk npm test` and confirm all tests pass.
+- [x] 5.1 Run the project test suite and confirm all tests pass.
 - [x] 5.2 Run a lightweight direct MCP smoke check for `initialize`, `tools/list`, `providers_list`, and `task_preview`.
 - [x] 5.3 Run `rtk openspec status --change "deepen-provider-adapters"` and confirm the change remains apply-ready.

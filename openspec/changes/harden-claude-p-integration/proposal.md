@@ -2,7 +2,7 @@
 
 The Claude provider is unreliable because the default path depends on `claude-p`, which wraps interactive Claude Code behavior behind a CLI/PTY bridge. Upstream `claude-p` explicitly depends on Claude Code terminal behavior and Stop hook output, so bridge failures can look like hangs, empty results, malformed JSON, or false-positive provider availability.
 
-This matters now because the bridge already exposes Claude as a first-class provider and the Rust single-binary plan must preserve provider behavior. We need a separate reliability track that can diagnose the current Node adapter, define the intended Claude provider contract, and carry those expectations into the Rust port.
+This matters now because the Rust bridge exposes Claude as a first-class provider. We need a separate reliability track that can diagnose the current Rust adapter and define the intended Claude provider contract.
 
 ## What Changes
 
@@ -23,8 +23,8 @@ This matters now because the bridge already exposes Claude as a first-class prov
 
 ## Impact
 
-- Affected code: `src/provider-registry.mjs`, `src/server.mjs`, task process/result handling if diagnostics need to be surfaced from child-process failures.
-- Affected tests: `test/provider-registry.test.mjs`, `test/server.test.mjs`, and new fixture scripts for deterministic fake `claude-p` behavior.
+- Affected code: `crates/agent-bridge-mcp/src/provider.rs`, `crates/agent-bridge-mcp/src/server.rs`, and `crates/agent-bridge-mcp/src/task.rs` if diagnostics need to be surfaced from child-process failures.
+- Affected tests: Rust provider, protocol, stdio, and task lifecycle tests with deterministic fake `claude-p` behavior.
 - Affected docs: `README.md` provider setup and troubleshooting sections.
 - Runtime dependencies remain external: `claude-p` or native `claude` must still be installed separately. The bridge must not vendor Claude Code or `claude-p`.
-- Compatibility with the active Rust migration: the Rust implementation must preserve the final Claude reliability contract defined by this change.
+- Compatibility: the Rust implementation must preserve the final Claude reliability contract defined by this change.
