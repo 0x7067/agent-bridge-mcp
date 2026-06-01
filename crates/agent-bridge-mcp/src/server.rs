@@ -1,17 +1,25 @@
 use crate::domain::{Isolation, ProviderKind, TimeoutSeconds, WorktreeName};
+use crate::guidance;
 use crate::mcp::{JsonRpcId, JsonRpcRequest, JsonRpcResponse};
 use crate::provider::{self, ProviderTask};
 use crate::task::TaskManagerHandle;
 use crate::tools::{TaskPreviewInput, ToolCallParams, ToolName, tool_definitions};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::time::{Duration, timeout};
+use tokio::task::JoinSet;
+use tokio::time::{Duration, Instant, timeout};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const MAX_PROMPT_BYTES: usize = 100 * 1024;
+const VERSION_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_AGGREGATE_TIMEOUT_MS: u64 = 110_000;
+const MAX_AGGREGATE_TIMEOUT_MS: i64 = 120_000;
+const MAX_PROVIDER_TIMEOUT_MS: i64 = 90_000;
+const CHILD_SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 
 pub async fn handle_request(request: JsonRpcRequest) -> Option<JsonRpcResponse> {
     request.id.as_ref()?;
@@ -21,11 +29,27 @@ pub async fn handle_request(request: JsonRpcRequest) -> Option<JsonRpcResponse> 
             id,
             json!({
                 "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": { "tools": {} },
+                "capabilities": { "tools": {}, "prompts": {}, "resources": {} },
                 "serverInfo": { "name": "agent-bridge-mcp", "version": "0.1.0" }
             }),
         ),
         "tools/list" => JsonRpcResponse::result(id, json!({ "tools": tool_definitions() })),
+        "prompts/list" => {
+            JsonRpcResponse::result(id, json!({ "prompts": guidance::prompt_definitions() }))
+        }
+        "prompts/get" => match guidance::get_prompt(request.params.unwrap_or_else(|| json!({}))) {
+            Ok(result) => JsonRpcResponse::result(id, result),
+            Err(error) => JsonRpcResponse::error(id, -32602, error),
+        },
+        "resources/list" => {
+            JsonRpcResponse::result(id, json!({ "resources": guidance::resource_definitions() }))
+        }
+        "resources/read" => {
+            match guidance::read_resource(request.params.unwrap_or_else(|| json!({}))) {
+                Ok(result) => JsonRpcResponse::result(id, result),
+                Err(error) => JsonRpcResponse::error(id, -32002, error),
+            }
+        }
         "tools/call" => JsonRpcResponse::result(
             id,
             call_tool(request.params.unwrap_or_else(|| json!({}))).await,
@@ -43,7 +67,7 @@ async fn call_tool(params: Value) -> Value {
                 tool_error(reject_unknown_arguments(name, &params.arguments).unwrap_err())
             }
             ToolName::ProvidersList => tool_json(json!({ "providers": provider::capabilities() })),
-            ToolName::ProvidersCheck => tool_json(providers_check(params.arguments).await),
+            ToolName::ProvidersCheck => tool_result(providers_check(params.arguments).await),
             ToolName::TaskPreview => match task_preview(params.arguments) {
                 Ok(payload) => tool_json(payload),
                 Err(error) => tool_error(error),
@@ -139,7 +163,13 @@ async fn call_tool(params: Value) -> Value {
 fn reject_unknown_arguments(name: ToolName, arguments: &Value) -> Result<(), String> {
     let allowed = match name {
         ToolName::ProvidersList => &[][..],
-        ToolName::ProvidersCheck => &["smoke", "timeoutMs"][..],
+        ToolName::ProvidersCheck => &[
+            "smoke",
+            "timeoutMs",
+            "providers",
+            "aggregateTimeoutMs",
+            "providerTimeoutMs",
+        ][..],
         ToolName::TaskPreview | ToolName::TaskSpawn => &[
             "provider",
             "mode",
@@ -195,26 +225,30 @@ struct ProvidersCheckInput {
     #[serde(default)]
     smoke: bool,
     timeout_ms: Option<i64>,
+    providers: Option<Vec<ProviderKind>>,
+    aggregate_timeout_ms: Option<i64>,
+    provider_timeout_ms: Option<BTreeMap<String, i64>>,
 }
 
-async fn providers_check(arguments: Value) -> Value {
+async fn providers_check(arguments: Value) -> Result<Value, String> {
     let input: ProvidersCheckInput =
-        serde_json::from_value(arguments).unwrap_or(ProvidersCheckInput {
-            smoke: false,
-            timeout_ms: None,
-        });
-    let timeout_ms = input.timeout_ms.unwrap_or(5000).clamp(1, 60_000) as u64;
+        serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+    let selected = selected_providers(input.providers.as_deref())?;
+    validate_provider_budgets(&input)?;
+    let aggregate_timeout_ms = aggregate_timeout_ms(input.aggregate_timeout_ms)?;
     let mut results = serde_json::Map::new();
-    for provider in ProviderKind::ALL {
+    let mut smoke_candidates = Vec::new();
+    for provider in selected.iter().copied() {
         let command = provider::version_command(provider);
-        let output = run_probe(&command, provider, timeout_ms).await;
+        let output = run_probe(&command, provider, VERSION_TIMEOUT_MS, "version").await;
         let value = match output.status {
             Some(status) if status.success() && output.failure_category.is_none() => json!({
                 "available": true,
                 "command": command.command,
                 "version": String::from_utf8_lossy(&output.stdout).trim(),
                 "probe": if input.smoke { "version+smoke" } else { "version" },
-                "startupVerified": false
+                "startupVerified": false,
+                "versionDurationMs": output.duration_ms
             }),
             _ => json!({
                 "available": false,
@@ -222,61 +256,218 @@ async fn providers_check(arguments: Value) -> Value {
                 "probe": "version",
                 "startupVerified": false,
                 "error": probe_error_text(&output),
-                "diagnostic": provider_diagnostic(provider, &command, &output, timeout_ms, false)
+                "versionDurationMs": output.duration_ms,
+                "diagnostic": provider_diagnostic(provider, &command, &output, VERSION_TIMEOUT_MS, false, "version")
             }),
         };
         if input.smoke && value["available"].as_bool() == Some(true) {
-            let smoke_value = match provider::smoke_command(
-                provider,
-                &default_cwd(),
-                (timeout_ms / 1000).max(1) as i64,
-            ) {
-                Ok(smoke_command) => {
-                    let mut output = run_probe(&smoke_command, provider, timeout_ms).await;
-                    if provider == ProviderKind::Claude
-                        && output
-                            .status
-                            .as_ref()
-                            .is_some_and(|status| status.success())
-                        && !claude_output_is_parseable(&output.stdout)
-                    {
-                        output.failure_category = Some("provider_output_error");
-                    }
-                    match output.status {
-                        Some(status) if status.success() && output.failure_category.is_none() => {
-                            let mut value = value;
-                            value["startupVerified"] = json!(true);
-                            value
-                        }
-                        _ => {
-                            let mut value = value;
-                            value["available"] = json!(false);
-                            value["startupVerified"] = json!(false);
-                            value["error"] = json!(probe_error_text(&output));
-                            value["diagnostic"] = provider_diagnostic(
-                                provider,
-                                &smoke_command,
-                                &output,
-                                timeout_ms,
-                                false,
-                            );
-                            value
-                        }
-                    }
-                }
-                Err(error) => {
-                    let mut value = value;
-                    value["available"] = json!(false);
-                    value["error"] = json!(error);
-                    value
-                }
-            };
-            results.insert(provider.as_str().to_string(), smoke_value);
+            smoke_candidates.push((provider, value));
         } else {
             results.insert(provider.as_str().to_string(), value);
         }
     }
-    json!({ "providers": results })
+    if input.smoke {
+        let smoked = run_smoke_checks(smoke_candidates, &input, aggregate_timeout_ms).await;
+        for (provider, value) in smoked {
+            results.insert(provider.as_str().to_string(), value);
+        }
+    }
+    Ok(json!({ "providers": results }))
+}
+
+fn selected_providers(input: Option<&[ProviderKind]>) -> Result<Vec<ProviderKind>, String> {
+    let Some(input) = input else {
+        return Ok(ProviderKind::ALL.to_vec());
+    };
+    if input.is_empty() {
+        return Err("providers must select at least one provider".to_string());
+    }
+    let mut selected = Vec::new();
+    for provider in input {
+        if !selected.contains(provider) {
+            selected.push(*provider);
+        }
+    }
+    Ok(selected)
+}
+
+fn validate_provider_budgets(input: &ProvidersCheckInput) -> Result<(), String> {
+    let Some(provider_timeout_ms) = input.provider_timeout_ms.as_ref() else {
+        return Ok(());
+    };
+    for (provider, value) in provider_timeout_ms {
+        provider
+            .parse::<ProviderKind>()
+            .map_err(|error| format!("providerTimeoutMs.{provider}: {error}"))?;
+        validate_timeout_range(
+            *value,
+            MAX_PROVIDER_TIMEOUT_MS,
+            &format!("providerTimeoutMs.{provider}"),
+        )?;
+    }
+    Ok(())
+}
+
+fn aggregate_timeout_ms(value: Option<i64>) -> Result<u64, String> {
+    match value {
+        Some(value) => {
+            validate_timeout_range(value, MAX_AGGREGATE_TIMEOUT_MS, "aggregateTimeoutMs")
+        }
+        None => Ok(DEFAULT_AGGREGATE_TIMEOUT_MS),
+    }
+}
+
+fn validate_timeout_range(value: i64, max: i64, field: &str) -> Result<u64, String> {
+    if !(1..=max).contains(&value) {
+        return Err(format!("{field} must be an integer from 1 through {max}"));
+    }
+    Ok(value as u64)
+}
+
+fn provider_smoke_timeout_ms(provider: ProviderKind, input: &ProvidersCheckInput) -> u64 {
+    input
+        .provider_timeout_ms
+        .as_ref()
+        .and_then(|timeouts| timeouts.get(provider.as_str()))
+        .copied()
+        .or(input.timeout_ms)
+        .map(|value| value.clamp(1, MAX_PROVIDER_TIMEOUT_MS) as u64)
+        .unwrap_or_else(|| default_provider_smoke_timeout_ms(provider))
+}
+
+fn default_provider_smoke_timeout_ms(provider: ProviderKind) -> u64 {
+    match provider {
+        ProviderKind::Codex => 20_000,
+        ProviderKind::Claude => 30_000,
+        ProviderKind::Kimi => 45_000,
+        ProviderKind::Cursor => 60_000,
+    }
+}
+
+fn smoke_concurrency() -> usize {
+    env::var("AGENT_BRIDGE_SMOKE_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .map(|value| value.min(4))
+        .unwrap_or(2)
+}
+
+async fn run_smoke_checks(
+    candidates: Vec<(ProviderKind, Value)>,
+    input: &ProvidersCheckInput,
+    aggregate_timeout_ms: u64,
+) -> Vec<(ProviderKind, Value)> {
+    let order: Vec<ProviderKind> = candidates.iter().map(|(provider, _)| *provider).collect();
+    let deadline = Instant::now() + Duration::from_millis(aggregate_timeout_ms);
+    let mut pending: VecDeque<_> = candidates.into();
+    let mut running = JoinSet::new();
+    let mut results = Vec::new();
+    let concurrency = smoke_concurrency();
+    loop {
+        while running.len() < concurrency && !pending.is_empty() {
+            let remaining_ms = deadline
+                .checked_duration_since(Instant::now())
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or(0);
+            if remaining_ms == 0 {
+                break;
+            }
+            let (provider, base_value) = pending.pop_front().unwrap();
+            let provider_timeout_ms = provider_smoke_timeout_ms(provider, input);
+            let timeout_ms = provider_timeout_ms.min(remaining_ms);
+            running
+                .spawn(async move { smoke_one_provider(provider, base_value, timeout_ms).await });
+        }
+        if running.is_empty() {
+            break;
+        }
+        match running.join_next().await {
+            Some(Ok(result)) => results.push(result),
+            Some(Err(error)) => eprintln!("[agent-bridge] smoke task join error: {error}"),
+            None => break,
+        }
+    }
+    for (provider, mut value) in pending {
+        value["available"] = json!(false);
+        value["startupVerified"] = json!(false);
+        value["error"] =
+            json!("aggregate provider readiness timeout expired before smoke probe started");
+        value["diagnostic"] = json!({
+            "failureCategory": "provider_timeout",
+            "provider": provider.as_str(),
+            "startupVerified": false,
+            "timeoutMs": aggregate_timeout_ms,
+            "phase": "smoke"
+        });
+        results.push((provider, value));
+    }
+    results.sort_by_key(|(provider, _)| {
+        order
+            .iter()
+            .position(|candidate| candidate == provider)
+            .unwrap_or(usize::MAX)
+    });
+    results
+}
+
+async fn smoke_one_provider(
+    provider: ProviderKind,
+    base_value: Value,
+    timeout_ms: u64,
+) -> (ProviderKind, Value) {
+    let smoke_value = match provider::smoke_command(
+        provider,
+        &default_cwd(),
+        (timeout_ms / 1000).max(1) as i64,
+    ) {
+        Ok((smoke_command, strategy)) => {
+            let mut output = run_probe(&smoke_command, provider, timeout_ms, "smoke").await;
+            if output
+                .status
+                .as_ref()
+                .is_some_and(|status| status.success())
+                && !smoke_output_is_accepted(provider, &output.stdout)
+            {
+                output.failure_category = Some("provider_output_error");
+                output.error =
+                    Some("provider smoke output did not contain expected token".to_string());
+            }
+            match output.status {
+                Some(status) if status.success() && output.failure_category.is_none() => {
+                    let mut value = base_value;
+                    value["startupVerified"] = json!(true);
+                    value["smokeDurationMs"] = json!(output.duration_ms);
+                    value["smokePromptStrategy"] = json!(strategy);
+                    value
+                }
+                _ => {
+                    let mut value = base_value;
+                    value["available"] = json!(false);
+                    value["startupVerified"] = json!(false);
+                    value["smokeDurationMs"] = json!(output.duration_ms);
+                    value["smokePromptStrategy"] = json!(strategy);
+                    value["error"] = json!(probe_error_text(&output));
+                    value["diagnostic"] = provider_diagnostic(
+                        provider,
+                        &smoke_command,
+                        &output,
+                        timeout_ms,
+                        false,
+                        "smoke",
+                    );
+                    value
+                }
+            }
+        }
+        Err(error) => {
+            let mut value = base_value;
+            value["available"] = json!(false);
+            value["error"] = json!(error);
+            value
+        }
+    };
+    (provider, smoke_value)
 }
 
 struct ProbeResult {
@@ -285,15 +476,20 @@ struct ProbeResult {
     stderr: Vec<u8>,
     failure_category: Option<&'static str>,
     error: Option<String>,
+    duration_ms: u64,
 }
 
 async fn run_probe(
     command: &provider::ProviderCommand,
     provider: ProviderKind,
     timeout_ms: u64,
+    phase: &'static str,
 ) -> ProbeResult {
-    let child = tokio::process::Command::new(&command.command)
+    let started = Instant::now();
+    let mut process = tokio::process::Command::new(&command.command);
+    process
         .args(&command.args)
+        .current_dir(&command.cwd)
         .env_clear()
         .envs(provider::provider_env(provider))
         .stdin(if command.stdin.is_some() {
@@ -302,19 +498,21 @@ async fn run_probe(
             std::process::Stdio::null()
         })
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|error| ProbeResult {
-            status: None,
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-            failure_category: Some("provider_start_error"),
-            error: Some(error.to_string()),
-        });
+        .stderr(std::process::Stdio::piped());
+    configure_child_process_group(&mut process);
+    let child = process.spawn().map_err(|error| ProbeResult {
+        status: None,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+        failure_category: Some("provider_start_error"),
+        error: Some(error.to_string()),
+        duration_ms: started.elapsed().as_millis() as u64,
+    });
     let mut child = match child {
         Ok(child) => child,
         Err(result) => return result,
     };
+    let pid = child.id();
     let stdin_write = if let (Some(stdin), Some(mut child_stdin)) =
         (command.stdin.as_deref(), child.stdin.take())
     {
@@ -329,6 +527,7 @@ async fn run_probe(
             stderr: Vec::new(),
             failure_category: Some("provider_start_error"),
             error: Some(error.to_string()),
+            duration_ms: started.elapsed().as_millis() as u64,
         };
     }
     let stdout_task = child.stdout.take().map(|mut stdout| {
@@ -357,8 +556,21 @@ async fn run_probe(
         }
         Ok(Err(error)) => (None, Some("provider_exit_error"), Some(error.to_string())),
         Err(_) => {
-            let _ = child.start_kill();
-            let status = child.wait().await.ok();
+            terminate_child_tree(pid, libc::SIGTERM);
+            let status = match timeout(CHILD_SHUTDOWN_GRACE, child.wait()).await {
+                Ok(result) => result.ok(),
+                Err(_) => {
+                    terminate_child_tree(pid, libc::SIGKILL);
+                    child.wait().await.ok()
+                }
+            };
+            eprintln!(
+                "[agent-bridge] provider probe timeout provider={} phase={} elapsedMs={} timeoutMs={} failureCategory=provider_timeout",
+                provider.as_str(),
+                phase,
+                started.elapsed().as_millis(),
+                timeout_ms
+            );
             (
                 status,
                 Some("provider_timeout"),
@@ -380,8 +592,37 @@ async fn run_probe(
         stderr,
         failure_category,
         error,
+        duration_ms: started.elapsed().as_millis() as u64,
     }
 }
+
+#[cfg(unix)]
+fn configure_child_process_group(command: &mut tokio::process::Command) {
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn configure_child_process_group(_command: &mut tokio::process::Command) {}
+
+#[cfg(unix)]
+fn terminate_child_tree(pid: Option<u32>, signal: i32) {
+    if let Some(pid) = pid {
+        unsafe {
+            libc::killpg(pid as libc::pid_t, signal);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_child_tree(_pid: Option<u32>, _signal: i32) {}
 
 fn probe_error_text(output: &ProbeResult) -> String {
     if let Some(error) = output.error.as_deref() {
@@ -404,6 +645,7 @@ fn provider_diagnostic(
     output: &ProbeResult,
     timeout_ms: u64,
     startup_verified: bool,
+    phase: &'static str,
 ) -> Value {
     let redactions = diagnostic_redactions(command);
     let mut diagnostic = json!({
@@ -413,6 +655,8 @@ fn provider_diagnostic(
         "commandPath": command_path(provider, command),
         "startupVerified": startup_verified,
         "timeoutMs": timeout_ms,
+        "elapsedMs": output.duration_ms,
+        "phase": phase,
         "exitCode": output.status.as_ref().and_then(|status| status.code()),
         "signal": signal_name(output.status.as_ref()),
         "stdoutExcerpt": excerpt(&output.stdout, &redactions),
@@ -443,17 +687,24 @@ fn diagnostic_redactions(command: &provider::ProviderCommand) -> Vec<String> {
     redactions
 }
 
-fn claude_output_is_parseable(stdout: &[u8]) -> bool {
+fn smoke_output_is_accepted(provider: ProviderKind, stdout: &[u8]) -> bool {
     let text = String::from_utf8_lossy(stdout);
-    text.lines().any(|line| {
-        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
-            return false;
-        };
-        value
-            .get("result")
-            .and_then(Value::as_str)
-            .is_some_and(|result| !result.is_empty())
-    })
+    match provider {
+        ProviderKind::Claude | ProviderKind::Codex => text.lines().any(|line| {
+            serde_json::from_str::<Value>(line.trim())
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("result")
+                        .or_else(|| value.get("output"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .is_some_and(|result| result.contains(provider::PROVIDER_SMOKE_TOKEN))
+                || line.contains(provider::PROVIDER_SMOKE_TOKEN)
+        }),
+        ProviderKind::Cursor | ProviderKind::Kimi => text.contains(provider::PROVIDER_SMOKE_TOKEN),
+    }
 }
 
 fn command_kind(provider: ProviderKind, command: &provider::ProviderCommand) -> String {
@@ -584,20 +835,41 @@ fn safe_cwd(cwd: Option<&str>) -> Result<String, String> {
     {
         return Err("cwd must not contain .. segments".to_string());
     }
-    let allowed_root = env::var("AGENT_BRIDGE_ALLOWED_ROOT")
-        .ok()
-        .map(PathBuf::from);
-    let root =
-        allowed_root.unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let real_cwd = cwd.canonicalize().map_err(|error| error.to_string())?;
-    let real_root = root.canonicalize().map_err(|error| error.to_string())?;
-    if !is_inside(&real_cwd, &real_root) {
+    let workspace_roots = configured_workspace_roots()?;
+    if !workspace_roots
+        .iter()
+        .any(|root| is_inside(&real_cwd, root))
+    {
         return Err(format!(
-            "cwd is outside allowed root: {}",
-            real_root.display()
+            "cwd is outside configured workspaces: {}",
+            workspace_roots
+                .iter()
+                .map(|root| root.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     Ok(real_cwd.display().to_string())
+}
+
+fn configured_workspace_roots() -> Result<Vec<PathBuf>, String> {
+    let roots: Vec<PathBuf> = env::var_os("AGENT_BRIDGE_WORKSPACES")
+        .map(|value| {
+            env::split_paths(&value)
+                .filter(|path| !path.as_os_str().is_empty())
+                .collect()
+        })
+        .unwrap_or_else(|| vec![env::current_dir().unwrap_or_else(|_| PathBuf::from("."))]);
+    let roots = if roots.is_empty() {
+        vec![env::current_dir().map_err(|error| error.to_string())?]
+    } else {
+        roots
+    };
+    roots
+        .into_iter()
+        .map(|root| root.canonicalize().map_err(|error| error.to_string()))
+        .collect()
 }
 
 fn is_inside(candidate: &Path, root: &Path) -> bool {

@@ -1156,20 +1156,41 @@ fn safe_cwd(cwd: Option<&str>) -> Result<String, String> {
     {
         return Err("cwd must not contain .. segments".to_string());
     }
-    let allowed_root = env::var("AGENT_BRIDGE_ALLOWED_ROOT")
-        .ok()
-        .map(PathBuf::from);
-    let root =
-        allowed_root.unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let real_cwd = cwd.canonicalize().map_err(|error| error.to_string())?;
-    let real_root = root.canonicalize().map_err(|error| error.to_string())?;
-    if !(real_cwd == real_root || real_cwd.strip_prefix(&real_root).is_ok()) {
+    let workspace_roots = configured_workspace_roots()?;
+    if !workspace_roots
+        .iter()
+        .any(|root| real_cwd == *root || real_cwd.strip_prefix(root).is_ok())
+    {
         return Err(format!(
-            "cwd is outside allowed root: {}",
-            real_root.display()
+            "cwd is outside configured workspaces: {}",
+            workspace_roots
+                .iter()
+                .map(|root| root.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     Ok(real_cwd.display().to_string())
+}
+
+fn configured_workspace_roots() -> Result<Vec<PathBuf>, String> {
+    let roots: Vec<PathBuf> = env::var_os("AGENT_BRIDGE_WORKSPACES")
+        .map(|value| {
+            env::split_paths(&value)
+                .filter(|path| !path.as_os_str().is_empty())
+                .collect()
+        })
+        .unwrap_or_else(|| vec![env::current_dir().unwrap_or_else(|_| PathBuf::from("."))]);
+    let roots = if roots.is_empty() {
+        vec![env::current_dir().map_err(|error| error.to_string())?]
+    } else {
+        roots
+    };
+    roots
+        .into_iter()
+        .map(|root| root.canonicalize().map_err(|error| error.to_string()))
+        .collect()
 }
 
 fn normalize_wait_ms(value: Option<i64>) -> i64 {

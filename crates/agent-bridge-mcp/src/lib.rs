@@ -1,4 +1,5 @@
 pub mod domain;
+pub mod guidance;
 pub mod mcp;
 pub mod provider;
 pub mod runtime;

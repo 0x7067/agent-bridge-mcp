@@ -1,9 +1,14 @@
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{Mutex, MutexGuard};
 use uuid::Uuid;
+
+static PROVIDER_READINESS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 struct McpClient {
     child: Child,
@@ -13,6 +18,7 @@ struct McpClient {
 }
 
 struct FixtureEnv {
+    _guard: MutexGuard<'static, ()>,
     root: PathBuf,
     state_dir: PathBuf,
     fake_provider: PathBuf,
@@ -29,9 +35,34 @@ impl McpClient {
     }
 
     fn start_with_claude_env(env: &FixtureEnv, native_claude: bool) -> Self {
+        let workspaces = std::env::join_paths([env.root.as_os_str()]).unwrap();
+        Self::start_with_options(env, native_claude, Some(workspaces), None, BTreeMap::new())
+    }
+
+    fn start_with_workspace_value(env: &FixtureEnv, workspaces: OsString) -> Self {
+        Self::start_with_options(env, false, Some(workspaces), None, BTreeMap::new())
+    }
+
+    fn start_with_legacy_allowed_root_only(env: &FixtureEnv) -> Self {
+        Self::start_with_options(env, false, None, Some(env.root.clone()), BTreeMap::new())
+    }
+
+    fn start_with_extra_env(env: &FixtureEnv, extra_env: BTreeMap<String, OsString>) -> Self {
+        let workspaces = std::env::join_paths([env.root.as_os_str()]).unwrap();
+        Self::start_with_options(env, false, Some(workspaces), None, extra_env)
+    }
+
+    fn start_with_options(
+        env: &FixtureEnv,
+        native_claude: bool,
+        workspaces: Option<OsString>,
+        legacy_allowed_root: Option<PathBuf>,
+        extra_env: BTreeMap<String, OsString>,
+    ) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"));
         command
-            .env("AGENT_BRIDGE_ALLOWED_ROOT", &env.root)
+            .env_remove("AGENT_BRIDGE_ALLOWED_ROOT")
+            .env_remove("AGENT_BRIDGE_WORKSPACES")
             .env("AGENT_BRIDGE_STATE_DIR", &env.state_dir)
             .env("CURSOR_AGENT_BIN", &env.fake_provider)
             .env("PI_BIN", &env.fake_provider)
@@ -41,10 +72,19 @@ impl McpClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(workspaces) = workspaces {
+            command.env("AGENT_BRIDGE_WORKSPACES", workspaces);
+        }
+        if let Some(legacy_allowed_root) = legacy_allowed_root {
+            command.env("AGENT_BRIDGE_ALLOWED_ROOT", legacy_allowed_root);
+        }
         if native_claude {
             command.env("CLAUDE_BIN", &env.fake_provider);
         } else {
             command.env("CLAUDE_P_BIN", &env.fake_provider);
+        }
+        for (key, value) in extra_env {
+            command.env(key, value);
         }
         let mut child = command.spawn().unwrap();
         let stdin = child.stdin.take().unwrap();
@@ -89,6 +129,23 @@ impl McpClient {
         serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
     }
 
+    fn tool_with_meta(&mut self, name: &str, arguments: Value, meta: Value) -> Value {
+        let response = self.request(
+            "tools/call",
+            json!({
+                "name": name,
+                "arguments": arguments,
+                "_meta": meta
+            }),
+        );
+        assert_ne!(response["result"]["isError"], true, "{response}");
+        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    fn tool_response_with_params(&mut self, params: Value) -> Value {
+        self.request("tools/call", params)
+    }
+
     fn tool_error(&mut self, name: &str, arguments: Value) -> String {
         let response = self.request(
             "tools/call",
@@ -120,6 +177,7 @@ fn temp_dir(prefix: &str) -> PathBuf {
 }
 
 fn fixture_env() -> FixtureEnv {
+    let guard = provider_readiness_test_guard();
     let root = temp_dir("agent-bridge-root");
     let state_dir = temp_dir("agent-bridge-state");
     let log_dir = state_dir.join("provider-log");
@@ -207,11 +265,38 @@ fn fixture_env() -> FixtureEnv {
     .unwrap();
     make_executable(&fake_provider);
     FixtureEnv {
+        _guard: guard,
         root,
         state_dir,
         fake_provider,
         log_dir,
     }
+}
+
+fn write_fake_provider(env: &FixtureEnv, lines: &[&str]) {
+    std::fs::write(&env.fake_provider, lines.join("\n")).unwrap();
+    make_executable(&env.fake_provider);
+}
+
+fn provider_keys(value: &Value) -> Vec<String> {
+    value["providers"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect()
+}
+
+fn provider_readiness_test_guard() -> MutexGuard<'static, ()> {
+    PROVIDER_READINESS_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+fn sorted_provider_keys(value: &Value) -> Vec<String> {
+    let mut keys = provider_keys(value);
+    keys.sort();
+    keys
 }
 
 fn make_executable(path: &Path) {
@@ -244,6 +329,16 @@ fn run_git(cwd: &Path, args: &[&str]) {
     );
 }
 
+#[cfg(unix)]
+fn process_is_alive(pid: i32) -> bool {
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn process_is_alive(_pid: i32) -> bool {
+    false
+}
+
 #[test]
 fn stdio_protocol_and_tool_schema_smoke() {
     let env = fixture_env();
@@ -251,6 +346,10 @@ fn stdio_protocol_and_tool_schema_smoke() {
 
     let initialize = client.request("initialize", json!({}));
     assert_eq!(initialize["result"]["protocolVersion"], "2024-11-05");
+    assert_eq!(
+        initialize["result"]["capabilities"],
+        json!({ "tools": {}, "prompts": {}, "resources": {} })
+    );
     assert_eq!(
         initialize["result"]["serverInfo"]["name"],
         "agent-bridge-mcp"
@@ -263,6 +362,22 @@ fn stdio_protocol_and_tool_schema_smoke() {
         .iter()
         .find(|tool| tool["name"] == "task_preview")
         .unwrap();
+    let providers_check = tools
+        .iter()
+        .find(|tool| tool["name"] == "providers_check")
+        .unwrap();
+    assert_eq!(
+        providers_check["inputSchema"]["properties"]["providers"]["items"]["enum"],
+        json!(["claude", "cursor", "kimi", "codex"])
+    );
+    assert_eq!(
+        providers_check["inputSchema"]["properties"]["aggregateTimeoutMs"]["maximum"],
+        120000
+    );
+    assert_eq!(
+        providers_check["inputSchema"]["properties"]["providerTimeoutMs"]["additionalProperties"]["maximum"],
+        90000
+    );
     assert_eq!(
         task_preview["inputSchema"]["properties"]["provider"]["enum"],
         json!(["claude", "cursor", "kimi", "codex"])
@@ -276,8 +391,126 @@ fn stdio_protocol_and_tool_schema_smoke() {
         json!(false)
     );
 
+    let prompts = client.request("prompts/list", json!({}));
+    let prompts = prompts["result"]["prompts"].as_array().unwrap();
+    assert_eq!(prompts.len(), 4);
+    assert!(
+        prompts
+            .iter()
+            .any(|prompt| prompt["name"] == "agent_bridge_delegate_implementation")
+    );
+
+    let prompt = client.request(
+        "prompts/get",
+        json!({"name": "agent_bridge_delegate_implementation"}),
+    );
+    let prompt_text = prompt["result"]["messages"][0]["content"]["text"]
+        .as_str()
+        .unwrap();
+    assert!(prompt_text.contains("task_spawn"));
+    assert!(prompt_text.contains("main caller remains responsible"));
+
+    let resources = client.request("resources/list", json!({}));
+    let resources = resources["result"]["resources"].as_array().unwrap();
+    assert_eq!(resources.len(), 3);
+    assert!(
+        resources
+            .iter()
+            .any(|resource| resource["uri"] == "agent-bridge://guidance/caller-workflow")
+    );
+
+    let resource = client.request(
+        "resources/read",
+        json!({"uri": "agent-bridge://guidance/caller-workflow"}),
+    );
+    let resource_content = &resource["result"]["contents"][0];
+    assert_eq!(resource_content["mimeType"], "text/markdown");
+    assert!(
+        resource_content["text"]
+            .as_str()
+            .unwrap()
+            .contains("task_result")
+    );
+
+    let missing_resource = client.request("resources/read", json!({"uri": "file:///etc/passwd"}));
+    assert_eq!(missing_resource["error"]["code"], -32002);
+
     let missing = client.request("missing/method", json!({}));
     assert_eq!(missing["error"]["code"], -32601);
+}
+
+#[test]
+fn stdio_tools_call_accepts_codex_meta_envelope() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let providers = client.tool_with_meta(
+        "providers_list",
+        json!({}),
+        json!({"progressToken": "codex-live-call"}),
+    );
+    assert_eq!(
+        providers["providers"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec!["claude", "cursor", "kimi", "codex"]
+    );
+
+    let preview = client.tool_with_meta(
+        "task_preview",
+        json!({
+            "provider": "codex",
+            "mode": "review",
+            "prompt": "secret prompt",
+            "cwd": env.root
+        }),
+        json!({"ignored": {"provider": "claude", "maxTurns": 99}}),
+    );
+    assert_eq!(
+        preview["command"].as_str().unwrap(),
+        env.fake_provider.to_string_lossy()
+    );
+}
+
+#[test]
+fn stdio_tools_call_keeps_envelope_and_argument_validation_strict() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let unknown_envelope = client.tool_response_with_params(json!({
+        "name": "providers_list",
+        "arguments": {},
+        "unexpectedEnvelopeField": true
+    }));
+    assert_eq!(unknown_envelope["result"]["isError"], true);
+    assert!(
+        unknown_envelope["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("unexpectedEnvelopeField")
+    );
+
+    let unknown_argument = client.tool_response_with_params(json!({
+        "name": "task_preview",
+        "_meta": {"progressToken": "codex-live-call"},
+        "arguments": {
+            "provider": "codex",
+            "mode": "review",
+            "prompt": "x",
+            "cwd": env.root,
+            "maxTurns": 2
+        }
+    }));
+    assert_eq!(unknown_argument["result"]["isError"], true);
+    assert!(
+        unknown_argument["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Unknown argument")
+    );
 }
 
 #[test]
@@ -363,7 +596,7 @@ fn stdio_providers_preview_and_safety_checks() {
             "cwd": link
         }),
     );
-    assert!(error.contains("outside allowed root"));
+    assert!(error.contains("outside configured workspaces"));
 
     let error = client.tool_error(
         "task_preview",
@@ -375,6 +608,395 @@ fn stdio_providers_preview_and_safety_checks() {
         }),
     );
     assert!(error.contains("prompt exceeds"));
+}
+
+#[test]
+fn stdio_providers_check_filters_and_validates_readiness_inputs() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let filtered = client.tool(
+        "providers_check",
+        json!({"smoke": false, "providers": ["cursor", "cursor"]}),
+    );
+    assert_eq!(provider_keys(&filtered), vec!["cursor"]);
+    assert_eq!(
+        filtered["providers"]["cursor"]["version"],
+        "fake-provider 1.0.0"
+    );
+    assert!(filtered["providers"]["cursor"]["versionDurationMs"].is_number());
+    assert!(
+        filtered["providers"]["cursor"]
+            .get("smokeDurationMs")
+            .is_none()
+    );
+
+    let unknown_provider = client.tool_error("providers_check", json!({"providers": ["openai"]}));
+    assert!(unknown_provider.contains("claude"));
+    assert!(unknown_provider.contains("codex"));
+
+    let empty_filter = client.tool_error("providers_check", json!({"providers": []}));
+    assert!(empty_filter.contains("at least one provider"));
+
+    let invalid_aggregate = client.tool_error(
+        "providers_check",
+        json!({"smoke": true, "aggregateTimeoutMs": 0}),
+    );
+    assert!(invalid_aggregate.contains("aggregateTimeoutMs"));
+
+    let invalid_budget = client.tool_error(
+        "providers_check",
+        json!({"smoke": true, "providerTimeoutMs": {"cursor": 0}}),
+    );
+    assert!(invalid_budget.contains("providerTimeoutMs.cursor"));
+
+    let unknown_budget_provider = client.tool_error(
+        "providers_check",
+        json!({"smoke": true, "providerTimeoutMs": {"openai": 1000}}),
+    );
+    assert!(unknown_budget_provider.contains("provider must be one of"));
+}
+
+#[test]
+fn stdio_providers_check_uses_provider_budgets_and_concurrency() {
+    let env = fixture_env();
+    write_fake_provider(
+        &env,
+        &[
+            "#!/bin/sh",
+            "stdin=$(cat)",
+            "if [ \"$1\" = \"--version\" ]; then",
+            "  echo fake-provider 1.0.0",
+            "  exit 0",
+            "fi",
+            "is_cursor=0",
+            "is_kimi=0",
+            "case \"$*\" in",
+            "  *--workspace*) is_cursor=1 ;;",
+            "  *--tools*) is_kimi=1 ;;",
+            "esac",
+            "if [ \"$is_cursor\" = 1 ] || [ \"$is_kimi\" = 1 ]; then",
+            "  sleep 2",
+            "  echo AGENT_BRIDGE_PROVIDER_SMOKE_OK",
+            "  exit 0",
+            "fi",
+            "if printf '%s\\n%s\\n' \"$stdin\" \"$*\" | grep -q AGENT_BRIDGE_PROVIDER_SMOKE_OK; then",
+            "  echo AGENT_BRIDGE_PROVIDER_SMOKE_OK",
+            "  exit 0",
+            "fi",
+            "exit 0",
+            "",
+        ],
+    );
+    let mut client = McpClient::start(&env);
+    let started = std::time::Instant::now();
+
+    let checks = client.tool(
+        "providers_check",
+        json!({
+            "smoke": true,
+            "providers": ["cursor", "kimi"],
+            "aggregateTimeoutMs": 4500,
+            "providerTimeoutMs": {"cursor": 3000, "kimi": 3000}
+        }),
+    );
+
+    assert_eq!(sorted_provider_keys(&checks), vec!["cursor", "kimi"]);
+    assert_eq!(checks["providers"]["cursor"]["startupVerified"], true);
+    assert_eq!(checks["providers"]["kimi"]["startupVerified"], true);
+    assert!(checks["providers"]["cursor"]["smokeDurationMs"].is_number());
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(3600),
+        "smoke probes should run concurrently: {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn stdio_providers_check_all_provider_smoke_is_batched_not_sequential() {
+    let env = fixture_env();
+    write_fake_provider(
+        &env,
+        &[
+            "#!/bin/sh",
+            "stdin=$(cat)",
+            "if [ \"$1\" = \"--version\" ]; then",
+            "  echo fake-provider 1.0.0",
+            "  exit 0",
+            "fi",
+            "if printf '%s\\n%s\\n' \"$stdin\" \"$*\" | grep -q AGENT_BRIDGE_PROVIDER_SMOKE_OK; then",
+            "  sleep 1",
+            "  echo AGENT_BRIDGE_PROVIDER_SMOKE_OK",
+            "  exit 0",
+            "fi",
+            "exit 0",
+            "",
+        ],
+    );
+    let mut client = McpClient::start(&env);
+    let started = std::time::Instant::now();
+
+    let checks = client.tool(
+        "providers_check",
+        json!({
+            "smoke": true,
+            "aggregateTimeoutMs": 5000,
+            "providerTimeoutMs": {
+                "claude": 3000,
+                "cursor": 3000,
+                "kimi": 3000,
+                "codex": 3000
+            }
+        }),
+    );
+
+    assert_eq!(
+        sorted_provider_keys(&checks),
+        vec!["claude", "codex", "cursor", "kimi"]
+    );
+    for provider in ["claude", "cursor", "kimi", "codex"] {
+        assert_eq!(checks["providers"][provider]["startupVerified"], true);
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(3600),
+        "all-provider smoke should be batched below sequential elapsed time: {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn stdio_providers_check_timeout_fallback_and_process_group_cleanup() {
+    let env = fixture_env();
+    let child_pid_path = env.log_dir.join("smoke-child.pid");
+    write_fake_provider(
+        &env,
+        &[
+            "#!/bin/sh",
+            "stdin=$(cat)",
+            "if [ \"$1\" = \"--version\" ]; then",
+            "  echo fake-provider 1.0.0",
+            "  exit 0",
+            "fi",
+            "case \"$*\" in",
+            "  *--workspace*)",
+            "    sleep 5 &",
+            "    child=$!",
+            "    printf '%s\\n' \"$child\" > \"$AGENT_BRIDGE_STATE_DIR/provider-log/smoke-child.pid\"",
+            "    wait \"$child\"",
+            "    ;;",
+            "esac",
+            "exit 0",
+            "",
+        ],
+    );
+    let mut client = McpClient::start(&env);
+
+    let checks = client.tool(
+        "providers_check",
+        json!({"smoke": true, "providers": ["cursor"], "timeoutMs": 800}),
+    );
+    let cursor = &checks["providers"]["cursor"];
+    assert_eq!(cursor["startupVerified"], false);
+    assert_eq!(cursor["diagnostic"]["failureCategory"], "provider_timeout");
+    assert_eq!(cursor["diagnostic"]["timeoutMs"], 800);
+
+    let child_pid = std::fs::read_to_string(&child_pid_path)
+        .unwrap()
+        .trim()
+        .parse::<i32>()
+        .unwrap();
+    for _ in 0..20 {
+        if !process_is_alive(child_pid) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("timed out waiting for smoke child pid {child_pid} to be reaped");
+}
+
+#[test]
+fn stdio_providers_check_aggregate_timeout_kills_inflight_smokes() {
+    let env = fixture_env();
+    write_fake_provider(
+        &env,
+        &[
+            "#!/bin/sh",
+            "stdin=$(cat)",
+            "if [ \"$1\" = \"--version\" ]; then",
+            "  echo fake-provider 1.0.0",
+            "  exit 0",
+            "fi",
+            "sleep 5 &",
+            "child=$!",
+            "trap 'kill -TERM \"$child\" 2>/dev/null || true; wait \"$child\" 2>/dev/null || true; exit 143' TERM INT",
+            "wait \"$child\"",
+            "",
+        ],
+    );
+    let mut client = McpClient::start(&env);
+
+    let checks = client.tool(
+        "providers_check",
+        json!({
+            "smoke": true,
+            "providers": ["cursor", "kimi"],
+            "aggregateTimeoutMs": 300,
+            "providerTimeoutMs": {"cursor": 3000, "kimi": 3000}
+        }),
+    );
+    assert_eq!(
+        checks["providers"]["cursor"]["diagnostic"]["failureCategory"],
+        "provider_timeout"
+    );
+    assert_eq!(
+        checks["providers"]["kimi"]["diagnostic"]["failureCategory"],
+        "provider_timeout"
+    );
+}
+
+#[test]
+fn stdio_providers_check_concurrency_env_fallbacks() {
+    let env = fixture_env();
+    write_fake_provider(
+        &env,
+        &[
+            "#!/bin/sh",
+            "stdin=$(cat)",
+            "if [ \"$1\" = \"--version\" ]; then",
+            "  echo fake-provider 1.0.0",
+            "  exit 0",
+            "fi",
+            "case \"$*\" in",
+            "  *--workspace*|*--tools*) sleep 1; echo AGENT_BRIDGE_PROVIDER_SMOKE_OK; exit 0 ;;",
+            "esac",
+            "exit 0",
+            "",
+        ],
+    );
+    let mut extra_env = BTreeMap::new();
+    extra_env.insert(
+        "AGENT_BRIDGE_SMOKE_CONCURRENCY".to_string(),
+        OsString::from("1"),
+    );
+    let mut client = McpClient::start_with_extra_env(&env, extra_env);
+    let started = std::time::Instant::now();
+    let checks = client.tool(
+        "providers_check",
+        json!({
+            "smoke": true,
+            "providers": ["cursor", "kimi"],
+            "aggregateTimeoutMs": 3000,
+            "providerTimeoutMs": {"cursor": 1500, "kimi": 1500}
+        }),
+    );
+    assert_eq!(checks["providers"]["cursor"]["startupVerified"], true);
+    assert_eq!(checks["providers"]["kimi"]["startupVerified"], true);
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(1900),
+        "concurrency=1 should run probes sequentially: {:?}",
+        started.elapsed()
+    );
+
+    let mut extra_env = BTreeMap::new();
+    extra_env.insert(
+        "AGENT_BRIDGE_SMOKE_CONCURRENCY".to_string(),
+        OsString::from("not-a-number"),
+    );
+    let mut client = McpClient::start_with_extra_env(&env, extra_env);
+    let started = std::time::Instant::now();
+    let checks = client.tool(
+        "providers_check",
+        json!({
+            "smoke": true,
+            "providers": ["cursor", "kimi"],
+            "aggregateTimeoutMs": 2500,
+            "providerTimeoutMs": {"cursor": 1500, "kimi": 1500}
+        }),
+    );
+    assert_eq!(checks["providers"]["cursor"]["startupVerified"], true);
+    assert_eq!(checks["providers"]["kimi"]["startupVerified"], true);
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(1800),
+        "invalid concurrency should fall back to default concurrency: {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn stdio_providers_check_hung_version_probe_times_out() {
+    let env = fixture_env();
+    write_fake_provider(
+        &env,
+        &[
+            "#!/bin/sh",
+            "if [ \"$1\" = \"--version\" ]; then",
+            "  sleep 5 &",
+            "  child=$!",
+            "  wait \"$child\"",
+            "  exit 0",
+            "fi",
+            "exit 0",
+            "",
+        ],
+    );
+    let mut client = McpClient::start(&env);
+
+    let checks = client.tool("providers_check", json!({"providers": ["codex"]}));
+    let codex = &checks["providers"]["codex"];
+    assert_eq!(codex["available"], false);
+    assert_eq!(codex["diagnostic"]["failureCategory"], "provider_timeout");
+    assert_eq!(codex["diagnostic"]["timeoutMs"], 5000);
+}
+
+#[test]
+fn stdio_workspace_path_list_allows_multiple_roots_and_rejects_outside() {
+    let env = fixture_env();
+    let second_root = temp_dir("agent-bridge-second-root");
+    let workspaces = std::env::join_paths([env.root.as_os_str(), second_root.as_os_str()]).unwrap();
+    let mut client = McpClient::start_with_workspace_value(&env, workspaces);
+
+    let preview = client.tool(
+        "task_preview",
+        json!({
+            "provider": "codex",
+            "mode": "review",
+            "prompt": "x",
+            "cwd": second_root
+        }),
+    );
+    assert_eq!(
+        preview["cwd"].as_str().unwrap(),
+        second_root.canonicalize().unwrap().to_str().unwrap()
+    );
+
+    let outside = temp_dir("agent-bridge-outside");
+    let error = client.tool_error(
+        "task_preview",
+        json!({
+            "provider": "codex",
+            "mode": "review",
+            "prompt": "x",
+            "cwd": outside
+        }),
+    );
+    assert!(error.contains("outside configured workspaces"));
+}
+
+#[test]
+fn stdio_ignores_legacy_allowed_root_env_var() {
+    let env = fixture_env();
+    let mut client = McpClient::start_with_legacy_allowed_root_only(&env);
+
+    let error = client.tool_error(
+        "task_preview",
+        json!({
+            "provider": "codex",
+            "mode": "review",
+            "prompt": "x",
+            "cwd": env.root
+        }),
+    );
+    assert!(error.contains("outside configured workspaces"));
 }
 
 #[test]
@@ -480,6 +1102,40 @@ fn stdio_claude_task_prompt_is_passed_on_stdin_not_argv() {
 }
 
 #[test]
+fn stdio_claude_prompt_survives_stdin_consuming_zsh_startup_files() {
+    let env = fixture_env();
+    let home = temp_dir("agent-bridge-home");
+    std::fs::write(home.join(".zshenv"), "cat >/dev/null || true\n").unwrap();
+    let mut extra_env = BTreeMap::new();
+    extra_env.insert("HOME".to_string(), home.into_os_string());
+    let mut client = McpClient::start_with_extra_env(&env, extra_env);
+
+    let spawned = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "claude",
+            "mode": "review",
+            "prompt": "terminal-noise",
+            "cwd": env.root,
+            "timeoutSeconds": 5
+        }),
+    );
+    let task_id = spawned["taskId"].as_str().unwrap();
+
+    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    assert_eq!(waited["status"], "succeeded");
+
+    let result = client.tool("task_result", json!({"taskId": task_id}));
+    assert!(
+        result["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("terminal probe noise"),
+        "provider did not receive prompt on stdin: {result}"
+    );
+}
+
+#[test]
 fn stdio_native_claude_bin_selection_uses_native_print_args() {
     let env = fixture_env();
     let mut client = McpClient::start_with_native_claude(&env);
@@ -516,17 +1172,12 @@ fn stdio_claude_smoke_timeout_returns_bounded_diagnostic() {
             "  echo fake-provider 1.0.0",
             "  exit 0",
             "fi",
-            "case \"$stdin\" in",
-            "  *AGENT_BRIDGE_PROVIDER_SMOKE_OK*)",
-            "    echo claude-p booting",
-            "    echo waiting for stop hook >&2",
-            "    sleep 2 &",
-            "    child=$!",
-            "    trap 'kill -TERM \"$child\" 2>/dev/null || true; wait \"$child\" 2>/dev/null || true; exit 143' TERM INT",
-            "    wait \"$child\"",
-            "    ;;",
-            "esac",
-            "exit 0",
+            "echo claude-p booting",
+            "echo waiting for stop hook >&2",
+            "sleep 2 &",
+            "child=$!",
+            "trap 'kill -TERM \"$child\" 2>/dev/null || true; wait \"$child\" 2>/dev/null || true; exit 143' TERM INT",
+            "wait \"$child\"",
             "",
         ]
         .join("\n"),

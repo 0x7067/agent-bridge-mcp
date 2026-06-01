@@ -42,6 +42,43 @@ Recommended caller workflow:
    changed files, exit metadata, and structured `errorType`.
 6. Call `task_remove` intentionally after any managed worktree has been inspected.
 
+Real-world delegation workflow:
+
+- Treat provider output as evidence for the main Codex thread, not as final verification. Inspect the final report, logs, `gitStatus`, `diff`, `changedFiles`, and exit metadata before using the result.
+- Keep the main thread responsible for project gates. Run the relevant tests, lint, typecheck, build, or OpenSpec validation before claiming the requested work is complete.
+- Use `research` and `review` modes for read-only analysis, second opinions, and plan critique.
+- Use `command` mode only for bounded command-oriented work where the prompt clearly names the command goal and expected evidence.
+- Use `implement` mode with `isolation: "worktree"` by default so provider edits land in a managed git worktree that can be inspected before integration.
+- After inspecting a final managed-worktree task, call `task_remove` intentionally. Cleanup is explicit so callers can review generated files and diffs before the worktree is removed.
+
+If a provider appears stalled:
+
+1. Call `task_wait` with a short bounded timeout.
+2. Call `task_logs` with `stdoutLine` and `stderrLine` cursors to inspect new output without rereading the whole log.
+3. If the task is still not useful, call `task_stop`.
+4. Call `task_result` on the stopped task to inspect logs, exit metadata, diagnostics, and any partial git state.
+5. Decide in the main thread whether to discard, re-run with a narrower prompt, or manually continue from the inspected state.
+
+## MCP Self-Description
+
+In addition to tools, the server exposes MCP prompts and resources so clients can
+discover how to use Agent Bridge safely:
+
+- `prompts/list` exposes workflow templates for delegated review, isolated
+  implementation, result inspection, and stalled task recovery.
+- `prompts/get` returns user-message guidance for the selected workflow.
+- `resources/list` exposes static `agent-bridge://guidance/...` resources for
+  caller workflow, safety guidance, and provider capabilities.
+- `resources/read` returns those resources as `text/markdown` from a hardcoded
+  allowlist. It does not map resource URIs to local files.
+
+Client behavior is host-dependent. Tool schemas are the most likely surface to
+be visible to the model automatically. Prompts are normally user-selected
+workflow templates. Resources may be shown in a picker, searched, or included
+automatically only if the host implements those heuristics. The server currently
+keeps protocol version `2024-11-05`, so it does not rely on newer
+`initialize.instructions` support.
+
 ## Providers
 
 First-class providers:
@@ -122,11 +159,11 @@ supported targets.
 
 - Public tool arguments are whitelisted; unknown fields are rejected.
 - `cwd` is validated with `fs.realpath` to block symlink escapes.
-- Set `AGENT_BRIDGE_ALLOWED_ROOT` to confine task cwd values to one workspace root.
+- Set `AGENT_BRIDGE_WORKSPACES` to confine task cwd values to one or more workspace roots. It uses the platform path-list separator, such as `:` on macOS/Linux.
 - Prompts are capped at 100 KiB UTF-8.
 - Task stdout/stderr, git status, and git diff are capped at 1 MiB each.
 - Provider processes use ignored stdin unless a provider requires stdin prompt transport. Most providers receive a restricted environment allowlist.
-- Claude provider runs through `/bin/zsh -lc` and sources `~/.zshenv`, `~/.zprofile`, and `~/.zshrc` before executing `claude-p` or native `claude`, so MCP behavior matches the terminal path by default. The shell script is constant; provider paths and cwd values are passed through `exec "$@"`, and prompt text is written to child stdin.
+- Claude provider runs through `/bin/zsh -flc` and manually sources `~/.zshenv`, `~/.zprofile`, and `~/.zshrc` with stdin redirected from `/dev/null` before executing `claude-p` or native `claude`, so MCP behavior matches the terminal path without letting startup files consume provider prompts. The shell script is constant; provider paths and cwd values are passed through `exec "$@"`, and prompt text is written to child stdin.
 - Claude provider receives a focused CLI environment allowlist so Claude Code and `claude-p` can find auth/config without inheriting unrelated host secrets. The bridge strips injected `ANTHROPIC_BASE_URL` values that can point Claude at Codex-local proxy endpoints. `claude-p` is the default; set `CLAUDE_BIN` to opt into native `claude -p` when `CLAUDE_P_BIN` is unset.
 - Codex provider passes `--config shell_environment_policy.inherit="all"` to `codex exec` so delegated Codex shell commands see the same tool `PATH` as the provider process.
 - Active task state is persisted under `AGENT_BRIDGE_STATE_DIR`, defaulting to:
@@ -160,6 +197,72 @@ also include `errorType`, such as `timeout`, `provider_exit_error`,
 If a provider appears stalled, call `task_wait` with a short timeout and then
 `task_logs` with the latest line cursors. If there is still no useful output,
 call `task_stop`; the stopped task remains inspectable through `task_result`.
+
+## Live Smoke Checks
+
+Default automated verification uses deterministic fake providers. It does not
+require live Claude, Cursor, Kimi, Codex, network access, paid model usage, or
+host keychain permissions.
+
+Run live provider smoke checks only when you intentionally want to exercise the
+installed local CLIs. For a focused check, filter to one provider:
+
+```json
+{
+  "name": "providers_check",
+  "arguments": {
+    "smoke": true,
+    "providers": ["cursor"]
+  }
+}
+```
+
+All-provider smoke checks use bounded concurrent probes with provider-specific
+default budgets. The current defaults are 20s for Codex, 30s for Claude, 45s for
+Kimi, and 60s for Cursor, under a 110s aggregate call budget. The earlier live
+investigation saw successful task-path probes at roughly 11.5s for Codex, 20.5s
+for Claude, 33.2s for Kimi, and 52.1s for Cursor.
+
+Use explicit budgets when investigating a slow first run:
+
+```json
+{
+  "name": "providers_check",
+  "arguments": {
+    "smoke": true,
+    "providers": ["claude", "codex"],
+    "aggregateTimeoutMs": 110000,
+    "providerTimeoutMs": {
+      "claude": 30000,
+      "codex": 20000
+    }
+  }
+}
+```
+
+`timeoutMs` remains a per-provider fallback for existing callers. Set
+`AGENT_BRIDGE_SMOKE_CONCURRENCY=1` to run smoke probes sequentially while
+debugging local resource contention.
+
+For a minimal read-only task smoke, use `research` or `review`, a short timeout,
+and `isolation: "none"` unless you specifically want a managed worktree:
+
+```json
+{
+  "name": "task_spawn",
+  "arguments": {
+    "provider": "codex",
+    "mode": "review",
+    "prompt": "Inspect the repository at a high level and return one sentence: AGENT_BRIDGE_LIVE_TASK_OK. Do not edit files.",
+    "cwd": "/Users/pedro/Development/agent-bridge-mcp",
+    "timeoutSeconds": 120,
+    "isolation": "none"
+  }
+}
+```
+
+Then call `task_wait` with a bounded timeout and inspect `task_result`. Live
+smoke prompts should be small, read-only, and explicit about not editing files.
 
 ## Claude Troubleshooting
 
@@ -197,7 +300,7 @@ Use the installed Rust binary:
       "command": "agent-bridge-mcp",
       "args": [],
       "env": {
-        "AGENT_BRIDGE_ALLOWED_ROOT": "/Users/pedro/Development/agent-bridge-mcp"
+        "AGENT_BRIDGE_WORKSPACES": "/Users/pedro/Development"
       }
     }
   }
@@ -208,7 +311,7 @@ Or register it with Codex:
 
 ```bash
 codex mcp add \
-  --env AGENT_BRIDGE_ALLOWED_ROOT=/Users/pedro/Development/agent-bridge-mcp \
+  --env AGENT_BRIDGE_WORKSPACES=/Users/pedro/Development \
   agent-bridge \
   -- agent-bridge-mcp
 ```

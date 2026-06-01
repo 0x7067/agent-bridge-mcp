@@ -34,6 +34,8 @@ pub struct ToolCallParams {
     pub name: ToolName,
     #[serde(default)]
     pub arguments: Value,
+    #[serde(default, rename = "_meta")]
+    pub meta: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -64,7 +66,17 @@ pub fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "providers_check",
             "description": "Check availability of each provider by running their command with --version, optionally with a startup smoke probe.",
-            "inputSchema": object_schema(json!({"smoke": {"type": "boolean"}, "timeoutMs": {"type": "number"}}), Vec::<&str>::new())
+            "inputSchema": object_schema(json!({
+                "smoke": {"type": "boolean"},
+                "timeoutMs": {"type": "number"},
+                "providers": {"type": "array", "items": {"type": "string", "enum": provider_enum}},
+                "aggregateTimeoutMs": {"type": "integer", "minimum": 1, "maximum": 120000},
+                "providerTimeoutMs": {
+                    "type": "object",
+                    "propertyNames": {"enum": provider_enum},
+                    "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 90000}
+                }
+            }), Vec::<&str>::new())
         }),
         spawn_like_tool(
             "task_preview",
@@ -126,7 +138,7 @@ fn spawn_like_tool(
             "mode": {"type": "string", "enum": mode_enum},
             "prompt": {"type": "string", "description": "Task prompt. Maximum 100 KiB UTF-8."},
             "title": {"type": "string"},
-            "cwd": {"type": "string", "description": "Workspace directory under the allowed root."},
+            "cwd": {"type": "string", "description": "Workspace directory under a configured workspace root."},
             "timeoutSeconds": {"type": "number"},
             "model": {"type": "string"},
             "effort": {"type": "string"},

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::env;
 
 const PROVIDER_SMOKE_PROMPT: &str = "Reply with exactly: AGENT_BRIDGE_PROVIDER_SMOKE_OK";
+pub const PROVIDER_SMOKE_TOKEN: &str = "AGENT_BRIDGE_PROVIDER_SMOKE_OK";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderCommand {
@@ -115,8 +116,8 @@ pub fn smoke_command(
     provider: ProviderKind,
     cwd: &str,
     timeout_seconds: i64,
-) -> Result<ProviderCommand, String> {
-    build_command(&ProviderTask {
+) -> Result<(ProviderCommand, &'static str), String> {
+    let task = ProviderTask {
         provider,
         mode: TaskMode::Research,
         prompt: PROVIDER_SMOKE_PROMPT,
@@ -126,7 +127,77 @@ pub fn smoke_command(
         model: None,
         effort: None,
         thinking: None,
-    })
+    };
+    validate_options(&task)?;
+    let command = match provider {
+        ProviderKind::Claude => build_claude_command(&task, PROVIDER_SMOKE_PROMPT.to_string()),
+        ProviderKind::Cursor => ProviderCommand {
+            provider: task.provider,
+            command_kind: None,
+            command: env_or("CURSOR_AGENT_BIN", "cursor-agent"),
+            args: [
+                vec![
+                    "-p".to_string(),
+                    "--output-format".to_string(),
+                    "json".to_string(),
+                    "--workspace".to_string(),
+                    task.cwd.to_string(),
+                ],
+                cursor_mode_flags(task.mode),
+                vec![
+                    "--trust".to_string(),
+                    "--".to_string(),
+                    PROVIDER_SMOKE_PROMPT.to_string(),
+                ],
+            ]
+            .concat(),
+            stdin: None,
+            redactions: vec![PROVIDER_SMOKE_PROMPT.to_string()],
+            cwd: task.cwd.to_string(),
+            timeout_seconds: task.timeout_seconds,
+            env: BTreeMap::new(),
+        },
+        ProviderKind::Kimi => ProviderCommand {
+            provider: task.provider,
+            command_kind: None,
+            command: env_or("PI_BIN", "pi"),
+            args: vec![
+                "-p".to_string(),
+                "--no-session".to_string(),
+                "--no-context-files".to_string(),
+                "--tools".to_string(),
+                kimi_tools(task.mode).to_string(),
+                PROVIDER_SMOKE_PROMPT.to_string(),
+            ],
+            stdin: None,
+            redactions: vec![PROVIDER_SMOKE_PROMPT.to_string()],
+            cwd: task.cwd.to_string(),
+            timeout_seconds: task.timeout_seconds,
+            env: BTreeMap::new(),
+        },
+        ProviderKind::Codex => ProviderCommand {
+            provider: task.provider,
+            command_kind: None,
+            command: env_or("CODEX_BIN", "codex"),
+            args: vec![
+                "exec".to_string(),
+                "--cd".to_string(),
+                task.cwd.to_string(),
+                "--json".to_string(),
+                "--sandbox".to_string(),
+                codex_sandbox(task.mode).to_string(),
+                "--config".to_string(),
+                "shell_environment_policy.inherit=\"all\"".to_string(),
+                PROVIDER_SMOKE_PROMPT.to_string(),
+            ],
+            stdin: None,
+            redactions: vec![PROVIDER_SMOKE_PROMPT.to_string()],
+            cwd: task.cwd.to_string(),
+            timeout_seconds: task.timeout_seconds,
+            env: BTreeMap::new(),
+        },
+    };
+    Ok((command, "minimal"))
 }
 
 pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String> {
@@ -242,7 +313,7 @@ pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
             "CLAUDE_P_BIN",
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_OAUTH_TOKEN",
-            "AGENT_BRIDGE_ALLOWED_ROOT",
+            "AGENT_BRIDGE_WORKSPACES",
             "AGENT_BRIDGE_STATE_DIR",
         ][..],
         _ => &[
@@ -276,7 +347,7 @@ pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
             "CODEX_BIN",
             "CODEX_HOME",
             "OPENAI_API_KEY",
-            "AGENT_BRIDGE_ALLOWED_ROOT",
+            "AGENT_BRIDGE_WORKSPACES",
             "AGENT_BRIDGE_STATE_DIR",
         ][..],
     };
@@ -327,8 +398,8 @@ fn build_claude_command(task: &ProviderTask<'_>, rendered_prompt: String) -> Pro
             ("claude-p".to_string(), args)
         };
     let mut args = vec![
-        "-lc".to_string(),
-        "source ~/.zshenv 2>/dev/null || true; source ~/.zprofile 2>/dev/null || true; source ~/.zshrc 2>/dev/null || true; exec \"$@\"".to_string(),
+        "-flc".to_string(),
+        "source ~/.zshenv </dev/null 2>/dev/null || true; source ~/.zprofile </dev/null 2>/dev/null || true; source ~/.zshrc </dev/null 2>/dev/null || true; exec \"$@\"".to_string(),
         "agent-bridge-provider".to_string(),
     ];
     args.append(&mut inner_args);

@@ -4,7 +4,7 @@
       "command": "agent-bridge-mcp",
       "args": [],
       "env": {
-        "AGENT_BRIDGE_ALLOWED_ROOT": "/Users/pedro/Development/agent-bridge-mcp"
+        "AGENT_BRIDGE_WORKSPACES": "/Users/pedro/Development"
       }
     }
   }
