@@ -186,8 +186,7 @@ Suggested flow:
 3. Use task_spawn with mode "review" or "research" and a bounded prompt.
 4. Poll task_wait with a bounded timeout, then task_logs if more progress detail is needed.
 5. Read task_result once the task is final and inspect logs, gitStatus, diff, changedFiles, exit metadata, and errorType.
-6. Treat provider output as evidence; the main caller remains responsible for deciding whether findings are valid.
-7. For direct provider CLI flags or one-shot subprocess usage outside Agent Bridge, consult the provider skill: claude-agent, codex-agent, cursor-agent, or pi-agent."#;
+6. Treat provider output as evidence; the main caller remains responsible for deciding whether findings are valid."#;
 
 const IMPLEMENTATION_PROMPT: &str = r#"Use Agent Bridge for isolated implementation work.
 
@@ -199,8 +198,7 @@ Suggested flow:
 5. Use task_wait, task_logs, and task_status to monitor the task without assuming it is finished.
 6. When final, call task_result and inspect the report, logs, gitStatus, diff, changedFiles, exit metadata, and errorType.
 7. The main caller remains responsible for running relevant tests, lint, typecheck, build, or OpenSpec validation before claiming work complete.
-8. Call task_remove only after the managed worktree has been inspected and cleanup is intentional.
-9. Provider skills are direct CLI runbooks; write-capable delegated implementation should prefer Agent Bridge managed worktree isolation rather than direct provider skill invocation."#;
+8. Call task_remove only after the managed worktree has been inspected and cleanup is intentional."#;
 
 const INSPECT_RESULT_PROMPT: &str = r#"Inspect an Agent Bridge task result.
 
@@ -244,8 +242,7 @@ Suggested workflows:
 1. For read-only review, use mode "review" or "research", isolation "none", a small prompt, bounded task_wait, and final task_result review.
 2. For isolated implementation, use mode "implement", isolation "worktree", inspect reviewPacket, gitStatus, gitDiff, changedFiles, stdout, stderr, and diagnostics, then run verification in the main caller.
 3. For stalled-task recovery, use bounded task_wait, incremental task_logs cursors, task_status, task_stop if needed, and final task_result inspection. For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms, inspect cwd, workspace policy, prompt scope, and isolation strategy before retrying.
-4. For direct provider CLI dogfood outside Agent Bridge, consult provider skills claude-agent, codex-agent, cursor-agent, or pi-agent.
-5. For provider comparison, run equivalent read-only prompts against selected providers, compare task_result evidence, and keep final conclusions in the main caller.
+4. For provider comparison, run equivalent read-only prompts against selected providers, compare task_result evidence, and keep final conclusions in the main caller.
 
 Live provider execution remains opt-in and should not be added to default CI."#;
 
@@ -263,8 +260,6 @@ const CALLER_WORKFLOW_RESOURCE: &str = r#"# Agent Bridge Caller Workflow
 
 Use Agent Bridge when a separate coding agent can provide useful research, review, command execution, or isolated implementation work.
 
-Provider skills document direct CLI runbooks for one-shot provider subprocesses. Agent Bridge tools provide MCP-native delegation, readiness checks, task lifecycle state, logs, diffs, managed worktree isolation, and result inspection.
-
 Recommended flow:
 1. Call `doctor` first when setup, workspace, state, provider, or host-runner readiness is uncertain.
 2. Call `providers_check` to catch missing or misconfigured provider CLIs. Use smoke checks when debugging startup.
@@ -274,8 +269,6 @@ Recommended flow:
 6. Once final, call `task_result` for `reviewPacket`, logs, git status, diff, changed files, exit metadata, diagnostics, and `errorType`.
 7. Treat provider output as evidence for the main caller, not as final verification.
 8. Call `task_remove` intentionally after any managed worktree has been inspected.
-
-For direct provider CLI flags, output format options, or manual one-shot troubleshooting outside Agent Bridge, consult the corresponding provider skill: `claude-agent`, `codex-agent`, `cursor-agent`, or `pi-agent`.
 "#;
 
 const SAFETY_RESOURCE: &str = r#"# Agent Bridge Safety Guidance
@@ -289,17 +282,15 @@ const SAFETY_RESOURCE: &str = r#"# Agent Bridge Safety Guidance
 - If a task stalls, use bounded `task_wait`, incremental `task_logs`, and `task_stop` rather than waiting indefinitely.
 - For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms, use `task_wait`, `task_logs`, `task_status`, and final `task_result`; inspect cwd, workspace policy, prompt scope, and isolation before retrying.
 - Do not loosen Codex sandbox permissions as a reflex or repeat an unchanged request after denial diagnostics.
-- Provider skills cover direct CLI runbooks only; write-capable delegated implementation should prefer Agent Bridge `task_spawn` with managed worktree isolation.
-- Direct provider skill output is evidence, not verification; the main caller still runs the smallest relevant proof before claiming completion.
 "#;
 
 const PROVIDER_CAPABILITIES_RESOURCE: &str = r#"# Agent Bridge Provider Capabilities
 
 First-class providers:
-- `claude`: runtime provider for Claude delegation. Direct CLI details live in provider skill `claude-agent`.
-- `cursor`: runtime provider for Cursor Agent delegation. Direct CLI details live in provider skill `cursor-agent`.
-- `kimi`: runtime provider backed by local Pi/Kimi. Direct CLI details live in provider skill `pi-agent`.
-- `codex`: runtime provider for Codex delegation. Direct CLI details live in provider skill `codex-agent`. Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms should be investigated with `task_wait`, `task_logs`, `task_status`, final `task_result`, `task_preview`, cwd, workspace policy, prompt scope, and isolation strategy before retrying.
+- `claude`: local Claude Code through `claude-p` by default, or native `claude -p` when configured.
+- `cursor`: local Cursor Agent through `cursor-agent -p`.
+- `kimi`: local Pi/Kimi through `pi -p`.
+- `codex`: local Codex through `codex exec`. Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms should be investigated with `task_wait`, `task_logs`, `task_status`, final `task_result`, `task_preview`, cwd, workspace policy, prompt scope, and isolation strategy before retrying.
 
 Supported modes:
 - `research`: read/analyze only.
@@ -307,7 +298,7 @@ Supported modes:
 - `implement`: write-capable implementation.
 - `command`: bounded command-oriented work.
 
-Use `providers_list` for the authoritative runtime provider summary and `providers_check` for availability and startup checks. Use provider skills for direct CLI flags, output format options, or manual one-shot subprocess usage. Do not loosen Codex sandbox permissions as a reflex or repeat an unchanged request after denial diagnostics.
+Use `providers_list` for the authoritative runtime provider summary and `providers_check` for availability and startup checks. Do not loosen Codex sandbox permissions as a reflex or repeat an unchanged request after denial diagnostics.
 "#;
 
 const CLAUDE_HOST_LIFECYCLE_RESOURCE: &str = r#"# Claude Host Runner Lifecycle
@@ -338,17 +329,13 @@ Use `task_spawn` with mode `review` or `research`, `isolation: "none"`, a small 
 
 ## isolated implementation
 
-Use `task_spawn` with mode `implement` and `isolation: "worktree"`. After completion, inspect `reviewPacket`, `gitStatus`, `gitDiff`, and `changedFiles`; run the relevant verification in the main caller; call `task_remove` only after the managed worktree has been reviewed. Prefer this workflow over direct provider skill invocation for write-capable delegated implementation.
+Use `task_spawn` with mode `implement` and `isolation: "worktree"`. After completion, inspect `reviewPacket`, `gitStatus`, `gitDiff`, and `changedFiles`; run the relevant verification in the main caller; call `task_remove` only after the managed worktree has been reviewed.
 
 ## stalled-task recovery
 
 Use short bounded `task_wait` calls. If the task does not finish, call `task_logs` with `stdoutLine` and `stderrLine` cursors, then `task_status`. Call `task_stop` only when the task is no longer useful, then inspect final `task_result`.
 
 For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms, inspect cwd, workspace policy, prompt scope, and isolation before retrying. Prefer narrowing the prompt or using managed worktree isolation over loosening sandbox permissions.
-
-## direct provider skills
-
-Use `claude-agent`, `codex-agent`, `cursor-agent`, or `pi-agent` only for direct CLI runbooks outside Agent Bridge. Their output is still evidence; the main caller owns final verification.
 
 ## provider comparison
 

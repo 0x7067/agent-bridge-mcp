@@ -101,16 +101,13 @@ keeps protocol version `2024-11-05`, so it does not rely on newer
 
 First-class providers:
 
-- `claude`: runtime provider for Claude delegation; direct CLI runbook skill: `claude-agent`.
-- `cursor`: runtime provider for Cursor Agent delegation; direct CLI runbook skill: `cursor-agent`.
-- `kimi`: runtime provider backed by local Pi/Kimi; direct CLI runbook skill: `pi-agent`.
-- `codex`: runtime provider for Codex delegation; direct CLI runbook skill: `codex-agent`.
+- `claude`: local Claude Code through `claude-p` by default; set `CLAUDE_BIN` to use native `claude -p` instead when `CLAUDE_P_BIN` is not set.
+- `cursor`: local Cursor Agent through `cursor-agent -p`.
+- `kimi`: local Pi/Kimi through `pi -p`.
+- `codex`: local Codex through `codex exec`.
 
 Provider-specific capabilities, command construction, smoke probes, and
 environment allowlists are implemented in the Rust provider module.
-Provider skills document one-shot direct CLI usage, provider-specific flags,
-dangerous options, output expectations, and manual troubleshooting outside the
-MCP lifecycle.
 
 Supported modes:
 
@@ -121,28 +118,6 @@ Supported modes:
 
 Provider/mode combinations are validated. For example, Cursor does not support
 `command` mode in v1.
-
-### Repo-Owned Provider Skills
-
-Provider skill source files live under `.codex/skills/<skill-name>/SKILL.md`.
-They are the repo-owned source of truth for direct provider CLI runbooks:
-
-- `.codex/skills/claude-agent/SKILL.md`
-- `.codex/skills/codex-agent/SKILL.md`
-- `.codex/skills/cursor-agent/SKILL.md`
-- `.codex/skills/pi-agent/SKILL.md`
-
-Personal or host-specific installs are derived copies. To use these runbooks in
-a host-specific skill directory, copy or symlink the repo-owned skill directory
-into that host's skill location. Do not edit personal copies as the canonical
-source.
-
-Use Agent Bridge tools for MCP-native delegation, readiness checks, background
-task lifecycle state, managed worktree isolation, logs, diffs, and final
-`task_result` metadata. Use provider skills when an operator explicitly wants a
-direct one-shot CLI invocation outside Agent Bridge. In both workflows, provider
-output is evidence; the main caller still inspects output and runs the smallest
-relevant proof before claiming work complete.
 
 ## Requirements
 
