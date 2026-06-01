@@ -82,7 +82,13 @@ The current adapter passes the rendered prompt as a positional argument after `-
 
 Alternative considered: keep positional arguments for small prompts because they are simple. That leaves sensitive prompt text visible to local process inspection and conflicts with the redaction requirement.
 
-### Decision 6: Keep public APIs stable with additive diagnostics only
+### Decision 6: Keep shell initialization constant and argv-based
+
+The Claude adapter may keep the `/bin/zsh -lc` shell-initialization wrapper so local Claude auth and PATH behavior match an interactive terminal, but the shell source must remain a constant bridge-owned string. Provider binary paths, workspace paths, temp file paths, model values, effort values, and other user-influenced values must be passed as positional arguments to the wrapper and executed through `exec "$@"`, or passed through stdin/file data. The adapter must not interpolate those values into shell source text.
+
+Alternative considered: remove shell initialization entirely and spawn Claude directly. That would reduce shell complexity but would reintroduce the setup mismatch this change is meant to diagnose. The safe middle ground is a constant shell wrapper with array-style execution and deterministic tests for shell-sensitive path and prompt content.
+
+### Decision 7: Keep public APIs stable with additive diagnostics only
 
 The public MCP tools remain unchanged. If richer diagnostics need to be returned, they should be additive fields in existing responses or logs. Existing clients that ignore unknown fields should continue to work.
 
@@ -93,6 +99,7 @@ Alternative considered: add a new `claude_diagnose` tool. That may be useful lat
 - `claude-p` upstream behavior changes again -> Mitigation: keep fake fixtures focused on bridge contracts and document upstream compatibility links; make live smoke optional/manual.
 - Diagnostics leak sensitive data -> Mitigation: redact prompts and credentials by construction, add tests for redaction, cap stdout/stderr excerpts.
 - Prompt text leaks through local process listings -> Mitigation: require stdin/input-file or another non-argv transport for all Claude task prompts; reject before spawn when unsupported.
+- User-controlled values are interpreted by the shell wrapper -> Mitigation: keep the shell script constant, pass dynamic values only through positional argv to `exec "$@"` or non-argv prompt transport, and add fixture tests with shell metacharacters in paths and prompts.
 - Smoke probes spend user quota or take too long -> Mitigation: keep smoke opt-in through `providers_check(smoke: true)`, honor caller timeout, and use a minimal prompt.
 - Shell initialization remains a source of nondeterminism -> Mitigation: test shell-wrapped command construction and report command selection clearly; avoid exposing full environment.
 - Native Claude fallback differs from `claude-p` behavior -> Mitigation: recommend rather than silently switch in this change, and document the trade-off.

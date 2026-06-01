@@ -7,8 +7,12 @@ const PROVIDER_SMOKE_PROMPT: &str = "Reply with exactly: AGENT_BRIDGE_PROVIDER_S
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderCommand {
+    pub provider: ProviderKind,
+    pub command_kind: Option<String>,
     pub command: String,
     pub args: Vec<String>,
+    pub stdin: Option<String>,
+    pub redactions: Vec<String>,
     pub cwd: String,
     pub timeout_seconds: i64,
     pub env: BTreeMap<String, String>,
@@ -92,8 +96,12 @@ pub fn validate_options(task: &ProviderTask<'_>) -> Result<(), String> {
 
 pub fn version_command(provider: ProviderKind) -> ProviderCommand {
     ProviderCommand {
+        provider,
+        command_kind: provider_command_kind(provider),
         command: resolve_command(provider),
         args: vec!["--version".to_string()],
+        stdin: None,
+        redactions: Vec::new(),
         cwd: env::current_dir()
             .unwrap_or_else(|_| ".".into())
             .display()
@@ -127,6 +135,8 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
     let command = match task.provider {
         ProviderKind::Claude => build_claude_command(task, rendered_prompt),
         ProviderKind::Cursor => ProviderCommand {
+            provider: task.provider,
+            command_kind: None,
             command: env_or("CURSOR_AGENT_BIN", "cursor-agent"),
             args: [
                 vec![
@@ -141,11 +151,15 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
                 vec!["--trust".to_string(), "--".to_string(), rendered_prompt],
             ]
             .concat(),
+            stdin: None,
+            redactions: Vec::new(),
             cwd: task.cwd.to_string(),
             timeout_seconds: task.timeout_seconds,
             env: BTreeMap::new(),
         },
         ProviderKind::Kimi => ProviderCommand {
+            provider: task.provider,
+            command_kind: None,
             command: env_or("PI_BIN", "pi"),
             args: [
                 vec![
@@ -160,11 +174,15 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
                 vec![rendered_prompt],
             ]
             .concat(),
+            stdin: None,
+            redactions: Vec::new(),
             cwd: task.cwd.to_string(),
             timeout_seconds: task.timeout_seconds,
             env: BTreeMap::new(),
         },
         ProviderKind::Codex => ProviderCommand {
+            provider: task.provider,
+            command_kind: None,
             command: env_or("CODEX_BIN", "codex"),
             args: [
                 vec![
@@ -189,6 +207,8 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
                 vec![rendered_prompt],
             ]
             .concat(),
+            stdin: None,
+            redactions: Vec::new(),
             cwd: task.cwd.to_string(),
             timeout_seconds: task.timeout_seconds,
             env: BTreeMap::new(),
@@ -273,38 +293,39 @@ pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
 fn build_claude_command(task: &ProviderTask<'_>, rendered_prompt: String) -> ProviderCommand {
     let native_claude = env::var("CLAUDE_BIN").ok();
     let claude_p = env::var("CLAUDE_P_BIN").ok();
-    let mut inner_args = if let Some(native_claude) = native_claude.filter(|_| claude_p.is_none()) {
-        [
-            vec![
-                native_claude,
-                "-p".to_string(),
-                "--output-format".to_string(),
-                "json".to_string(),
-            ],
-            claude_mode_flags(task.mode),
-            optional_arg("--model", task.model),
-            optional_arg("--effort", task.effort),
-            vec!["--".to_string(), rendered_prompt],
-        ]
-        .concat()
-    } else {
-        [
-            vec![
-                claude_p.unwrap_or_else(|| "claude-p".to_string()),
-                "--cwd".to_string(),
-                task.cwd.to_string(),
-                "--timeout".to_string(),
-                task.timeout_seconds.to_string(),
-                "--output-format".to_string(),
-                "json".to_string(),
-            ],
-            claude_mode_flags(task.mode),
-            optional_arg("--model", task.model),
-            optional_arg("--effort", task.effort),
-            vec!["--".to_string(), rendered_prompt],
-        ]
-        .concat()
-    };
+    let (command_kind, mut inner_args) =
+        if let Some(native_claude) = native_claude.filter(|_| claude_p.is_none()) {
+            let args = [
+                vec![
+                    native_claude,
+                    "-p".to_string(),
+                    "--output-format".to_string(),
+                    "json".to_string(),
+                ],
+                claude_mode_flags(task.mode),
+                optional_arg("--model", task.model),
+                optional_arg("--effort", task.effort),
+            ]
+            .concat();
+            ("native-claude".to_string(), args)
+        } else {
+            let args = [
+                vec![
+                    claude_p.unwrap_or_else(|| "claude-p".to_string()),
+                    "--cwd".to_string(),
+                    task.cwd.to_string(),
+                    "--timeout".to_string(),
+                    task.timeout_seconds.to_string(),
+                    "--output-format".to_string(),
+                    "json".to_string(),
+                ],
+                claude_mode_flags(task.mode),
+                optional_arg("--model", task.model),
+                optional_arg("--effort", task.effort),
+            ]
+            .concat();
+            ("claude-p".to_string(), args)
+        };
     let mut args = vec![
         "-lc".to_string(),
         "source ~/.zshenv 2>/dev/null || true; source ~/.zprofile 2>/dev/null || true; source ~/.zshrc 2>/dev/null || true; exec \"$@\"".to_string(),
@@ -312,11 +333,28 @@ fn build_claude_command(task: &ProviderTask<'_>, rendered_prompt: String) -> Pro
     ];
     args.append(&mut inner_args);
     ProviderCommand {
+        provider: task.provider,
+        command_kind: Some(command_kind),
         command: "/bin/zsh".to_string(),
         args,
+        stdin: Some(rendered_prompt.clone()),
+        redactions: vec![rendered_prompt, task.prompt.to_string()],
         cwd: task.cwd.to_string(),
         timeout_seconds: task.timeout_seconds,
         env: BTreeMap::new(),
+    }
+}
+
+fn provider_command_kind(provider: ProviderKind) -> Option<String> {
+    match provider {
+        ProviderKind::Claude => {
+            if env::var("CLAUDE_BIN").is_ok() && env::var("CLAUDE_P_BIN").is_err() {
+                Some("native-claude".to_string())
+            } else {
+                Some("claude-p".to_string())
+            }
+        }
+        _ => None,
     }
 }
 

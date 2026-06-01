@@ -115,6 +115,7 @@ pub enum ErrorType {
     Timeout,
     ProviderExitError,
     ProviderStartError,
+    ProviderOutputError,
     Stopped,
     Stale,
 }

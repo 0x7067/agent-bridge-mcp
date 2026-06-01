@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::env;
 use std::path::{Path, PathBuf};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::{Duration, timeout};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -206,28 +207,22 @@ async fn providers_check(arguments: Value) -> Value {
     let mut results = serde_json::Map::new();
     for provider in ProviderKind::ALL {
         let command = provider::version_command(provider);
-        let output = run_probe(&command.command, &command.args, provider, timeout_ms).await;
-        let value = match output {
-            Ok(output) if output.status.success() => json!({
+        let output = run_probe(&command, provider, timeout_ms).await;
+        let value = match output.status {
+            Some(status) if status.success() && output.failure_category.is_none() => json!({
                 "available": true,
                 "command": command.command,
                 "version": String::from_utf8_lossy(&output.stdout).trim(),
                 "probe": if input.smoke { "version+smoke" } else { "version" },
                 "startupVerified": false
             }),
-            Ok(output) => json!({
+            _ => json!({
                 "available": false,
                 "command": command.command,
                 "probe": "version",
                 "startupVerified": false,
-                "error": String::from_utf8_lossy(&output.stderr).trim()
-            }),
-            Err(error) => json!({
-                "available": false,
-                "command": command.command,
-                "probe": "version",
-                "startupVerified": false,
-                "error": error.to_string()
+                "error": probe_error_text(&output),
+                "diagnostic": provider_diagnostic(provider, &command, &output, timeout_ms, false)
             }),
         };
         if input.smoke && value["available"].as_bool() == Some(true) {
@@ -237,29 +232,34 @@ async fn providers_check(arguments: Value) -> Value {
                 (timeout_ms / 1000).max(1) as i64,
             ) {
                 Ok(smoke_command) => {
-                    match run_probe(
-                        &smoke_command.command,
-                        &smoke_command.args,
-                        provider,
-                        timeout_ms,
-                    )
-                    .await
+                    let mut output = run_probe(&smoke_command, provider, timeout_ms).await;
+                    if provider == ProviderKind::Claude
+                        && output
+                            .status
+                            .as_ref()
+                            .is_some_and(|status| status.success())
+                        && !claude_output_is_parseable(&output.stdout)
                     {
-                        Ok(output) if output.status.success() => {
+                        output.failure_category = Some("provider_output_error");
+                    }
+                    match output.status {
+                        Some(status) if status.success() && output.failure_category.is_none() => {
                             let mut value = value;
                             value["startupVerified"] = json!(true);
                             value
                         }
-                        Ok(output) => {
+                        _ => {
                             let mut value = value;
                             value["available"] = json!(false);
-                            value["error"] = json!(String::from_utf8_lossy(&output.stderr).trim());
-                            value
-                        }
-                        Err(error) => {
-                            let mut value = value;
-                            value["available"] = json!(false);
-                            value["error"] = json!(error);
+                            value["startupVerified"] = json!(false);
+                            value["error"] = json!(probe_error_text(&output));
+                            value["diagnostic"] = provider_diagnostic(
+                                provider,
+                                &smoke_command,
+                                &output,
+                                timeout_ms,
+                                false,
+                            );
                             value
                         }
                     }
@@ -279,22 +279,235 @@ async fn providers_check(arguments: Value) -> Value {
     json!({ "providers": results })
 }
 
+struct ProbeResult {
+    status: Option<std::process::ExitStatus>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    failure_category: Option<&'static str>,
+    error: Option<String>,
+}
+
 async fn run_probe(
-    command: &str,
-    args: &[String],
+    command: &provider::ProviderCommand,
     provider: ProviderKind,
     timeout_ms: u64,
-) -> Result<std::process::Output, String> {
-    let child = tokio::process::Command::new(command)
-        .args(args)
+) -> ProbeResult {
+    let child = tokio::process::Command::new(&command.command)
+        .args(&command.args)
         .env_clear()
         .envs(provider::provider_env(provider))
-        .output();
-    match timeout(Duration::from_millis(timeout_ms), child).await {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(error)) => Err(error.to_string()),
-        Err(_) => Err(format!("command timed out after {timeout_ms}ms")),
+        .stdin(if command.stdin.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| ProbeResult {
+            status: None,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            failure_category: Some("provider_start_error"),
+            error: Some(error.to_string()),
+        });
+    let mut child = match child {
+        Ok(child) => child,
+        Err(result) => return result,
+    };
+    let stdin_write = if let (Some(stdin), Some(mut child_stdin)) =
+        (command.stdin.as_deref(), child.stdin.take())
+    {
+        child_stdin.write_all(stdin.as_bytes()).await
+    } else {
+        Ok(())
+    };
+    if let Err(error) = stdin_write {
+        return ProbeResult {
+            status: None,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            failure_category: Some("provider_start_error"),
+            error: Some(error.to_string()),
+        };
     }
+    let stdout_task = child.stdout.take().map(|mut stdout| {
+        tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            let _ = stdout.read_to_end(&mut bytes).await;
+            bytes
+        })
+    });
+    let stderr_task = child.stderr.take().map(|mut stderr| {
+        tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            let _ = stderr.read_to_end(&mut bytes).await;
+            bytes
+        })
+    });
+    let wait = timeout(Duration::from_millis(timeout_ms), child.wait()).await;
+    let (status, failure_category, error) = match wait {
+        Ok(Ok(status)) => {
+            let failure_category = if status.success() {
+                None
+            } else {
+                Some("provider_exit_error")
+            };
+            (Some(status), failure_category, None)
+        }
+        Ok(Err(error)) => (None, Some("provider_exit_error"), Some(error.to_string())),
+        Err(_) => {
+            let _ = child.start_kill();
+            let status = child.wait().await.ok();
+            (
+                status,
+                Some("provider_timeout"),
+                Some(format!("command timed out after {timeout_ms}ms")),
+            )
+        }
+    };
+    let stdout = match stdout_task {
+        Some(task) => task.await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let stderr = match stderr_task {
+        Some(task) => task.await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    ProbeResult {
+        status,
+        stdout,
+        stderr,
+        failure_category,
+        error,
+    }
+}
+
+fn probe_error_text(output: &ProbeResult) -> String {
+    if let Some(error) = output.error.as_deref() {
+        return error.to_string();
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stdout.is_empty() {
+        return stdout;
+    }
+    "provider command failed".to_string()
+}
+
+fn provider_diagnostic(
+    provider: ProviderKind,
+    command: &provider::ProviderCommand,
+    output: &ProbeResult,
+    timeout_ms: u64,
+    startup_verified: bool,
+) -> Value {
+    let redactions = diagnostic_redactions(command);
+    let mut diagnostic = json!({
+        "failureCategory": output.failure_category.unwrap_or("provider_output_error"),
+        "provider": provider.as_str(),
+        "commandKind": command_kind(provider, command),
+        "commandPath": command_path(provider, command),
+        "startupVerified": startup_verified,
+        "timeoutMs": timeout_ms,
+        "exitCode": output.status.as_ref().and_then(|status| status.code()),
+        "signal": signal_name(output.status.as_ref()),
+        "stdoutExcerpt": excerpt(&output.stdout, &redactions),
+        "stderrExcerpt": excerpt(&output.stderr, &redactions)
+    });
+    if provider == ProviderKind::Claude
+        && command.command_kind.as_deref() == Some("claude-p")
+        && env::var("CLAUDE_BIN").is_ok()
+    {
+        diagnostic["recommendation"] = json!(
+            "Set CLAUDE_BIN without CLAUDE_P_BIN to use native claude -p, then retry providers_check with smoke: true"
+        );
+    }
+    diagnostic
+}
+
+fn diagnostic_redactions(command: &provider::ProviderCommand) -> Vec<String> {
+    let mut redactions = command.redactions.clone();
+    redactions.extend(
+        provider::provider_env(command.provider)
+            .into_iter()
+            .filter(|(key, _)| {
+                key.contains("KEY") || key.contains("TOKEN") || key.contains("SECRET")
+            })
+            .map(|(_, value)| value)
+            .filter(|value| !value.is_empty()),
+    );
+    redactions
+}
+
+fn claude_output_is_parseable(stdout: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(stdout);
+    text.lines().any(|line| {
+        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+            return false;
+        };
+        value
+            .get("result")
+            .and_then(Value::as_str)
+            .is_some_and(|result| !result.is_empty())
+    })
+}
+
+fn command_kind(provider: ProviderKind, command: &provider::ProviderCommand) -> String {
+    if provider != ProviderKind::Claude {
+        return provider.as_str().to_string();
+    }
+    command
+        .command_kind
+        .as_deref()
+        .unwrap_or("native-claude")
+        .to_string()
+}
+
+fn command_path(provider: ProviderKind, command: &provider::ProviderCommand) -> String {
+    if provider == ProviderKind::Claude && command.command == "/bin/zsh" {
+        return command
+            .args
+            .get(3)
+            .cloned()
+            .unwrap_or_else(|| command.command.clone());
+    }
+    command.command.clone()
+}
+
+fn excerpt(bytes: &[u8], redactions: &[String]) -> String {
+    const EXCERPT_BYTES: usize = 2048;
+    let capped = &bytes[..bytes.len().min(EXCERPT_BYTES)];
+    let mut text = String::from_utf8_lossy(capped).to_string();
+    for value in redactions {
+        if !value.is_empty() {
+            text = text.replace(value, "<prompt redacted>");
+            for token in value.split_whitespace().filter(|token| token.len() >= 8) {
+                text = text.replace(token, "<prompt redacted>");
+            }
+        }
+    }
+    text
+}
+
+#[cfg(unix)]
+fn signal_name(status: Option<&std::process::ExitStatus>) -> Option<String> {
+    use std::os::unix::process::ExitStatusExt;
+    status.and_then(|status| {
+        status.signal().map(|signal| match signal {
+            libc::SIGTERM => "SIGTERM".to_string(),
+            libc::SIGKILL => "SIGKILL".to_string(),
+            other => format!("SIG{other}"),
+        })
+    })
+}
+
+#[cfg(not(unix))]
+fn signal_name(_status: Option<&std::process::ExitStatus>) -> Option<String> {
+    None
 }
 
 fn default_cwd() -> String {
@@ -340,6 +553,7 @@ fn task_preview(arguments: Value) -> Result<Value, String> {
         "cwd": command.cwd,
         "timeoutSeconds": command.timeout_seconds,
         "args": args,
+        "stdin": command.stdin.as_ref().map(|_| "<prompt redacted>"),
         "envKeys": env_keys
     }))
 }

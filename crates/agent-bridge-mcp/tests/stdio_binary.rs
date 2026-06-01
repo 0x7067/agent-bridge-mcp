@@ -16,14 +16,23 @@ struct FixtureEnv {
     root: PathBuf,
     state_dir: PathBuf,
     fake_provider: PathBuf,
+    log_dir: PathBuf,
 }
 
 impl McpClient {
     fn start(env: &FixtureEnv) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"))
+        Self::start_with_claude_env(env, false)
+    }
+
+    fn start_with_native_claude(env: &FixtureEnv) -> Self {
+        Self::start_with_claude_env(env, true)
+    }
+
+    fn start_with_claude_env(env: &FixtureEnv, native_claude: bool) -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"));
+        command
             .env("AGENT_BRIDGE_ALLOWED_ROOT", &env.root)
             .env("AGENT_BRIDGE_STATE_DIR", &env.state_dir)
-            .env("CLAUDE_P_BIN", &env.fake_provider)
             .env("CURSOR_AGENT_BIN", &env.fake_provider)
             .env("PI_BIN", &env.fake_provider)
             .env("CODEX_BIN", &env.fake_provider)
@@ -31,9 +40,13 @@ impl McpClient {
             .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:8787")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+            .stderr(Stdio::piped());
+        if native_claude {
+            command.env("CLAUDE_BIN", &env.fake_provider);
+        } else {
+            command.env("CLAUDE_P_BIN", &env.fake_provider);
+        }
+        let mut child = command.spawn().unwrap();
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
         Self {
@@ -109,20 +122,72 @@ fn temp_dir(prefix: &str) -> PathBuf {
 fn fixture_env() -> FixtureEnv {
     let root = temp_dir("agent-bridge-root");
     let state_dir = temp_dir("agent-bridge-state");
+    let log_dir = state_dir.join("provider-log");
+    std::fs::create_dir_all(&log_dir).unwrap();
     let fake_provider = root.join("fake-provider");
     std::fs::write(
         &fake_provider,
         [
             "#!/bin/sh",
+            "stdin=$(cat)",
+            "if [ -n \"$AGENT_BRIDGE_STATE_DIR\" ]; then",
+            "  mkdir -p \"$AGENT_BRIDGE_STATE_DIR/provider-log\"",
+            "  printf '%s\\n' \"$*\" > \"$AGENT_BRIDGE_STATE_DIR/provider-log/argv.txt\"",
+            "  printf '%s' \"$stdin\" > \"$AGENT_BRIDGE_STATE_DIR/provider-log/stdin.txt\"",
+            "fi",
             "if [ \"$1\" = \"--version\" ]; then",
             "  echo fake-provider 1.0.0",
+            "  exit 0",
+            "fi",
+            "case \"$stdin\" in",
+            "  *echo-api-key*)",
+            "    echo \"$ANTHROPIC_API_KEY\"",
+            "    exit 0",
+            "    ;;",
+            "  *claude-timeout*)",
+            "    echo claude-task-started",
+            "    sleep 2 &",
+            "    child=$!",
+            "    trap 'kill -TERM \"$child\" 2>/dev/null || true; wait \"$child\" 2>/dev/null || true; exit 143' TERM INT",
+            "    wait \"$child\"",
+            "    ;;",
+            "  *non-zero-exit*)",
+            "    echo 'provider refused task' >&2",
+            "    exit 42",
+            "    ;;",
+            "  *missing-result*)",
+            "    echo '{\"type\":\"result\"}'",
+            "    exit 0",
+            "    ;;",
+            "  *terminal-noise*)",
+            "    echo 'terminal probe noise'",
+            "    printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"fixture ok\"}'",
+            "    echo 'trailing noise'",
+            "    exit 0",
+            "    ;;",
+            "  *secret-token-for-redaction*)",
+            "    echo 'secret-token-for-redaction'",
+            "    exit 0",
+            "    ;;",
+            "  *malformed-output*)",
+            "    echo 'not-json-from-claude'",
+            "    echo 'terminal noise' >&2",
+            "    exit 0",
+            "    ;;",
+            "  *AGENT_BRIDGE_PROVIDER_SMOKE_OK*)",
+            "    printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"AGENT_BRIDGE_PROVIDER_SMOKE_OK\"}'",
+            "    exit 0",
+            "    ;;",
+            "esac",
+            "if [ -n \"$stdin\" ]; then",
+            "  printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"fixture ok\"}'",
             "  exit 0",
             "fi",
             "case \"$*\" in",
             "  *sleep-long*)",
             "    echo started-long",
             "    echo waiting-long >&2",
-            "    sleep 30 &",
+            "    sleep 2 &",
             "    child=$!",
             "    trap 'kill -TERM \"$child\" 2>/dev/null || true; wait \"$child\" 2>/dev/null || true; exit 143' TERM INT",
             "    wait \"$child\"",
@@ -140,14 +205,19 @@ fn fixture_env() -> FixtureEnv {
         .join("\n"),
     )
     .unwrap();
-    let mut permissions = std::fs::metadata(&fake_provider).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&fake_provider, permissions).unwrap();
+    make_executable(&fake_provider);
     FixtureEnv {
         root,
         state_dir,
         fake_provider,
+        log_dir,
     }
+}
+
+fn make_executable(path: &Path) {
+    let mut permissions = std::fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).unwrap();
 }
 
 fn init_git_repo(root: &Path) {
@@ -376,6 +446,253 @@ fn stdio_task_lifecycle_stop_timeout_and_logs() {
     let timed_wait = client.tool("task_wait", json!({"taskId": timed_id, "timeoutMs": 3000}));
     assert_eq!(timed_wait["status"], "failed");
     assert_eq!(timed_wait["errorType"], "timeout");
+}
+
+#[test]
+fn stdio_claude_task_prompt_is_passed_on_stdin_not_argv() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+    let prompt = "--leading-flag\nquoted \"value\" $(touch should-not-run) secret-token";
+
+    let spawned = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "claude",
+            "mode": "review",
+            "prompt": prompt,
+            "cwd": env.root
+        }),
+    );
+    let task_id = spawned["taskId"].as_str().unwrap();
+    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    assert_eq!(waited["status"], "succeeded");
+
+    let argv = std::fs::read_to_string(env.log_dir.join("argv.txt")).unwrap();
+    let stdin = std::fs::read_to_string(env.log_dir.join("stdin.txt")).unwrap();
+    assert!(
+        !argv.contains(prompt),
+        "rendered Claude prompt leaked into argv: {argv}"
+    );
+    assert!(
+        stdin.contains(prompt),
+        "rendered Claude prompt was not delivered on stdin: {stdin}"
+    );
+}
+
+#[test]
+fn stdio_native_claude_bin_selection_uses_native_print_args() {
+    let env = fixture_env();
+    let mut client = McpClient::start_with_native_claude(&env);
+
+    let preview = client.tool(
+        "task_preview",
+        json!({
+            "provider": "claude",
+            "mode": "review",
+            "prompt": "native prompt",
+            "cwd": env.root
+        }),
+    );
+    let args = preview["args"].as_array().unwrap();
+    assert_eq!(preview["command"], "/bin/zsh");
+    assert!(
+        args.iter()
+            .any(|arg| arg.as_str() == Some(env.fake_provider.to_str().unwrap()))
+    );
+    assert!(args.iter().any(|arg| arg == "-p"));
+    assert!(!args.iter().any(|arg| arg == "--cwd"));
+    assert_eq!(preview["stdin"], "<prompt redacted>");
+}
+
+#[test]
+fn stdio_claude_smoke_timeout_returns_bounded_diagnostic() {
+    let env = fixture_env();
+    std::fs::write(
+        &env.fake_provider,
+        [
+            "#!/bin/sh",
+            "stdin=$(cat)",
+            "if [ \"$1\" = \"--version\" ]; then",
+            "  echo fake-provider 1.0.0",
+            "  exit 0",
+            "fi",
+            "case \"$stdin\" in",
+            "  *AGENT_BRIDGE_PROVIDER_SMOKE_OK*)",
+            "    echo claude-p booting",
+            "    echo waiting for stop hook >&2",
+            "    sleep 2 &",
+            "    child=$!",
+            "    trap 'kill -TERM \"$child\" 2>/dev/null || true; wait \"$child\" 2>/dev/null || true; exit 143' TERM INT",
+            "    wait \"$child\"",
+            "    ;;",
+            "esac",
+            "exit 0",
+            "",
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    make_executable(&env.fake_provider);
+    let mut client = McpClient::start(&env);
+
+    let checks = client.tool("providers_check", json!({"smoke": true, "timeoutMs": 500}));
+    let claude = &checks["providers"]["claude"];
+    assert_eq!(claude["available"], false);
+    assert_eq!(claude["startupVerified"], false);
+    assert_eq!(claude["diagnostic"]["failureCategory"], "provider_timeout");
+    assert_eq!(claude["diagnostic"]["timeoutMs"], 500);
+    assert!(
+        claude["diagnostic"]["stdoutExcerpt"]
+            .as_str()
+            .unwrap()
+            .contains("claude-p booting")
+    );
+    assert!(
+        claude["diagnostic"]["stderrExcerpt"]
+            .as_str()
+            .unwrap()
+            .contains("waiting for stop hook")
+    );
+}
+
+#[test]
+fn stdio_claude_task_malformed_output_returns_diagnostic() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let spawned = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "claude",
+            "mode": "review",
+            "prompt": "malformed-output",
+            "cwd": env.root
+        }),
+    );
+    let task_id = spawned["taskId"].as_str().unwrap();
+    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    assert_eq!(waited["status"], "failed");
+    assert_eq!(waited["errorType"], "provider_output_error");
+
+    let result = client.tool("task_result", json!({"taskId": task_id}));
+    assert_eq!(
+        result["diagnostic"]["failureCategory"],
+        "provider_output_error"
+    );
+    assert!(
+        result["diagnostic"]["stdoutExcerpt"]
+            .as_str()
+            .unwrap()
+            .contains("not-json-from-claude")
+    );
+    assert!(
+        result["diagnostic"]["stderrExcerpt"]
+            .as_str()
+            .unwrap()
+            .contains("terminal noise")
+    );
+}
+
+#[test]
+fn stdio_claude_task_failure_modes_are_classified() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let cases = [
+        ("non-zero-exit", "provider_exit_error", 5),
+        ("missing-result", "provider_output_error", 5),
+        ("claude-timeout", "timeout", 1),
+    ];
+    for (prompt, error_type, timeout_seconds) in cases {
+        let spawned = client.tool(
+            "task_spawn",
+            json!({
+                "provider": "claude",
+                "mode": "review",
+                "prompt": prompt,
+                "cwd": env.root,
+                "timeoutSeconds": timeout_seconds
+            }),
+        );
+        let task_id = spawned["taskId"].as_str().unwrap();
+        let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+        assert_eq!(waited["status"], "failed", "{prompt}");
+        assert_eq!(waited["errorType"], error_type, "{prompt}");
+
+        let result = client.tool("task_result", json!({"taskId": task_id}));
+        assert!(
+            result["diagnostic"]["failureCategory"].is_string(),
+            "{prompt}"
+        );
+    }
+}
+
+#[test]
+fn stdio_claude_task_extracts_result_with_surrounding_noise() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let spawned = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "claude",
+            "mode": "review",
+            "prompt": "terminal-noise",
+            "cwd": env.root
+        }),
+    );
+    let task_id = spawned["taskId"].as_str().unwrap();
+    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    assert_eq!(waited["status"], "succeeded");
+}
+
+#[test]
+fn stdio_claude_task_diagnostic_redacts_prompt_content() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let spawned = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "claude",
+            "mode": "review",
+            "prompt": "please handle secret-token-for-redaction",
+            "cwd": env.root
+        }),
+    );
+    let task_id = spawned["taskId"].as_str().unwrap();
+    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    assert_eq!(waited["status"], "failed");
+
+    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let diagnostic = serde_json::to_string(&result["diagnostic"]).unwrap();
+    assert!(
+        !diagnostic.contains("secret-token-for-redaction"),
+        "diagnostic leaked prompt content: {diagnostic}"
+    );
+}
+
+#[test]
+fn stdio_claude_task_diagnostic_redacts_token_values() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let spawned = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "claude",
+            "mode": "review",
+            "prompt": "echo-api-key",
+            "cwd": env.root
+        }),
+    );
+    let task_id = spawned["taskId"].as_str().unwrap();
+    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    assert_eq!(waited["status"], "failed");
+
+    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let diagnostic = serde_json::to_string(&result["diagnostic"]).unwrap();
+    assert!(!diagnostic.contains("test-key"), "diagnostic leaked token");
 }
 
 #[test]

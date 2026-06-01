@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command as ProcessCommand;
 use tokio::sync::{OnceCell, mpsc, oneshot};
 use tokio::time::{Duration, Instant, sleep, timeout};
@@ -160,6 +160,7 @@ impl TaskManagerHandle {
         public["stderr"] = logs["stderr"].clone();
         public["stdoutTruncated"] = logs["stdoutTruncated"].clone();
         public["stderrTruncated"] = logs["stderrTruncated"].clone();
+        public["diagnostic"] = task.diagnostic.clone().unwrap_or(Value::Null);
         public["gitStatus"] = Value::String(task.git_status.unwrap_or_default());
         public["gitDiff"] = Value::String(task.git_diff.unwrap_or_default());
         public["changedFiles"] = Value::Array(
@@ -329,6 +330,7 @@ impl TaskActor {
             signal: None,
             error: None,
             error_type: None,
+            diagnostic: None,
             git_status: None,
             git_diff: None,
             changed_files: None,
@@ -415,6 +417,7 @@ impl TaskActor {
             transition_status(task, completion.status)?;
             task.error = completion.error;
             task.error_type = completion.error_type;
+            task.diagnostic = completion.diagnostic;
         } else if task.error.is_none() {
             task.error = Some(format!(
                 "task stopped with signal {}",
@@ -517,6 +520,8 @@ pub struct TaskRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_type: Option<ErrorType>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub git_status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_diff: Option<String>,
@@ -536,6 +541,12 @@ struct TaskCompletion {
     signal: Option<String>,
     error: Option<String>,
     error_type: Option<ErrorType>,
+    diagnostic: Option<Value>,
+}
+
+struct ChildIoDrains {
+    stdout: Option<tokio::task::JoinHandle<()>>,
+    stderr: Option<tokio::task::JoinHandle<()>>,
 }
 
 async fn launch_task(
@@ -551,22 +562,46 @@ async fn launch_task(
         .current_dir(&command.cwd)
         .env_clear()
         .envs(provider::provider_env(command_provider_hint(&command)))
-        .stdin(std::process::Stdio::null())
+        .stdin(if command.stdin.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|error| error.to_string())?;
+    if let Some(stdin) = command.stdin.clone()
+        && let Some(mut child_stdin) = child.stdin.take()
+    {
+        tokio::spawn(async move {
+            let _ = child_stdin.write_all(stdin.as_bytes()).await;
+        });
+    }
     let pid = child
         .id()
         .ok_or_else(|| "provider process did not expose a pid".to_string())?;
-    if let Some(stdout) = child.stdout.take() {
-        tokio::spawn(drain_log(stdout, stdout_path));
-    }
-    if let Some(stderr) = child.stderr.take() {
-        tokio::spawn(drain_log(stderr, stderr_path));
-    }
+    let drains = ChildIoDrains {
+        stdout: child
+            .stdout
+            .take()
+            .map(|stdout| tokio::spawn(drain_log(stdout, stdout_path))),
+        stderr: child
+            .stderr
+            .take()
+            .map(|stderr| tokio::spawn(drain_log(stderr, stderr_path))),
+    };
     tokio::spawn(async move {
-        let completion = wait_for_child(task_id, pid, command.timeout_seconds, child).await;
+        let completion = wait_for_child(
+            task_id,
+            pid,
+            command.timeout_seconds,
+            child,
+            command,
+            task_dir,
+            drains,
+        )
+        .await;
         if tx.send(ActorCommand::Complete(completion)).await.is_err() {
             eprintln!("[agent-bridge] task manager dropped completion message");
             std::process::abort();
@@ -580,6 +615,9 @@ async fn wait_for_child(
     pid: u32,
     timeout_seconds: i64,
     mut child: tokio::process::Child,
+    command: ProviderCommand,
+    task_dir: PathBuf,
+    drains: ChildIoDrains,
 ) -> TaskCompletion {
     let wait = timeout(Duration::from_secs(timeout_seconds as u64), child.wait()).await;
     let mut timed_out = false;
@@ -600,22 +638,56 @@ async fn wait_for_child(
             .map(|(status, _)| status)
         }
     };
+    if let Some(handle) = drains.stdout {
+        let _ = timeout(CHILD_SHUTDOWN_GRACE, handle).await;
+    }
+    if let Some(handle) = drains.stderr {
+        let _ = timeout(CHILD_SHUTDOWN_GRACE, handle).await;
+    }
     match output {
-        Ok(status) if status.success() => TaskCompletion {
-            task_id,
-            status: TaskStatus::Succeeded,
-            exit_code: status.code(),
-            signal: signal_name(&status),
-            error: None,
-            error_type: None,
-        },
+        Ok(status) if status.success() => {
+            if command_provider_hint(&command) == ProviderKind::Claude {
+                let stdout = std::fs::read(task_dir.join("stdout.log")).unwrap_or_default();
+                let stderr = std::fs::read(task_dir.join("stderr.log")).unwrap_or_default();
+                if !claude_output_is_parseable(&stdout) {
+                    return TaskCompletion {
+                        task_id,
+                        status: TaskStatus::Failed,
+                        exit_code: status.code(),
+                        signal: signal_name(&status),
+                        error: Some("claude provider output was not parseable".to_string()),
+                        error_type: Some(ErrorType::ProviderOutputError),
+                        diagnostic: Some(task_diagnostic(
+                            &command,
+                            "provider_output_error",
+                            timeout_seconds * 1000,
+                            status.code(),
+                            signal_name(&status),
+                            &stdout,
+                            &stderr,
+                        )),
+                    };
+                }
+            }
+            TaskCompletion {
+                task_id,
+                status: TaskStatus::Succeeded,
+                exit_code: status.code(),
+                signal: signal_name(&status),
+                error: None,
+                error_type: None,
+                diagnostic: None,
+            }
+        }
         Ok(status) => {
             let signal = signal_name(&status);
+            let stdout = std::fs::read(task_dir.join("stdout.log")).unwrap_or_default();
+            let stderr = std::fs::read(task_dir.join("stderr.log")).unwrap_or_default();
             TaskCompletion {
                 task_id,
                 status: TaskStatus::Failed,
                 exit_code: status.code(),
-                signal,
+                signal: signal.clone(),
                 error: if timed_out {
                     Some(format!("task timed out after {}ms", timeout_seconds * 1000))
                 } else {
@@ -629,6 +701,19 @@ async fn wait_for_child(
                 } else {
                     ErrorType::ProviderExitError
                 }),
+                diagnostic: Some(task_diagnostic(
+                    &command,
+                    if timed_out {
+                        "provider_timeout"
+                    } else {
+                        "provider_exit_error"
+                    },
+                    timeout_seconds * 1000,
+                    status.code(),
+                    signal,
+                    &stdout,
+                    &stderr,
+                )),
             }
         }
         Err(error) => TaskCompletion {
@@ -638,8 +723,94 @@ async fn wait_for_child(
             signal: None,
             error: Some(error),
             error_type: Some(ErrorType::ProviderExitError),
+            diagnostic: None,
         },
     }
+}
+
+fn claude_output_is_parseable(stdout: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(stdout);
+    text.lines().any(|line| {
+        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+            return false;
+        };
+        value
+            .get("result")
+            .and_then(Value::as_str)
+            .is_some_and(|result| !result.is_empty())
+    })
+}
+
+fn task_diagnostic(
+    command: &ProviderCommand,
+    failure_category: &str,
+    timeout_ms: i64,
+    exit_code: Option<i32>,
+    signal: Option<String>,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Value {
+    let redactions = diagnostic_redactions(command);
+    json!({
+        "failureCategory": failure_category,
+        "provider": command_provider_hint(command).as_str(),
+        "commandKind": claude_command_kind(command),
+        "commandPath": claude_command_path(command),
+        "startupVerified": false,
+        "timeoutMs": timeout_ms,
+        "exitCode": exit_code,
+        "signal": signal,
+        "stdoutExcerpt": diagnostic_excerpt(stdout, &redactions),
+        "stderrExcerpt": diagnostic_excerpt(stderr, &redactions)
+    })
+}
+
+fn diagnostic_redactions(command: &ProviderCommand) -> Vec<String> {
+    let mut redactions = command.redactions.clone();
+    redactions.extend(
+        provider::provider_env(command.provider)
+            .into_iter()
+            .filter(|(key, _)| {
+                key.contains("KEY") || key.contains("TOKEN") || key.contains("SECRET")
+            })
+            .map(|(_, value)| value)
+            .filter(|value| !value.is_empty()),
+    );
+    redactions
+}
+
+fn claude_command_kind(command: &ProviderCommand) -> String {
+    command
+        .command_kind
+        .as_deref()
+        .unwrap_or("native-claude")
+        .to_string()
+}
+
+fn claude_command_path(command: &ProviderCommand) -> String {
+    if command.command == "/bin/zsh" {
+        return command
+            .args
+            .get(3)
+            .cloned()
+            .unwrap_or_else(|| command.command.clone());
+    }
+    command.command.clone()
+}
+
+fn diagnostic_excerpt(bytes: &[u8], redactions: &[String]) -> String {
+    const EXCERPT_BYTES: usize = 2048;
+    let capped = &bytes[..bytes.len().min(EXCERPT_BYTES)];
+    let mut text = String::from_utf8_lossy(capped).to_string();
+    for value in redactions {
+        if !value.is_empty() {
+            text = text.replace(value, "<prompt redacted>");
+            for token in value.split_whitespace().filter(|token| token.len() >= 8) {
+                text = text.replace(token, "<prompt redacted>");
+            }
+        }
+    }
+    text
 }
 
 async fn drain_log(mut reader: impl tokio::io::AsyncRead + Unpin, path: PathBuf) {
@@ -1051,15 +1222,7 @@ fn signal_name(_status: &std::process::ExitStatus) -> Option<String> {
 }
 
 fn command_provider_hint(command: &ProviderCommand) -> ProviderKind {
-    if command.command.contains("claude") || command.args.iter().any(|arg| arg.contains("claude")) {
-        ProviderKind::Claude
-    } else if command.command.contains("cursor") {
-        ProviderKind::Cursor
-    } else if command.command == "pi" || command.command.contains("kimi") {
-        ProviderKind::Kimi
-    } else {
-        ProviderKind::Codex
-    }
+    command.provider
 }
 
 #[cfg(test)]
@@ -1101,6 +1264,7 @@ mod tests {
             signal: None,
             error: None,
             error_type: None,
+            diagnostic: None,
             git_status: None,
             git_diff: None,
             changed_files: None,
