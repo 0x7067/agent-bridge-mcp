@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Guidance exposes operator workflow prompts
 The system SHALL expose MCP prompt templates for host-runner lifecycle operation and dogfood delegation workflows.
