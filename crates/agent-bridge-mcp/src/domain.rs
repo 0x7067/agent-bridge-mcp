@@ -128,6 +128,24 @@ pub enum Isolation {
     Worktree,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchProfile {
+    Bridge,
+    Bare,
+}
+
+impl LaunchProfile {
+    pub const ALL: [Self; 2] = [Self::Bridge, Self::Bare];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bridge => "bridge",
+            Self::Bare => "bare",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeoutSeconds(i64);
 
@@ -177,6 +195,13 @@ pub fn provider_names() -> Vec<&'static str> {
 
 pub fn task_modes() -> Vec<&'static str> {
     TaskMode::ALL.iter().map(|mode| mode.as_str()).collect()
+}
+
+pub fn launch_profiles() -> Vec<&'static str> {
+    LaunchProfile::ALL
+        .iter()
+        .map(|profile| profile.as_str())
+        .collect()
 }
 
 fn join_provider_names() -> String {

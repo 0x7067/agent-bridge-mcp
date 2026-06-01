@@ -23,6 +23,7 @@ This repo lives at:
 - `task_status`: inspect one task lifecycle state.
 - `task_wait`: wait for a task to reach a final state or return after a timeout.
 - `task_logs`: read capped stdout/stderr slices; supports line cursors for incremental reads.
+- `task_transcript`: read bounded normalized run transcript events with cursor/limit controls.
 - `task_result`: read final result metadata, logs, git status, diff, changed files, and exit data.
 - `task_stop`: terminate a running task.
 - `task_remove`: remove a completed/stopped task; managed worktree cleanup is mandatory.
@@ -30,7 +31,8 @@ This repo lives at:
 `task_spawn` returns immediately. Callers can poll `task_status`, `task_logs`, or
 `task_result` with the returned `taskId`, or use `task_wait` to block until the
 task completes or a timeout is reached. `task_preview` lets you inspect the
-exact command, arguments, and environment keys before spawning.
+exact command, arguments, selected launch profile, profile diagnostics, and
+environment keys before spawning.
 
 Recommended caller workflow:
 
@@ -39,7 +41,8 @@ Recommended caller workflow:
 3. Call `task_preview` when debugging provider flags or cwd/env behavior.
 4. Call `task_spawn` for the real task.
 5. Call `task_wait` with a bounded `timeoutMs`; if it times out, use `task_logs`
-   with line cursors to inspect progress without rereading the whole log.
+   with line cursors and `task_transcript` with cursors to inspect progress
+   without rereading the whole run.
 6. Once the task is final, call `task_result` once for logs, git status, diff,
    changed files, exit metadata, structured `errorType`, and the derived
    `reviewPacket` inspection summary.
@@ -62,6 +65,8 @@ Use `summary.status` to triage: `error` means fix workspace, state, or host-runn
 Real-world delegation workflow:
 
 - Treat provider output as evidence for the main Codex thread, not as final verification. Inspect the final report, logs, `gitStatus`, `diff`, `changedFiles`, and exit metadata before using the result.
+- Use `task_transcript` when analyzing provider behavior, comparing providers, or checking whether a final or partial provider result was detected.
+- Use profile `bridge` for normal Agent Bridge task guidance. Use profile `bare` for paired experiments with compact bridge-owned prompts and provider-specific reduced configuration; inspect `profileDiagnostics` because reductions vary by provider.
 - Keep the main thread responsible for project gates. Run the relevant tests, lint, typecheck, build, or OpenSpec validation before claiming the requested work is complete.
 - Use `research` and `review` modes for read-only analysis, second opinions, and plan critique.
 - Use `command` mode only for bounded command-oriented work where the prompt clearly names the command goal and expected evidence.
@@ -118,6 +123,13 @@ Supported modes:
 
 Provider/mode combinations are validated. For example, Cursor does not support
 `command` mode in v1.
+
+Launch profiles are explicit task inputs. Omitted `profile` defaults to
+`bridge`, which uses the normal Agent Bridge prompt and provider adapter
+behavior. `bare` uses compact bridge-owned instructions plus provider-specific
+reduced configuration where available; inspect `profileDiagnostics` and
+`providers_list.reducedConfiguration` for the actual applied, unsupported, and
+best-effort reductions.
 
 ## Requirements
 
@@ -400,8 +412,9 @@ paid model usage.
   diagnostics, and final `task_result` before retrying. Prefer narrowing the
   prompt or using managed worktree isolation over loosening sandbox permissions.
 - Provider comparison: run equivalent read-only prompts against selected
-  providers and compare `reviewPacket`, logs, diagnostics, exit metadata, and
-  provider prose as evidence.
+  providers, optionally in paired `bridge` and `bare` profiles, and compare
+  `reviewPacket`, transcript events, logs, diagnostics, exit metadata,
+  profile diagnostics, and provider prose as evidence.
 
 ## Examples
 
@@ -454,6 +467,21 @@ Preview a task before spawning:
 }
 ```
 
+Preview a reduced `bare` profile task:
+
+```json
+{
+  "name": "task_preview",
+  "arguments": {
+    "provider": "codex",
+    "mode": "review",
+    "profile": "bare",
+    "prompt": "Review the parser for edge cases.",
+    "cwd": "/Users/pedro/Development/agent-bridge-mcp"
+  }
+}
+```
+
 Spawn a Claude implementation task:
 
 ```json
@@ -491,6 +519,19 @@ Read logs incrementally:
     "taskId": "task_...",
     "stdoutLine": 10,
     "stderrLine": 2
+  }
+}
+```
+
+Read transcript events incrementally:
+
+```json
+{
+  "name": "task_transcript",
+  "arguments": {
+    "taskId": "task_...",
+    "cursor": 0,
+    "limit": 100
   }
 }
 ```

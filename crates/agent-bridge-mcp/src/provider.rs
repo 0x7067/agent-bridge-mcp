@@ -1,5 +1,5 @@
 use crate::claude_host::ClaudeHostCommand;
-use crate::domain::{ProviderKind, TaskMode};
+use crate::domain::{LaunchProfile, ProviderKind, TaskMode};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::env;
@@ -19,6 +19,9 @@ pub struct ProviderCommand {
     pub cwd: String,
     pub timeout_seconds: i64,
     pub env: BTreeMap<String, String>,
+    pub profile: LaunchProfile,
+    pub prompt_strategy: String,
+    pub profile_diagnostics: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +35,7 @@ pub struct ProviderTask<'a> {
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
     pub thinking: Option<&'a str>,
+    pub profile: LaunchProfile,
 }
 
 pub fn capabilities() -> Value {
@@ -41,29 +45,78 @@ pub fn capabilities() -> Value {
             "supportsReply": false,
             "supportsResume": false,
             "supportsWorktreeIsolation": true,
-            "effort": ["low", "medium", "high", "xhigh", "max"]
+            "effort": ["low", "medium", "high", "xhigh", "max"],
+            "launchProfiles": ["bridge", "bare"],
+            "reducedConfiguration": reduced_configuration(ProviderKind::Claude)
         },
         "cursor": {
             "modes": ["research", "review", "implement"],
             "supportsReply": false,
             "supportsResume": false,
-            "supportsWorktreeIsolation": true
+            "supportsWorktreeIsolation": true,
+            "launchProfiles": ["bridge", "bare"],
+            "reducedConfiguration": reduced_configuration(ProviderKind::Cursor)
         },
         "kimi": {
             "modes": ["research", "review", "implement", "command"],
             "supportsReply": false,
             "supportsResume": false,
             "supportsWorktreeIsolation": true,
-            "thinking": ["off", "minimal", "low", "medium", "high", "xhigh"]
+            "thinking": ["off", "minimal", "low", "medium", "high", "xhigh"],
+            "launchProfiles": ["bridge", "bare"],
+            "reducedConfiguration": reduced_configuration(ProviderKind::Kimi)
         },
         "codex": {
             "modes": ["research", "review", "implement", "command"],
             "supportsReply": false,
             "supportsResume": false,
             "supportsWorktreeIsolation": true,
-            "thinking": ["low", "medium", "high", "xhigh"]
+            "thinking": ["low", "medium", "high", "xhigh"],
+            "launchProfiles": ["bridge", "bare"],
+            "reducedConfiguration": reduced_configuration(ProviderKind::Codex)
         }
     })
+}
+
+fn reduced_configuration(provider: ProviderKind) -> Value {
+    match provider {
+        ProviderKind::Claude => json!({
+            "compactPrompt": "supported",
+            "customSystemPrompt": "supported",
+            "hooks": "best_effort",
+            "skills": "best_effort",
+            "configIsolation": "best_effort",
+            "memorySession": "supported",
+            "contextFiles": "best_effort"
+        }),
+        ProviderKind::Codex => json!({
+            "compactPrompt": "supported",
+            "customSystemPrompt": "best_effort",
+            "hooks": "unsupported",
+            "skills": "supported",
+            "configIsolation": "supported",
+            "memorySession": "supported",
+            "contextFiles": "best_effort"
+        }),
+        ProviderKind::Cursor => json!({
+            "compactPrompt": "supported",
+            "customSystemPrompt": "unsupported",
+            "hooks": "unsupported",
+            "skills": "best_effort",
+            "configIsolation": "best_effort",
+            "memorySession": "supported",
+            "contextFiles": "best_effort"
+        }),
+        ProviderKind::Kimi => json!({
+            "compactPrompt": "supported",
+            "customSystemPrompt": "supported",
+            "hooks": "supported",
+            "skills": "supported",
+            "configIsolation": "supported",
+            "memorySession": "supported",
+            "contextFiles": "supported"
+        }),
+    }
 }
 
 pub fn validate_options(task: &ProviderTask<'_>) -> Result<(), String> {
@@ -112,6 +165,9 @@ pub fn version_command(provider: ProviderKind) -> ProviderCommand {
             .to_string(),
         timeout_seconds: 5,
         env: provider_env(provider),
+        profile: LaunchProfile::Bridge,
+        prompt_strategy: "version".to_string(),
+        profile_diagnostics: profile_diagnostics(provider, LaunchProfile::Bridge),
     }
 }
 
@@ -130,6 +186,7 @@ pub fn smoke_command(
         model: None,
         effort: None,
         thinking: None,
+        profile: LaunchProfile::Bridge,
     };
     validate_options(&task)?;
     let command = match provider {
@@ -160,6 +217,9 @@ pub fn smoke_command(
             cwd: task.cwd.to_string(),
             timeout_seconds: task.timeout_seconds,
             env: BTreeMap::new(),
+            profile: task.profile,
+            prompt_strategy: "minimal".to_string(),
+            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
         },
         ProviderKind::Kimi => ProviderCommand {
             provider: task.provider,
@@ -179,6 +239,9 @@ pub fn smoke_command(
             cwd: task.cwd.to_string(),
             timeout_seconds: task.timeout_seconds,
             env: BTreeMap::new(),
+            profile: task.profile,
+            prompt_strategy: "minimal".to_string(),
+            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
         },
         ProviderKind::Codex => ProviderCommand {
             provider: task.provider,
@@ -201,6 +264,9 @@ pub fn smoke_command(
             cwd: task.cwd.to_string(),
             timeout_seconds: task.timeout_seconds,
             env: BTreeMap::new(),
+            profile: task.profile,
+            prompt_strategy: "minimal".to_string(),
+            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
         },
     };
     Ok((command, "minimal"))
@@ -234,6 +300,9 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
             cwd: task.cwd.to_string(),
             timeout_seconds: task.timeout_seconds,
             env: BTreeMap::new(),
+            profile: task.profile,
+            prompt_strategy: prompt_strategy(task.profile).to_string(),
+            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
         },
         ProviderKind::Kimi => ProviderCommand {
             provider: task.provider,
@@ -248,6 +317,7 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
                     "--tools".to_string(),
                     kimi_tools(task.mode).to_string(),
                 ],
+                kimi_profile_flags(task.profile),
                 optional_arg("--model", task.model),
                 optional_arg("--thinking", task.thinking),
                 vec![rendered_prompt],
@@ -258,6 +328,9 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
             cwd: task.cwd.to_string(),
             timeout_seconds: task.timeout_seconds,
             env: BTreeMap::new(),
+            profile: task.profile,
+            prompt_strategy: prompt_strategy(task.profile).to_string(),
+            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
         },
         ProviderKind::Codex => ProviderCommand {
             provider: task.provider,
@@ -275,6 +348,7 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
                     "--config".to_string(),
                     "shell_environment_policy.inherit=\"all\"".to_string(),
                 ],
+                codex_profile_flags(task.profile),
                 optional_arg("--model", task.model),
                 task.thinking
                     .map(|thinking| {
@@ -292,6 +366,9 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
             cwd: task.cwd.to_string(),
             timeout_seconds: task.timeout_seconds,
             env: BTreeMap::new(),
+            profile: task.profile,
+            prompt_strategy: prompt_strategy(task.profile).to_string(),
+            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
         },
     };
     Ok(command)
@@ -387,6 +464,7 @@ fn build_claude_command(task: &ProviderTask<'_>, rendered_prompt: String) -> Pro
                     "json".to_string(),
                 ],
                 claude_mode_flags(task.mode),
+                claude_profile_flags(task.profile),
                 optional_arg("--model", task.model),
                 optional_arg("--effort", task.effort),
             ]
@@ -404,6 +482,7 @@ fn build_claude_command(task: &ProviderTask<'_>, rendered_prompt: String) -> Pro
                     "json".to_string(),
                 ],
                 claude_mode_flags(task.mode),
+                claude_profile_flags(task.profile),
                 optional_arg("--model", task.model),
                 optional_arg("--effort", task.effort),
             ]
@@ -434,6 +513,9 @@ fn build_claude_command(task: &ProviderTask<'_>, rendered_prompt: String) -> Pro
         cwd: task.cwd.to_string(),
         timeout_seconds: task.timeout_seconds,
         env: BTreeMap::new(),
+        profile: task.profile,
+        prompt_strategy: prompt_strategy(task.profile).to_string(),
+        profile_diagnostics: profile_diagnostics(task.provider, task.profile),
     }
 }
 
@@ -463,6 +545,21 @@ fn resolve_command(provider: ProviderKind) -> String {
 }
 
 fn render_task_prompt(task: &ProviderTask<'_>) -> String {
+    if task.profile == LaunchProfile::Bare {
+        let safety = match task.mode {
+            TaskMode::Research | TaskMode::Review => "Do not edit files.",
+            TaskMode::Implement => "Make only the requested code changes.",
+            TaskMode::Command => "Run only bounded command-oriented work.",
+        };
+        return format!(
+            "Delegated task.\nMode: {}\nProvider: {}\nCwd: {}\n{}\nReturn: summary, evidence, changed files if any, risks, next steps.\n\nUser instruction:\n{}",
+            task.mode.as_str(),
+            task.provider.as_str(),
+            task.cwd,
+            safety,
+            task.prompt
+        );
+    }
     let title = task
         .title
         .map(|title| format!("Title: {title}\n"))
@@ -474,6 +571,97 @@ fn render_task_prompt(task: &ProviderTask<'_>) -> String {
         mode_description(task.mode),
         task.prompt
     )
+}
+
+fn prompt_strategy(profile: LaunchProfile) -> &'static str {
+    match profile {
+        LaunchProfile::Bridge => "bridge",
+        LaunchProfile::Bare => "compact",
+    }
+}
+
+fn claude_profile_flags(profile: LaunchProfile) -> Vec<String> {
+    match profile {
+        LaunchProfile::Bridge => Vec::new(),
+        LaunchProfile::Bare => vec![
+            "--system-prompt".to_string(),
+            "You are a delegated provider task. Follow the user instruction exactly.".to_string(),
+            "--setting-sources".to_string(),
+            "project,local".to_string(),
+        ],
+    }
+}
+
+fn codex_profile_flags(profile: LaunchProfile) -> Vec<String> {
+    match profile {
+        LaunchProfile::Bridge => Vec::new(),
+        LaunchProfile::Bare => vec![
+            "--ignore-user-config".to_string(),
+            "--ignore-rules".to_string(),
+            "--ephemeral".to_string(),
+        ],
+    }
+}
+
+fn kimi_profile_flags(profile: LaunchProfile) -> Vec<String> {
+    match profile {
+        LaunchProfile::Bridge => Vec::new(),
+        LaunchProfile::Bare => vec![
+            "--no-extensions".to_string(),
+            "--no-skills".to_string(),
+            "--no-prompt-templates".to_string(),
+            "--no-themes".to_string(),
+            "--system-prompt".to_string(),
+            "You are a delegated provider task. Follow the user instruction exactly.".to_string(),
+        ],
+    }
+}
+
+pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Value {
+    if profile == LaunchProfile::Bridge {
+        return json!({
+            "profile": "bridge",
+            "promptStrategy": "bridge",
+            "appliedReductions": [],
+            "unsupportedReductions": [],
+            "bestEffortReductions": [],
+            "note": "standard Agent Bridge prompt and provider configuration"
+        });
+    }
+    match provider {
+        ProviderKind::Codex => json!({
+            "profile": "bare",
+            "promptStrategy": "compact",
+            "appliedReductions": ["compact_prompt", "ignore_user_config", "ignore_rules", "ephemeral_session"],
+            "unsupportedReductions": ["custom_system_prompt", "disable_hooks"],
+            "bestEffortReductions": ["context_files"],
+            "note": "bare means provider-specific reduced configuration; inspect applied reductions"
+        }),
+        ProviderKind::Kimi => json!({
+            "profile": "bare",
+            "promptStrategy": "compact",
+            "appliedReductions": ["compact_prompt", "custom_system_prompt", "no_session", "no_extensions", "no_skills", "no_prompt_templates", "no_themes", "no_context_files"],
+            "unsupportedReductions": [],
+            "bestEffortReductions": [],
+            "note": "bare means provider-specific reduced configuration; inspect applied reductions"
+        }),
+        ProviderKind::Claude => json!({
+            "profile": "bare",
+            "promptStrategy": "compact",
+            "appliedReductions": ["compact_prompt", "custom_system_prompt"],
+            "unsupportedReductions": [],
+            "bestEffortReductions": ["setting_sources", "disable_hooks", "disable_skills", "context_files"],
+            "note": "claude-p injects a Stop hook; bare is best-effort for hook removal"
+        }),
+        ProviderKind::Cursor => json!({
+            "profile": "bare",
+            "promptStrategy": "compact",
+            "appliedReductions": ["compact_prompt"],
+            "unsupportedReductions": ["custom_system_prompt", "disable_hooks"],
+            "bestEffortReductions": ["disable_skills", "config_isolation", "context_files"],
+            "note": "cursor-agent exposes limited reduced-configuration flags"
+        }),
+    }
 }
 
 fn mode_description(mode: TaskMode) -> &'static str {

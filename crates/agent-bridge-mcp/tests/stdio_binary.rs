@@ -249,6 +249,24 @@ fn fixture_env() -> FixtureEnv {
             "  exit 0",
             "fi",
             "case \"$*\" in",
+            "  *echo-api-key*)",
+            "    echo \"$ANTHROPIC_API_KEY\"",
+            "    exit 0",
+            "    ;;",
+            "  *malformed-json*)",
+            "    echo '{\"type\":'",
+            "    exit 0",
+            "    ;;",
+            "  *final-then-timeout*)",
+            "    printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"finished before timeout\"}'",
+            "    sleep 2",
+            "    exit 0",
+            "    ;;",
+            "  *AGENT_BRIDGE_PROVIDER_SMOKE_OK*)",
+            "    printf '%s\\n' \"$*\"",
+            "    printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"AGENT_BRIDGE_PROVIDER_SMOKE_OK\"}'",
+            "    exit 0",
+            "    ;;",
             "  *sleep-long*)",
             "    echo started-long",
             "    echo waiting-long >&2",
@@ -368,10 +386,14 @@ fn stdio_protocol_and_tool_schema_smoke() {
 
     let tools = client.request("tools/list", json!({}));
     let tools = tools["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 12);
+    assert_eq!(tools.len(), 13);
     let task_preview = tools
         .iter()
         .find(|tool| tool["name"] == "task_preview")
+        .unwrap();
+    let task_transcript = tools
+        .iter()
+        .find(|tool| tool["name"] == "task_transcript")
         .unwrap();
     let doctor = tools.iter().find(|tool| tool["name"] == "doctor").unwrap();
     let providers_check = tools
@@ -401,12 +423,24 @@ fn stdio_protocol_and_tool_schema_smoke() {
         json!(["claude", "cursor", "kimi", "codex"])
     );
     assert_eq!(
+        task_preview["inputSchema"]["properties"]["profile"]["enum"],
+        json!(["bridge", "bare"])
+    );
+    assert_eq!(
         task_preview["inputSchema"]["required"],
         json!(["provider", "mode", "prompt"])
     );
     assert_eq!(
         task_preview["inputSchema"]["additionalProperties"],
         json!(false)
+    );
+    assert_eq!(
+        task_transcript["inputSchema"]["required"],
+        json!(["taskId"])
+    );
+    assert_eq!(
+        task_transcript["inputSchema"]["properties"]["cursor"]["type"],
+        "number"
     );
 
     let prompts = client.request("prompts/list", json!({}));
@@ -612,6 +646,18 @@ fn stdio_providers_preview_and_safety_checks() {
             .collect::<Vec<_>>(),
         vec!["claude", "cursor", "kimi", "codex"]
     );
+    assert_eq!(
+        providers["providers"]["codex"]["launchProfiles"],
+        json!(["bridge", "bare"])
+    );
+    assert_eq!(
+        providers["providers"]["codex"]["reducedConfiguration"]["configIsolation"],
+        "supported"
+    );
+    assert_eq!(
+        providers["providers"]["cursor"]["reducedConfiguration"]["customSystemPrompt"],
+        "unsupported"
+    );
 
     let checks = client.tool("providers_check", json!({"smoke": true, "timeoutMs": 5000}));
     assert_eq!(
@@ -626,7 +672,8 @@ fn stdio_providers_preview_and_safety_checks() {
             "provider": "codex",
             "mode": "review",
             "prompt": "secret prompt",
-            "cwd": env.root
+            "cwd": env.root,
+            "profile": "bare"
         }),
     );
     assert_eq!(
@@ -634,6 +681,24 @@ fn stdio_providers_preview_and_safety_checks() {
         env.fake_provider.to_string_lossy()
     );
     assert_eq!(preview["timeoutSeconds"], 120);
+    assert_eq!(preview["profile"], "bare");
+    assert_eq!(preview["promptStrategy"], "compact");
+    assert_eq!(
+        preview["profileDiagnostics"]["appliedReductions"],
+        json!([
+            "compact_prompt",
+            "ignore_user_config",
+            "ignore_rules",
+            "ephemeral_session"
+        ])
+    );
+    assert!(
+        preview["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|arg| arg == "--ignore-user-config")
+    );
     assert!(
         preview["args"]
             .as_array()
@@ -706,6 +771,252 @@ fn stdio_providers_preview_and_safety_checks() {
         }),
     );
     assert!(error.contains("prompt exceeds"));
+}
+
+#[test]
+fn stdio_task_transcript_captures_redacted_events_and_result_evidence() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let task = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "review",
+            "prompt": "secret transcript prompt AGENT_BRIDGE_PROVIDER_SMOKE_OK",
+            "cwd": env.root,
+            "profile": "bare",
+            "timeoutSeconds": 5
+        }),
+    );
+    let task_id = task["taskId"].as_str().unwrap().to_string();
+    let completed = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    assert_eq!(completed["status"], "succeeded");
+    assert_eq!(completed["profile"], "bare");
+
+    let transcript = client.tool(
+        "task_transcript",
+        json!({"taskId": task_id, "cursor": 0, "limit": 100}),
+    );
+    assert_eq!(transcript["available"], true);
+    assert!(transcript["events"].as_array().unwrap().len() >= 3);
+    assert!(transcript["nextCursor"].is_number());
+    assert!(
+        transcript["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["kind"] == "lifecycle" && event["parsed"]["phase"] == "spawned")
+    );
+    assert!(
+        transcript["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["kind"] == "provider_result")
+    );
+    let serialized = serde_json::to_string(&transcript).unwrap();
+    assert!(!serialized.contains("secret transcript prompt"));
+    assert!(serialized.contains("<redacted>"));
+
+    let first_page = client.tool(
+        "task_transcript",
+        json!({"taskId": task_id, "cursor": 0, "limit": 2}),
+    );
+    assert_eq!(first_page["events"].as_array().unwrap().len(), 2);
+    assert_eq!(first_page["nextCursor"], 2);
+    assert_eq!(first_page["truncated"], true);
+    let second_page = client.tool(
+        "task_transcript",
+        json!({"taskId": task_id, "cursor": first_page["nextCursor"], "limit": 100}),
+    );
+    assert!(!second_page["events"].as_array().unwrap().is_empty());
+
+    let result = client.tool("task_result", json!({"taskId": task_id}));
+    assert_eq!(result["transcriptAvailable"], true);
+    assert_eq!(result["finalResultDetected"], true);
+    assert_eq!(result["partialResultDetected"], false);
+    assert_eq!(result["profile"], "bare");
+    assert_eq!(result["reviewPacket"]["transcriptAvailable"], true);
+    assert_eq!(result["reviewPacket"]["finalResultDetected"], true);
+    assert!(
+        review_actions_text(&result).contains("transcript"),
+        "{result}"
+    );
+}
+
+#[test]
+fn stdio_task_transcript_reports_missing_artifact_without_hiding_logs() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let task = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "cursor",
+            "mode": "review",
+            "prompt": "emit-logs",
+            "cwd": env.root,
+            "timeoutSeconds": 5
+        }),
+    );
+    let task_id = task["taskId"].as_str().unwrap().to_string();
+    let completed = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    assert_eq!(completed["status"], "succeeded");
+
+    let task_dir = env.state_dir.join("tasks").join(&task_id);
+    std::fs::remove_file(task_dir.join("transcript.jsonl")).unwrap();
+
+    let transcript = client.tool("task_transcript", json!({"taskId": task_id}));
+    assert_eq!(transcript["available"], false);
+    assert!(transcript["events"].as_array().unwrap().is_empty());
+    assert!(
+        transcript["message"]
+            .as_str()
+            .unwrap()
+            .contains("not available")
+    );
+
+    let logs = client.tool("task_logs", json!({"taskId": task_id}));
+    assert!(
+        logs["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("lifecycle-stdout")
+    );
+}
+
+#[test]
+fn stdio_task_transcript_preserves_raw_events_and_partial_evidence() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let task = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "cursor",
+            "mode": "review",
+            "prompt": "malformed-json",
+            "cwd": env.root,
+            "timeoutSeconds": 5
+        }),
+    );
+    let task_id = task["taskId"].as_str().unwrap().to_string();
+    let completed = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    assert_eq!(completed["status"], "succeeded");
+
+    let transcript = client.tool("task_transcript", json!({"taskId": task_id}));
+    assert!(
+        transcript["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["kind"] == "provider_event"
+                && event["raw"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("{\"type\":"))
+    );
+
+    let result = client.tool("task_result", json!({"taskId": task_id}));
+    assert_eq!(result["transcriptAvailable"], true);
+    assert_eq!(result["finalResultDetected"], false);
+    assert_eq!(result["partialResultDetected"], true);
+    assert_eq!(result["reviewPacket"]["partialResultDetected"], true);
+}
+
+#[test]
+fn stdio_task_transcript_redacts_provider_env_values() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let task = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "review",
+            "prompt": "echo-api-key",
+            "cwd": env.root,
+            "timeoutSeconds": 5
+        }),
+    );
+    let task_id = task["taskId"].as_str().unwrap().to_string();
+    let completed = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    assert_eq!(completed["status"], "succeeded");
+
+    let transcript = client.tool("task_transcript", json!({"taskId": task_id}));
+    let serialized = serde_json::to_string(&transcript).unwrap();
+    assert!(!serialized.contains("test-key"));
+    assert!(serialized.contains("<redacted>"));
+}
+
+#[test]
+fn stdio_task_result_preserves_final_result_evidence_after_timeout() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let task = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "cursor",
+            "mode": "review",
+            "prompt": "final-then-timeout",
+            "cwd": env.root,
+            "timeoutSeconds": 1
+        }),
+    );
+    let task_id = task["taskId"].as_str().unwrap().to_string();
+    let completed = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    assert_eq!(completed["status"], "failed");
+    assert_eq!(completed["errorType"], "timeout");
+
+    let result = client.tool("task_result", json!({"taskId": task_id}));
+    assert_eq!(result["transcriptAvailable"], true);
+    assert_eq!(result["finalResultDetected"], true);
+    assert_eq!(result["partialResultDetected"], false);
+    assert_eq!(result["reviewPacket"]["finalResultDetected"], true);
+}
+
+#[test]
+fn stdio_task_transcript_handles_provider_output_fixtures() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    for provider in ["claude", "cursor"] {
+        let task = client.tool(
+            "task_spawn",
+            json!({
+                "provider": provider,
+                "mode": "review",
+                "prompt": "AGENT_BRIDGE_PROVIDER_SMOKE_OK",
+                "cwd": env.root,
+                "timeoutSeconds": 5
+            }),
+        );
+        let task_id = task["taskId"].as_str().unwrap().to_string();
+        let completed = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+        assert_eq!(completed["status"], "succeeded", "{provider}");
+        let result = client.tool("task_result", json!({"taskId": task_id}));
+        assert_eq!(result["finalResultDetected"], true, "{provider}");
+        assert_eq!(result["partialResultDetected"], false, "{provider}");
+    }
+
+    let task = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "kimi",
+            "mode": "review",
+            "prompt": "emit-logs",
+            "cwd": env.root,
+            "timeoutSeconds": 5
+        }),
+    );
+    let task_id = task["taskId"].as_str().unwrap().to_string();
+    let completed = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    assert_eq!(completed["status"], "succeeded");
+    let result = client.tool("task_result", json!({"taskId": task_id}));
+    assert_eq!(result["finalResultDetected"], false);
+    assert_eq!(result["partialResultDetected"], true);
 }
 
 #[test]

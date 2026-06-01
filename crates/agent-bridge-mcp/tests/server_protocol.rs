@@ -277,6 +277,7 @@ async fn tools_list_returns_current_public_tool_names() {
             "task_status",
             "task_wait",
             "task_logs",
+            "task_transcript",
             "task_result",
             "task_stop",
             "task_remove"

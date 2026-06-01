@@ -1,5 +1,6 @@
 use crate::domain::{
-    ErrorType, Isolation, ProviderKind, TaskPhase, TaskStatus, TimeoutSeconds, WorktreeName,
+    ErrorType, Isolation, LaunchProfile, ProviderKind, TaskPhase, TaskStatus, TimeoutSeconds,
+    WorktreeName,
 };
 use crate::provider::{self, ProviderCommand, ProviderTask};
 use crate::tools::TaskPreviewInput;
@@ -147,6 +148,23 @@ impl TaskManagerHandle {
         }))
     }
 
+    pub async fn transcript(
+        &self,
+        task_id: String,
+        cursor: Option<u64>,
+        limit: Option<u64>,
+    ) -> Result<Value, String> {
+        let task: TaskRecord = self
+            .request(|reply| ActorCommand::Get(task_id.clone(), reply))
+            .await?;
+        read_transcript(
+            &task,
+            cursor.unwrap_or(0) as usize,
+            limit.unwrap_or(200) as usize,
+        )
+        .await
+    }
+
     pub async fn result(&self, task_id: String, max_bytes: Option<i64>) -> Result<Value, String> {
         let task: TaskRecord = self
             .request(|reply| ActorCommand::Get(task_id.clone(), reply))
@@ -161,6 +179,13 @@ impl TaskManagerHandle {
         public["stdoutTruncated"] = logs["stdoutTruncated"].clone();
         public["stderrTruncated"] = logs["stderrTruncated"].clone();
         public["diagnostic"] = task.diagnostic.clone().unwrap_or(Value::Null);
+        public["profile"] = json!(task.profile);
+        public["promptStrategy"] = Value::String(task.prompt_strategy.clone());
+        public["profileDiagnostics"] = task.profile_diagnostics.clone().unwrap_or(Value::Null);
+        public["transcriptAvailable"] = Value::Bool(task.transcript_available);
+        public["finalResultDetected"] = Value::Bool(task.final_result_detected);
+        public["partialResultDetected"] = Value::Bool(task.partial_result_detected);
+        public["transcriptDiagnostic"] = task.transcript_diagnostic.clone().unwrap_or(Value::Null);
         public["gitStatus"] = Value::String(task.git_status.clone().unwrap_or_default());
         public["gitDiff"] = Value::String(task.git_diff.clone().unwrap_or_default());
         public["changedFiles"] = Value::Array(
@@ -310,6 +335,7 @@ impl TaskActor {
             model: input.model.as_deref(),
             effort: input.effort.as_deref(),
             thinking: input.thinking.as_deref(),
+            profile: input.profile.unwrap_or(LaunchProfile::Bridge),
         };
         let command = provider::build_command(&provider_task)?;
         let mut record = TaskRecord {
@@ -327,6 +353,9 @@ impl TaskActor {
             command: command.command.clone(),
             args: command.args.clone(),
             timeout_seconds,
+            profile: command.profile,
+            prompt_strategy: command.prompt_strategy.clone(),
+            profile_diagnostics: Some(command.profile_diagnostics.clone()),
             pid: None,
             created_at: created_at.clone(),
             updated_at: created_at,
@@ -340,6 +369,10 @@ impl TaskActor {
             git_status: None,
             git_diff: None,
             changed_files: None,
+            transcript_available: false,
+            final_result_detected: false,
+            partial_result_detected: false,
+            transcript_diagnostic: None,
         };
 
         match launch_task(task_id.clone(), command, task_dir, self.tx.clone()).await {
@@ -375,6 +408,16 @@ impl TaskActor {
         transition_status(task, TaskStatus::Stopped)?;
         task.error_type = Some(ErrorType::Stopped);
         task.updated_at = now_iso();
+        append_transcript_event(
+            &PathBuf::from(&task.task_dir).join("transcript.jsonl"),
+            task.provider,
+            "lifecycle",
+            "lifecycle",
+            "",
+            json!({"phase": "stopped"}),
+            &provider_env_redactions(task.provider),
+        )
+        .await;
         let public = public_task(task);
         self.save().await?;
         if let Some(mut active) = active {
@@ -455,6 +498,29 @@ impl TaskActor {
         task.git_status = Some(snapshot.git_status);
         task.git_diff = Some(snapshot.git_diff);
         task.changed_files = Some(snapshot.changed_files);
+        append_transcript_event(
+            &PathBuf::from(&task.task_dir).join("transcript.jsonl"),
+            task.provider,
+            "lifecycle",
+            "lifecycle",
+            "",
+            json!({"phase": "finalized", "status": task.status}),
+            &provider_env_redactions(task.provider),
+        )
+        .await;
+        let (transcript_available, final_result_detected, partial_result_detected) =
+            transcript_evidence(&task.task_dir);
+        task.transcript_available = transcript_available;
+        task.final_result_detected = final_result_detected;
+        task.partial_result_detected = partial_result_detected;
+        task.transcript_diagnostic = if transcript_available {
+            None
+        } else {
+            Some(json!({
+                "failureCategory": "transcript_unavailable",
+                "message": "transcript artifact was not available during finalization"
+            }))
+        };
         let result_path = PathBuf::from(&task.task_dir).join("result.json");
         let result_json = serde_json::to_vec_pretty(task).map_err(|error| error.to_string())?;
         fs::write(result_path, result_json)
@@ -523,6 +589,12 @@ pub struct TaskRecord {
     pub args: Vec<String>,
     #[serde(default)]
     pub timeout_seconds: i64,
+    #[serde(default = "default_launch_profile")]
+    pub profile: LaunchProfile,
+    #[serde(default)]
+    pub prompt_strategy: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_diagnostics: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     pub created_at: String,
@@ -547,6 +619,18 @@ pub struct TaskRecord {
     pub git_diff: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changed_files: Option<Vec<String>>,
+    #[serde(default)]
+    pub transcript_available: bool,
+    #[serde(default)]
+    pub final_result_detected: bool,
+    #[serde(default)]
+    pub partial_result_detected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_diagnostic: Option<Value>,
+}
+
+fn default_launch_profile() -> LaunchProfile {
+    LaunchProfile::Bridge
 }
 
 struct ActiveTask {
@@ -604,6 +688,7 @@ async fn launch_task(
     }
     let stdout_path = task_dir.join("stdout.log");
     let stderr_path = task_dir.join("stderr.log");
+    let transcript_path = task_dir.join("transcript.jsonl");
     let mut process = ProcessCommand::new(&command.command);
     process
         .args(&command.args)
@@ -629,15 +714,38 @@ async fn launch_task(
     let pid = child
         .id()
         .ok_or_else(|| "provider process did not expose a pid".to_string())?;
+    append_transcript_event(
+        &transcript_path,
+        command.provider,
+        "lifecycle",
+        "lifecycle",
+        "",
+        json!({"phase": "spawned", "pid": pid, "profile": command.profile}),
+        &command.redactions,
+    )
+    .await;
+    let redactions = diagnostic_redactions(&command);
     let drains = ChildIoDrains {
-        stdout: child
-            .stdout
-            .take()
-            .map(|stdout| tokio::spawn(drain_log(stdout, stdout_path))),
-        stderr: child
-            .stderr
-            .take()
-            .map(|stderr| tokio::spawn(drain_log(stderr, stderr_path))),
+        stdout: child.stdout.take().map(|stdout| {
+            tokio::spawn(drain_log(
+                stdout,
+                stdout_path,
+                transcript_path.clone(),
+                command.provider,
+                "stdout",
+                redactions.clone(),
+            ))
+        }),
+        stderr: child.stderr.take().map(|stderr| {
+            tokio::spawn(drain_log(
+                stderr,
+                stderr_path,
+                transcript_path,
+                command.provider,
+                "stderr",
+                redactions,
+            ))
+        }),
     };
     tokio::spawn(async move {
         let completion = wait_for_child(
@@ -740,6 +848,44 @@ async fn complete_host_response(
     let stderr_bytes = stderr.as_bytes().to_vec();
     let _ = fs::write(task_dir.join("stdout.log"), &stdout_bytes).await;
     let _ = fs::write(task_dir.join("stderr.log"), &stderr_bytes).await;
+    let transcript_path = task_dir.join("transcript.jsonl");
+    let redactions = diagnostic_redactions(&command);
+    append_transcript_event(
+        &transcript_path,
+        command.provider,
+        "lifecycle",
+        "lifecycle",
+        "",
+        json!({"phase": "host_response", "profile": command.profile}),
+        &redactions,
+    )
+    .await;
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let (kind, parsed) = parse_transcript_line(line);
+        append_transcript_event(
+            &transcript_path,
+            command.provider,
+            "stdout",
+            kind,
+            line,
+            parsed,
+            &redactions,
+        )
+        .await;
+    }
+    for line in stderr.lines().filter(|line| !line.trim().is_empty()) {
+        let (kind, parsed) = parse_transcript_line(line);
+        append_transcript_event(
+            &transcript_path,
+            command.provider,
+            "stderr",
+            kind,
+            line,
+            parsed,
+            &redactions,
+        )
+        .await;
+    }
     let success = exit_code == Some(0) && failure_category.is_none();
     if success && !claude_output_is_parseable(&stdout_bytes) {
         return TaskCompletion {
@@ -889,6 +1035,39 @@ async fn wait_for_child(
     if let Some(handle) = drains.stderr {
         let _ = timeout(CHILD_SHUTDOWN_GRACE, handle).await;
     }
+    let (exit_code, signal, wait_error) = match &output {
+        Ok(status) => (status.code(), signal_name(status), None),
+        Err(error) => (None, None, Some(error.clone())),
+    };
+    if timed_out {
+        append_transcript_event(
+            &task_dir.join("transcript.jsonl"),
+            command.provider,
+            "lifecycle",
+            "lifecycle",
+            "",
+            json!({"phase": "timeout", "timeoutSeconds": timeout_seconds, "profile": command.profile}),
+            &diagnostic_redactions(&command),
+        )
+        .await;
+    }
+    append_transcript_event(
+        &task_dir.join("transcript.jsonl"),
+        command.provider,
+        "lifecycle",
+        "lifecycle",
+        "",
+        json!({
+            "phase": "exited",
+            "exitCode": exit_code,
+            "signal": signal,
+            "error": wait_error,
+            "timedOut": timed_out,
+            "profile": command.profile
+        }),
+        &diagnostic_redactions(&command),
+    )
+    .await;
     match output {
         Ok(status) if status.success() => {
             if command_provider_hint(&command) == ProviderKind::Codex || fatal_denial {
@@ -1067,16 +1246,17 @@ fn task_diagnostic(
 
 fn diagnostic_redactions(command: &ProviderCommand) -> Vec<String> {
     let mut redactions = command.redactions.clone();
-    redactions.extend(
-        provider::provider_env(command.provider)
-            .into_iter()
-            .filter(|(key, _)| {
-                key.contains("KEY") || key.contains("TOKEN") || key.contains("SECRET")
-            })
-            .map(|(_, value)| value)
-            .filter(|value| !value.is_empty()),
-    );
+    redactions.extend(provider_env_redactions(command.provider));
     redactions
+}
+
+fn provider_env_redactions(provider: ProviderKind) -> Vec<String> {
+    provider::provider_env(provider)
+        .into_iter()
+        .filter(|(key, _)| key.contains("KEY") || key.contains("TOKEN") || key.contains("SECRET"))
+        .map(|(_, value)| value)
+        .filter(|value| !value.is_empty())
+        .collect()
 }
 
 fn command_kind(command: &ProviderCommand) -> String {
@@ -1113,8 +1293,16 @@ fn diagnostic_excerpt(bytes: &[u8], redactions: &[String]) -> String {
     text
 }
 
-async fn drain_log(mut reader: impl tokio::io::AsyncRead + Unpin, path: PathBuf) {
+async fn drain_log(
+    mut reader: impl tokio::io::AsyncRead + Unpin,
+    path: PathBuf,
+    transcript_path: PathBuf,
+    provider: ProviderKind,
+    source: &'static str,
+    redactions: Vec<String>,
+) {
     let mut file_bytes = 0usize;
+    let mut saw_output = false;
     let mut buffer = [0u8; 8192];
     while let Ok(count) = reader.read(&mut buffer).await {
         if count == 0 {
@@ -1137,8 +1325,183 @@ async fn drain_log(mut reader: impl tokio::io::AsyncRead + Unpin, path: PathBuf)
             use tokio::io::AsyncWriteExt;
             let _ = file.write_all(&buffer[..take]).await;
         }
+        let text = String::from_utf8_lossy(&buffer[..take]).to_string();
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            if !saw_output {
+                append_transcript_event(
+                    &transcript_path,
+                    provider,
+                    "lifecycle",
+                    "lifecycle",
+                    "",
+                    json!({"phase": "first_output", "source": source}),
+                    &redactions,
+                )
+                .await;
+                saw_output = true;
+            }
+            let (kind, parsed) = parse_transcript_line(line);
+            append_transcript_event(
+                &transcript_path,
+                provider,
+                source,
+                kind,
+                line,
+                parsed,
+                &redactions,
+            )
+            .await;
+        }
         file_bytes += take;
     }
+    if saw_output {
+        append_transcript_event(
+            &transcript_path,
+            provider,
+            "lifecycle",
+            "lifecycle",
+            "",
+            json!({"phase": "final_output", "source": source}),
+            &redactions,
+        )
+        .await;
+    }
+}
+
+fn parse_transcript_line(line: &str) -> (&'static str, Value) {
+    let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+        return ("provider_event", json!({}));
+    };
+    let kind = if value.get("type").and_then(Value::as_str) == Some("result")
+        && value.get("result").and_then(Value::as_str).is_some()
+    {
+        "provider_result"
+    } else {
+        "provider_event"
+    };
+    (kind, value)
+}
+
+async fn append_transcript_event(
+    transcript_path: &Path,
+    provider: ProviderKind,
+    source: &str,
+    kind: &str,
+    raw: &str,
+    parsed: Value,
+    redactions: &[String],
+) {
+    let event = json!({
+        "ts": now_iso(),
+        "source": source,
+        "provider": provider,
+        "kind": kind,
+        "raw": redact_text(raw, redactions),
+        "parsed": redact_value(parsed, redactions),
+        "redacted": redactions.iter().any(|value| !value.is_empty() && raw.contains(value))
+    });
+    if let Some(parent) = transcript_path.parent() {
+        let _ = fs::create_dir_all(parent).await;
+    }
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(transcript_path)
+        .await
+    {
+        let mut line = event.to_string();
+        line.push('\n');
+        let _ = file.write_all(line.as_bytes()).await;
+    }
+}
+
+fn redact_value(value: Value, redactions: &[String]) -> Value {
+    match value {
+        Value::String(text) => Value::String(redact_text(&text, redactions)),
+        Value::Array(values) => Value::Array(
+            values
+                .into_iter()
+                .map(|value| redact_value(value, redactions))
+                .collect(),
+        ),
+        Value::Object(object) => Value::Object(
+            object
+                .into_iter()
+                .map(|(key, value)| (key, redact_value(value, redactions)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn redact_text(text: &str, redactions: &[String]) -> String {
+    let mut output = text.to_string();
+    for redaction in redactions.iter().filter(|value| !value.is_empty()) {
+        output = output.replace(redaction, "<redacted>");
+    }
+    output
+}
+
+async fn read_transcript(task: &TaskRecord, cursor: usize, limit: usize) -> Result<Value, String> {
+    let path = PathBuf::from(&task.task_dir).join("transcript.jsonl");
+    if !path.exists() {
+        return Ok(json!({
+            "taskId": task.task_id,
+            "available": false,
+            "events": [],
+            "nextCursor": cursor,
+            "message": "transcript not available"
+        }));
+    }
+    let text = fs::read_to_string(&path)
+        .await
+        .map_err(|error| error.to_string())?;
+    let all_lines: Vec<&str> = text.lines().collect();
+    let max_events = limit.clamp(1, 500);
+    let mut events = Vec::new();
+    for (index, line) in all_lines.iter().enumerate().skip(cursor).take(max_events) {
+        let mut event: Value =
+            serde_json::from_str(line).unwrap_or_else(|_| json!({"kind": "malformed"}));
+        event = redact_value(event, &provider_env_redactions(task.provider));
+        event["index"] = json!(index);
+        events.push(event);
+    }
+    let next_cursor = (cursor + events.len()).min(all_lines.len());
+    Ok(json!({
+        "taskId": task.task_id,
+        "available": true,
+        "events": events,
+        "nextCursor": next_cursor,
+        "truncated": next_cursor < all_lines.len()
+    }))
+}
+
+fn transcript_evidence(task_dir: &str) -> (bool, bool, bool) {
+    let path = PathBuf::from(task_dir).join("transcript.jsonl");
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return (false, false, false);
+    };
+    let mut has_event = false;
+    let mut has_provider_output = false;
+    let mut has_result = false;
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        has_event = true;
+        let kind = value.get("kind").and_then(Value::as_str);
+        let source = value.get("source").and_then(Value::as_str);
+        if matches!(source, Some("stdout" | "stderr")) {
+            has_provider_output = true;
+        }
+        if kind == Some("provider_result") {
+            has_result = true;
+        }
+    }
+    (has_event, has_result, has_provider_output && !has_result)
 }
 
 struct GitSnapshot {
@@ -1284,7 +1647,11 @@ fn public_task(task: &TaskRecord) -> Value {
         "isFinal": is_final,
         "phase": phase,
         "durationMs": duration_ms(task),
-        "errorType": task.error_type
+        "errorType": task.error_type,
+        "profile": task.profile,
+        "promptStrategy": task.prompt_strategy,
+        "profileDiagnostics": task.profile_diagnostics,
+        "transcriptDiagnostic": task.transcript_diagnostic
     })
 }
 
@@ -1315,6 +1682,12 @@ fn review_packet(task: &TaskRecord, stdout_truncated: bool, stderr_truncated: bo
         "signal": task.signal,
         "errorType": task.error_type,
         "diagnostic": task.diagnostic,
+        "profile": task.profile,
+        "profileDiagnostics": task.profile_diagnostics,
+        "transcriptAvailable": task.transcript_available,
+        "finalResultDetected": task.final_result_detected,
+        "partialResultDetected": task.partial_result_detected,
+        "transcriptDiagnostic": task.transcript_diagnostic,
         "stdoutTruncated": stdout_truncated,
         "stderrTruncated": stderr_truncated,
         "recommendedActions": recommended_actions(task, has_changes)
@@ -1343,6 +1716,9 @@ fn recommended_actions(task: &TaskRecord, has_changes: bool) -> Vec<&'static str
 
     let mut actions =
         vec!["Inspect stdout, stderr, diagnostics, git status, diff, and changed files."];
+    if task.transcript_available {
+        actions.push("Inspect task_transcript when provider behavior or final-state classification is unclear.");
+    }
     if has_changes {
         actions.push("Inspect gitStatus, gitDiff, and changedFiles before verification.");
     }
@@ -1669,6 +2045,9 @@ mod tests {
             command: String::new(),
             args: Vec::new(),
             timeout_seconds: 1,
+            profile: LaunchProfile::Bridge,
+            prompt_strategy: "bridge".to_string(),
+            profile_diagnostics: None,
             pid: None,
             created_at: now_iso(),
             updated_at: now_iso(),
@@ -1682,6 +2061,10 @@ mod tests {
             git_status: None,
             git_diff: None,
             changed_files: None,
+            transcript_available: false,
+            final_result_detected: false,
+            partial_result_detected: false,
+            transcript_diagnostic: None,
         }
     }
 

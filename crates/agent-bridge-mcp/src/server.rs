@@ -126,6 +126,19 @@ async fn call_tool(params: Value) -> Value {
                     (Err(error), _) | (_, Err(error)) => tool_error(error),
                 }
             }
+            ToolName::TaskTranscript => {
+                let cursor = params.arguments.get("cursor").and_then(Value::as_u64);
+                let limit = params.arguments.get("limit").and_then(Value::as_u64);
+                match (
+                    require_task_id(&params.arguments),
+                    TaskManagerHandle::from_env().await,
+                ) {
+                    (Ok(task_id), Ok(manager)) => {
+                        tool_result(manager.transcript(task_id, cursor, limit).await)
+                    }
+                    (Err(error), _) | (_, Err(error)) => tool_error(error),
+                }
+            }
             ToolName::TaskResult => {
                 let max_bytes = params.arguments.get("maxBytes").and_then(Value::as_i64);
                 match (
@@ -190,11 +203,13 @@ fn reject_unknown_arguments(name: ToolName, arguments: &Value) -> Result<(), Str
             "thinking",
             "isolation",
             "worktreeName",
+            "profile",
         ][..],
         ToolName::TaskList => &[][..],
         ToolName::TaskStatus | ToolName::TaskStop | ToolName::TaskRemove => &["taskId"][..],
         ToolName::TaskWait => &["taskId", "timeoutMs"][..],
         ToolName::TaskLogs => &["taskId", "maxBytes", "stdoutLine", "stderrLine"][..],
+        ToolName::TaskTranscript => &["taskId", "cursor", "limit"][..],
         ToolName::TaskResult => &["taskId", "maxBytes"][..],
     };
     let Some(object) = arguments.as_object() else {
@@ -222,6 +237,7 @@ fn tool_name_str(name: ToolName) -> &'static str {
         ToolName::TaskStatus => "task_status",
         ToolName::TaskWait => "task_wait",
         ToolName::TaskLogs => "task_logs",
+        ToolName::TaskTranscript => "task_transcript",
         ToolName::TaskResult => "task_result",
         ToolName::TaskStop => "task_stop",
         ToolName::TaskRemove => "task_remove",
@@ -1250,6 +1266,9 @@ fn task_preview(arguments: Value) -> Result<Value, String> {
         model: input.model.as_deref(),
         effort: input.effort.as_deref(),
         thinking: input.thinking.as_deref(),
+        profile: input
+            .profile
+            .unwrap_or(crate::domain::LaunchProfile::Bridge),
     };
     let command = provider::build_command(&task)?;
     let env = provider::provider_env(input.provider);
@@ -1271,7 +1290,10 @@ fn task_preview(arguments: Value) -> Result<Value, String> {
         "timeoutSeconds": command.timeout_seconds,
         "args": args,
         "stdin": command.stdin.as_ref().map(|_| "<prompt redacted>"),
-        "envKeys": env_keys
+        "envKeys": env_keys,
+        "profile": command.profile,
+        "promptStrategy": command.prompt_strategy,
+        "profileDiagnostics": command.profile_diagnostics
     });
     if input.provider == ProviderKind::Claude
         && crate::claude_host::socket_path_from_env().is_some()

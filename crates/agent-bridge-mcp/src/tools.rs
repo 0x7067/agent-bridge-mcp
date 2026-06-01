@@ -1,4 +1,6 @@
-use crate::domain::{Isolation, ProviderKind, TaskMode, provider_names, task_modes};
+use crate::domain::{
+    Isolation, LaunchProfile, ProviderKind, TaskMode, launch_profiles, provider_names, task_modes,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -22,6 +24,8 @@ pub enum ToolName {
     TaskWait,
     #[serde(rename = "task_logs")]
     TaskLogs,
+    #[serde(rename = "task_transcript")]
+    TaskTranscript,
     #[serde(rename = "task_result")]
     TaskResult,
     #[serde(rename = "task_stop")]
@@ -54,11 +58,13 @@ pub struct TaskPreviewInput {
     pub thinking: Option<String>,
     pub isolation: Option<Isolation>,
     pub worktree_name: Option<String>,
+    pub profile: Option<LaunchProfile>,
 }
 
 pub fn tool_definitions() -> Vec<Value> {
     let provider_enum = provider_names();
     let mode_enum = task_modes();
+    let profile_enum = launch_profiles();
     vec![
         json!({
             "name": "providers_list",
@@ -100,12 +106,14 @@ pub fn tool_definitions() -> Vec<Value> {
             "Preview the command that would be run for a task without actually spawning it.",
             &provider_enum,
             &mode_enum,
+            &profile_enum,
         ),
         spawn_like_tool(
             "task_spawn",
             "Start a background provider task. Returns immediately; poll task_status/task_logs/task_result using the returned taskId.",
             &provider_enum,
             &mode_enum,
+            &profile_enum,
         ),
         json!({
             "name": "task_list",
@@ -129,6 +137,15 @@ pub fn tool_definitions() -> Vec<Value> {
             }), vec!["taskId"])
         }),
         json!({
+            "name": "task_transcript",
+            "description": "Return bounded normalized transcript events for a task.",
+            "inputSchema": object_schema(json!({
+                "taskId": {"type": "string"},
+                "cursor": {"type": "number"},
+                "limit": {"type": "number"}
+            }), vec!["taskId"])
+        }),
+        json!({
             "name": "task_result",
             "description": "Return final task metadata, logs, git status, diff, changed files, and exit metadata.",
             "inputSchema": object_schema(json!({"taskId": {"type": "string"}, "maxBytes": {"type": "number"}}), vec!["taskId"])
@@ -146,6 +163,7 @@ fn spawn_like_tool(
     description: &str,
     provider_enum: &[&str],
     mode_enum: &[&str],
+    profile_enum: &[&str],
 ) -> Value {
     json!({
         "name": name,
@@ -161,7 +179,8 @@ fn spawn_like_tool(
             "effort": {"type": "string"},
             "thinking": {"type": "string"},
             "isolation": {"type": "string", "enum": ["none", "worktree"]},
-            "worktreeName": {"type": "string"}
+            "worktreeName": {"type": "string"},
+            "profile": {"type": "string", "enum": profile_enum}
         }), vec!["provider", "mode", "prompt"])
     })
 }

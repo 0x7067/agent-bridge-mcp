@@ -184,8 +184,8 @@ Suggested flow:
 1. Call doctor first when setup, workspace, state, provider, or host-runner readiness is uncertain.
 2. Call providers_check when provider readiness needs focused follow-up.
 3. Use task_spawn with mode "review" or "research" and a bounded prompt.
-4. Poll task_wait with a bounded timeout, then task_logs if more progress detail is needed.
-5. Read task_result once the task is final and inspect logs, gitStatus, diff, changedFiles, exit metadata, and errorType.
+4. Poll task_wait with a bounded timeout, then task_logs and task_transcript if more progress detail is needed.
+5. Read task_result once the task is final and inspect reviewPacket, transcript evidence, logs, gitStatus, diff, changedFiles, exit metadata, and errorType.
 6. Treat provider output as evidence; the main caller remains responsible for deciding whether findings are valid."#;
 
 const IMPLEMENTATION_PROMPT: &str = r#"Use Agent Bridge for isolated implementation work.
@@ -195,8 +195,8 @@ Suggested flow:
 2. Call providers_check if provider readiness needs focused follow-up.
 3. Call task_preview when command flags, cwd, environment, or isolation need inspection.
 4. Call task_spawn with mode "implement", a clear task prompt, cwd under an allowed workspace, and isolation "worktree" by default.
-5. Use task_wait, task_logs, and task_status to monitor the task without assuming it is finished.
-6. When final, call task_result and inspect the report, logs, gitStatus, diff, changedFiles, exit metadata, and errorType.
+5. Use task_wait, task_logs, task_transcript, and task_status to monitor the task without assuming it is finished.
+6. When final, call task_result and inspect the report, transcript evidence, logs, gitStatus, diff, changedFiles, exit metadata, and errorType.
 7. The main caller remains responsible for running relevant tests, lint, typecheck, build, or OpenSpec validation before claiming work complete.
 8. Call task_remove only after the managed worktree has been inspected and cleanup is intentional."#;
 
@@ -206,6 +206,7 @@ Use task_result for the final payload, then review:
 - reviewPacket as the concise operator summary
 - status and errorType
 - stdout/stderr excerpts and diagnostics
+- transcript availability, final-result evidence, and partial-result evidence
 - gitStatus, diff, and changedFiles
 - provider exit metadata
 
@@ -215,7 +216,7 @@ const RECOVER_STALLED_PROMPT: &str = r#"Recover a stalled Agent Bridge task.
 
 Suggested flow:
 1. Call task_wait with a short bounded timeout.
-2. Call task_logs with stdoutLine and stderrLine cursors to inspect new output without rereading the whole log.
+2. Call task_logs with stdoutLine and stderrLine cursors, and task_transcript with cursor/limit, to inspect new output without rereading the whole run.
 3. Call task_status to confirm whether the process is still active.
 4. If it is no longer useful, call task_stop.
 5. Call task_result after stopping or completion to inspect logs, diagnostics, exit metadata, and partial git state.
@@ -242,7 +243,7 @@ Suggested workflows:
 1. For read-only review, use mode "review" or "research", isolation "none", a small prompt, bounded task_wait, and final task_result review.
 2. For isolated implementation, use mode "implement", isolation "worktree", inspect reviewPacket, gitStatus, gitDiff, changedFiles, stdout, stderr, and diagnostics, then run verification in the main caller.
 3. For stalled-task recovery, use bounded task_wait, incremental task_logs cursors, task_status, task_stop if needed, and final task_result inspection. For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms, inspect cwd, workspace policy, prompt scope, and isolation strategy before retrying.
-4. For provider comparison, run equivalent read-only prompts against selected providers, compare task_result evidence, and keep final conclusions in the main caller.
+4. For provider comparison, run equivalent read-only prompts against selected providers, optionally paired as profile "bridge" and profile "bare"; compare task_result, task_transcript, profileDiagnostics, and provider prose, and keep final conclusions in the main caller.
 
 Live provider execution remains opt-in and should not be added to default CI."#;
 
@@ -250,10 +251,10 @@ const COMPARE_PROVIDERS_PROMPT: &str = r#"Compare Agent Bridge providers safely.
 
 Suggested flow:
 1. Call providers_check for the selected providers; use smoke only when startup readiness matters.
-2. Use task_preview to confirm command shape, cwd, launch strategy, and provider options.
-3. Spawn equivalent read-only review or research tasks with short prompts and bounded timeouts.
-4. Use task_wait, task_logs, and task_result for each task.
-5. Compare reviewPacket, logs, diagnostics, exit metadata, and provider prose as evidence.
+2. Use task_preview to confirm command shape, cwd, launch strategy, selected profile, profileDiagnostics, and provider options.
+3. Spawn equivalent read-only review or research tasks with short prompts and bounded timeouts. Use profile "bridge" for normal Agent Bridge guidance and profile "bare" for compact reduced-configuration experiments.
+4. Use task_wait, task_logs, task_transcript, and task_result for each task.
+5. Compare reviewPacket, transcript evidence, logs, diagnostics, exit metadata, profileDiagnostics, and provider prose as evidence.
 6. Keep correctness decisions and project verification in the main caller."#;
 
 const CALLER_WORKFLOW_RESOURCE: &str = r#"# Agent Bridge Caller Workflow
@@ -265,8 +266,8 @@ Recommended flow:
 2. Call `providers_check` to catch missing or misconfigured provider CLIs. Use smoke checks when debugging startup.
 3. Call `task_preview` when cwd, flags, environment, prompt transport, or worktree isolation need inspection.
 4. Call `task_spawn` for the real delegated task.
-5. Call `task_wait` with a bounded timeout. If it times out, call `task_logs` with line cursors to inspect progress.
-6. Once final, call `task_result` for `reviewPacket`, logs, git status, diff, changed files, exit metadata, diagnostics, and `errorType`.
+5. Call `task_wait` with a bounded timeout. If it times out, call `task_logs` with line cursors and `task_transcript` with cursor/limit to inspect progress.
+6. Once final, call `task_result` for `reviewPacket`, transcript availability/result evidence, logs, git status, diff, changed files, exit metadata, diagnostics, and `errorType`.
 7. Treat provider output as evidence for the main caller, not as final verification.
 8. Call `task_remove` intentionally after any managed worktree has been inspected.
 "#;
@@ -280,6 +281,7 @@ const SAFETY_RESOURCE: &str = r#"# Agent Bridge Safety Guidance
 - Use `command` mode only for bounded command-oriented work with explicit expected evidence.
 - Do not remove a managed worktree until the final result, git status, diff, and changed files have been inspected.
 - If a task stalls, use bounded `task_wait`, incremental `task_logs`, and `task_stop` rather than waiting indefinitely.
+- Use `task_transcript` for behavior analysis, provider comparison, and final/partial result evidence; it does not replace raw logs or main-thread verification.
 - For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms, use `task_wait`, `task_logs`, `task_status`, and final `task_result`; inspect cwd, workspace policy, prompt scope, and isolation before retrying.
 - Do not loosen Codex sandbox permissions as a reflex or repeat an unchanged request after denial diagnostics.
 "#;
@@ -298,7 +300,7 @@ Supported modes:
 - `implement`: write-capable implementation.
 - `command`: bounded command-oriented work.
 
-Use `providers_list` for the authoritative runtime provider summary and `providers_check` for availability and startup checks. Do not loosen Codex sandbox permissions as a reflex or repeat an unchanged request after denial diagnostics.
+Use `providers_list` for the authoritative runtime provider summary, including launch profiles and reduced-configuration metadata. Use `providers_check` for availability and startup checks. Do not loosen Codex sandbox permissions as a reflex or repeat an unchanged request after denial diagnostics.
 "#;
 
 const CLAUDE_HOST_LIFECYCLE_RESOURCE: &str = r#"# Claude Host Runner Lifecycle
@@ -325,7 +327,7 @@ These workflows are reproducible local operator checks. They intentionally keep 
 
 ## read-only review
 
-Use `task_spawn` with mode `review` or `research`, `isolation: "none"`, a small prompt, and a bounded timeout. Use `task_wait`, then inspect `task_result.reviewPacket`, stdout, stderr, diagnostics, git status, diff, changed files, and exit metadata.
+Use `task_spawn` with mode `review` or `research`, `isolation: "none"`, a small prompt, and a bounded timeout. Use `task_wait`, then inspect `task_result.reviewPacket`, `task_transcript`, stdout, stderr, diagnostics, git status, diff, changed files, and exit metadata.
 
 ## isolated implementation
 
@@ -333,11 +335,11 @@ Use `task_spawn` with mode `implement` and `isolation: "worktree"`. After comple
 
 ## stalled-task recovery
 
-Use short bounded `task_wait` calls. If the task does not finish, call `task_logs` with `stdoutLine` and `stderrLine` cursors, then `task_status`. Call `task_stop` only when the task is no longer useful, then inspect final `task_result`.
+Use short bounded `task_wait` calls. If the task does not finish, call `task_logs` with `stdoutLine` and `stderrLine` cursors, `task_transcript` with cursor/limit, then `task_status`. Call `task_stop` only when the task is no longer useful, then inspect final `task_result`.
 
 For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms, inspect cwd, workspace policy, prompt scope, and isolation before retrying. Prefer narrowing the prompt or using managed worktree isolation over loosening sandbox permissions.
 
 ## provider comparison
 
-Run equivalent read-only prompts against selected providers. Compare `reviewPacket`, logs, diagnostics, exit metadata, and provider prose as evidence; keep final conclusions and verification responsibility with the main caller.
+Run equivalent read-only prompts against selected providers. For Agent Bridge behavior analysis, run paired profile "bridge" and profile "bare" tasks where useful. Compare `reviewPacket`, `task_transcript`, logs, diagnostics, exit metadata, `profileDiagnostics`, and provider prose as evidence; keep final conclusions and verification responsibility with the main caller.
 "#;
