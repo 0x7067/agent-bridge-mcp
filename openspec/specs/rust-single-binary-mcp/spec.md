@@ -4,7 +4,7 @@
 Define the Rust-built Agent Bridge MCP binary behavior, including stdio protocol compatibility, task lifecycle handling, provider process safety, persisted state, and release packaging expectations.
 ## Requirements
 ### Requirement: Rust binary preserves MCP public API
-The system SHALL provide a Rust-built MCP server binary that preserves the current public MCP tool names, tool input schemas, argument defaults, validation behavior, response shapes, and tool error semantics while allowing documented additive response fields.
+The system SHALL provide a Rust-built MCP server binary that preserves the current public MCP tool names, tool input schemas, argument defaults, validation behavior, response shapes, and tool error semantics while allowing documented additive response fields and additive tools.
 
 #### Scenario: MCP protocol smoke
 - **WHEN** a caller sends `initialize`, `tools/list`, `providers_list`, `providers_check`, and `task_preview` requests over stdio to the Rust binary
@@ -17,6 +17,10 @@ The system SHALL provide a Rust-built MCP server binary that preserves the curre
 #### Scenario: Task result includes additive review packet
 - **WHEN** a caller reads `task_result`
 - **THEN** the existing result fields remain present and the response may include documented additive fields such as `reviewPacket`.
+
+#### Scenario: Doctor tool is additive
+- **WHEN** a caller inspects `tools/list`
+- **THEN** the response may include documented additive tools such as `doctor` without changing existing tool names or schemas.
 
 ### Requirement: Stdio transport compatibility fixtures
 The system SHALL define Rust stdio tests that exercise the production binary.
