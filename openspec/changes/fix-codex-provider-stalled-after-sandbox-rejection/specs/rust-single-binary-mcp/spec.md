@@ -16,6 +16,6 @@ The Rust MCP binary SHALL transition tasks to a final failed state when a provid
 - **WHEN** Agent Bridge finalizes a task early because of fatal provider evidence
 - **THEN** it terminates and reaps the provider process group or child tree before recording the final state
 
-#### Scenario: Fatal provider finalization preserves existing timeout behavior
+#### Scenario: Fatal provider finalization keeps intended timeout behavior
 - **WHEN** a provider does not emit known fatal-error evidence and exceeds its configured timeout
-- **THEN** the Rust binary preserves existing timeout classification and diagnostics
+- **THEN** the Rust binary reports timeout classification and diagnostics that express the intended timeout contract

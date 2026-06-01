@@ -38,7 +38,7 @@ Alternative considered: rely on callers to stop stalled tasks manually. That kee
 
 Diagnostics should include a stable failure category such as `provider_sandbox_denied` or an equivalent explicit category, plus provider name, command path/kind, launch strategy, exit metadata when available, and redacted stdout/stderr excerpts. This is more actionable than a generic timeout when the provider has already explained the denial.
 
-Alternative considered: map every denial to `provider_exit_error`. That preserves compatibility but loses the distinction operators need for remediation.
+Alternative considered: map every denial to `provider_exit_error`. That keeps the old coarse category but loses the distinction operators need for remediation.
 
 ### Decision 3: Keep prompt and secret redaction conservative
 
@@ -62,5 +62,5 @@ Alternative considered: make a live Codex regression part of CI. That would depe
 
 - Over-specific stderr matching could miss future Codex wording changes. Mitigation: match a small set of stable concepts such as `patch rejected`, `outside of the project`, `approval`, and `sandbox`, and keep generic timeout fallback.
 - Early-abort logic could terminate a provider that would have recovered. Mitigation: scope early-abort to Codex plus explicit fatal denial patterns.
-- Adding diagnostic categories could surprise callers that key on current values. Mitigation: keep existing `errorType` compatible and place the more specific category under diagnostics.
+- Adding or changing diagnostic categories or `errorType` values could surprise callers that key on current values. Mitigation: document intentional breaks in the spec and tests, and prefer the clearest contract over compatibility with stale categories.
 - Investigation may find the task was launched with stale installed binary/config rather than current source. Mitigation: tasks include smoke testing the installed MCP command and documenting the operational restart path.

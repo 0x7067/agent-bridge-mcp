@@ -8,7 +8,7 @@ A Codex delegated implementation task stalled after Codex reported `patch reject
 - Ensure unrecoverable Codex provider errors finalize tasks as failed instead of remaining indefinitely active.
 - Classify Codex sandbox/approval denials with actionable `errorType`, diagnostics, logs, and `reviewPacket` guidance.
 - Improve Codex provider command/prompt/runbook behavior if investigation shows Agent Bridge is causing out-of-workspace patch attempts.
-- Preserve public MCP tool names and response compatibility; changes are additive or stricter failure finalization only.
+- Public MCP tool names, response shapes, and diagnostic categories may change when that produces a cleaner or more actionable contract; any breaking change must be intentional, documented, and covered by updated OpenSpec requirements/tests.
 
 ## Capabilities
 
@@ -23,5 +23,5 @@ A Codex delegated implementation task stalled after Codex reported `patch reject
 ## Impact
 
 - Affected code: `crates/agent-bridge-mcp/src/provider.rs`, `crates/agent-bridge-mcp/src/task.rs`, `crates/agent-bridge-mcp/src/guidance.rs`, stdio tests.
-- Affected API: no new public MCP tools; `task_result`, `task_wait`, and `task_status` may expose more specific diagnostics for failed Codex tasks.
+- Affected API: `task_result`, `task_wait`, and `task_status` may expose more specific diagnostics or breaking error/category shapes for failed Codex tasks when that improves caller actionability.
 - Affected systems: Codex provider adapter, task lifecycle actor, provider log capture, operator guidance.

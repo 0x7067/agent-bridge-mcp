@@ -35,7 +35,7 @@
 ## 5. Runtime Boundary Checks
 
 - [ ] 5.1 Add or update tests proving `task_preview` command descriptors are built from provider adapter runtime logic, not provider skill markdown.
-- [ ] 5.2 Add or update tests proving `task_spawn` behavior remains unchanged when provider skill prose changes.
+- [ ] 5.2 Add or update tests proving `task_spawn` behavior is derived from provider adapter runtime logic, not provider skill prose; do not require old behavior solely for compatibility.
 - [ ] 5.3 Keep provider adapter metadata as the source for provider names, modes, and provider-specific options used by validation.
 
 ## 6. Verification

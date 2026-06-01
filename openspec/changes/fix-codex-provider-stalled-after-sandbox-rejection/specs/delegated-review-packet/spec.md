@@ -13,4 +13,4 @@ The system SHALL include recovery guidance in `reviewPacket` for failed Codex ta
 
 #### Scenario: Review packet remains derived evidence
 - **WHEN** a Codex denial review packet is generated
-- **THEN** it summarizes existing status, diagnostics, logs, and exit metadata without parsing provider prose as proof of project correctness
+- **THEN** it summarizes available status, diagnostics, logs, and exit metadata without parsing provider prose as proof of project correctness

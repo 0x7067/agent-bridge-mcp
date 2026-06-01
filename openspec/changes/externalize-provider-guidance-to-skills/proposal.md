@@ -11,7 +11,7 @@ Moving provider-specific usage guidance into versioned agent skills keeps Agent 
 - Update Agent Bridge guidance and documentation to point operators at provider skills for direct CLI usage, provider-specific caveats, and manual troubleshooting.
 - Keep MCP tool schemas, task lifecycle APIs, provider command builders, readiness checks, workspace policy, and result inspection owned by Agent Bridge.
 - Add validation so provider skill guidance remains present, current, and aligned with supported provider names and modes.
-- No breaking changes to public MCP tools or provider task behavior.
+- Public MCP tool names, response shapes, guidance resources, and provider task behavior may change when doing so creates a cleaner provider-skill/runtime boundary; intentional breaking changes must be documented and tested.
 
 ## Capabilities
 

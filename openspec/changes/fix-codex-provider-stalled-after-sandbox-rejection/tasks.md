@@ -10,11 +10,11 @@
 - [ ] 2.1 Implement Codex fatal-denial detection with a narrow, documented pattern for sandbox, approval, and out-of-project patch rejection evidence.
 - [ ] 2.2 Ensure fatal-denial detection transitions the task to final `failed` state through the normal task manager completion path.
 - [ ] 2.3 Ensure a hanging Codex process with fatal-denial evidence is terminated and reaped within a bounded cleanup deadline.
-- [ ] 2.4 Preserve existing timeout behavior for providers that do not emit known fatal-denial evidence.
+- [ ] 2.4 Keep intended timeout semantics for providers that do not emit known fatal-denial evidence; do not preserve exact legacy response shapes unless they still express the intended contract.
 
 ## 3. Diagnostics And Review Packet
 
-- [ ] 3.1 Add a stable diagnostic failure category for Codex sandbox/approval denial while preserving compatible `errorType` behavior.
+- [ ] 3.1 Add a stable Codex sandbox/approval denial classification, using a dedicated `errorType`, `diagnostic.failureCategory`, or both if that is the clearest public contract.
 - [ ] 3.2 Include provider name, command path/kind, launch strategy, exit metadata, and redacted stdout/stderr excerpts in failed Codex diagnostics.
 - [ ] 3.3 Update `reviewPacket.recommendedActions` for Codex denial failures to direct callers to inspect logs, cwd/workspace policy, prompt scope, and isolation strategy.
 - [ ] 3.4 Add tests proving review packets do not recommend silently relaxing sandbox permissions or blindly retrying.
@@ -22,8 +22,8 @@
 ## 4. Codex Adapter Corrections
 
 - [ ] 4.1 If diagnosis identifies command-shape or prompt-scope issues, update the Codex provider adapter with focused tests for `task_preview` and `task_spawn`.
-- [ ] 4.2 If diagnosis does not identify adapter issues, document that the fix is lifecycle/diagnostic handling only and keep Codex command behavior unchanged.
-- [ ] 4.3 Verify normal successful Codex-like fake-provider tasks still succeed and preserve existing public lifecycle response shapes.
+- [ ] 4.2 If diagnosis does not identify adapter issues, document that the fix is lifecycle/diagnostic handling only; avoid command behavior churn, but do not keep behavior unchanged solely for compatibility.
+- [ ] 4.3 Verify normal successful Codex-like fake-provider tasks still succeed and that public lifecycle responses express the intended contract, even if old compatibility-only fields or categories change.
 
 ## 5. Guidance And Operator Runbook
 
@@ -34,7 +34,7 @@
 ## 6. Verification
 
 - [ ] 6.1 Run focused stdio tests for Codex denial finalization, diagnostics, and review packet guidance.
-- [ ] 6.2 Run existing provider lifecycle stdio tests to prove non-Codex behavior remains compatible.
+- [ ] 6.2 Run existing provider lifecycle stdio tests to prove non-Codex timeout, success, safety, and log/result semantics remain correct.
 - [ ] 6.3 Run `cargo fmt --check`.
 - [ ] 6.4 Run `cargo test`.
 - [ ] 6.5 Run `cargo clippy --all-targets -- -D warnings`.

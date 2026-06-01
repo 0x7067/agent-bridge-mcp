@@ -26,6 +26,6 @@ The system SHALL keep provider adapters as the authority for Agent Bridge task e
 - **WHEN** a caller invokes `task_spawn`
 - **THEN** the spawned provider command is built from provider adapter runtime logic and not from provider skill markdown
 
-#### Scenario: Runtime behavior is unchanged by skill edits
+#### Scenario: Runtime behavior is independent of skill edits
 - **WHEN** a provider skill changes direct CLI runbook prose without changing provider adapter code
-- **THEN** Agent Bridge task execution behavior remains unchanged
+- **THEN** Agent Bridge task execution behavior remains derived from provider adapter runtime logic rather than skill prose

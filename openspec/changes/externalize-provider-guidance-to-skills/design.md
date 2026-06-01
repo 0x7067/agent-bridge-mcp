@@ -23,7 +23,7 @@ The runtime knowledge belongs in Agent Bridge because it is required for MCP tas
 - Do not make runtime command construction read arbitrary skill markdown at startup.
 - Do not add a third-party plugin system for providers.
 - Do not make personal `~/.claude/skills` or global Codex skills the canonical repo source.
-- Do not change public MCP tool names, argument names, or task lifecycle response shapes.
+- Do not preserve public MCP tool names, argument names, or task lifecycle response shapes solely for compatibility; any breaking cleanup must directly support the provider-skill/runtime boundary and be covered by tests/specs.
 
 ## Decisions
 
@@ -106,7 +106,7 @@ This keeps the change focused on the source-of-truth boundary and validation. A 
 6. Keep existing personal skills untouched; optionally document how to sync repo-owned skills into personal locations.
 7. Run OpenSpec validation and the default test suite.
 
-Rollback is straightforward because this is additive: remove the repo-owned skill files, validation, and guidance references. Public MCP runtime behavior remains unchanged.
+Rollback should remove the repo-owned skill files, validation, guidance references, and any intentional runtime contract cleanup introduced by this change. Public MCP runtime behavior is not assumed to remain unchanged when cleanup materially improves the boundary.
 
 ## Open Questions
 

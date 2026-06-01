@@ -31,7 +31,7 @@ The system SHALL route direct provider CLI troubleshooting and flag usage to pro
 - **THEN** it recommends `doctor`, `providers_check`, and `task_preview` before falling back to direct provider skill troubleshooting
 
 ### Requirement: Guidance keeps verification with the main caller
-The system SHALL preserve existing verification responsibility while adding provider skill references.
+The system SHALL keep verification responsibility with the main caller while adding provider skill references.
 
 #### Scenario: Direct provider skill result
 - **WHEN** guidance references a direct provider skill invocation

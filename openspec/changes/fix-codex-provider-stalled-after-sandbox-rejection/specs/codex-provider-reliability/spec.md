@@ -25,7 +25,7 @@ The system SHALL finalize Codex tasks that emit unrecoverable sandbox or approva
 
 #### Scenario: Codex normal success remains successful
 - **WHEN** a Codex provider process completes successfully without sandbox or approval denial evidence
-- **THEN** Agent Bridge preserves the existing successful task lifecycle behavior
+- **THEN** Agent Bridge reports a successful final task with the intended lifecycle evidence
 
 ### Requirement: Codex command investigation is evidence based
 The system SHALL verify whether Agent Bridge command construction or prompt rendering contributes to Codex out-of-project patch attempts before changing Codex sandbox mode.
@@ -36,4 +36,4 @@ The system SHALL verify whether Agent Bridge command construction or prompt rend
 
 #### Scenario: Codex adapter changes are regression tested
 - **WHEN** the Codex provider adapter command shape, prompt transport, or sandbox mode is changed
-- **THEN** stdio tests prove public task preview, spawn, wait, logs, and result behavior remain compatible
+- **THEN** stdio tests prove public task preview, spawn, wait, logs, and result behavior match the updated intended contract
