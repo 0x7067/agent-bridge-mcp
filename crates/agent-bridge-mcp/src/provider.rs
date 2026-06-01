@@ -34,30 +34,82 @@ pub struct ProviderTask<'a> {
     pub thinking: Option<&'a str>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderMetadata {
+    pub provider: ProviderKind,
+    pub provider_cli: &'static str,
+    pub supported_modes: &'static [TaskMode],
+}
+
+const ALL_MODES: &[TaskMode] = &[
+    TaskMode::Research,
+    TaskMode::Review,
+    TaskMode::Implement,
+    TaskMode::Command,
+];
+const CURSOR_MODES: &[TaskMode] = &[TaskMode::Research, TaskMode::Review, TaskMode::Implement];
+const PROVIDER_METADATA: &[ProviderMetadata] = &[
+    ProviderMetadata {
+        provider: ProviderKind::Claude,
+        provider_cli: "claude",
+        supported_modes: ALL_MODES,
+    },
+    ProviderMetadata {
+        provider: ProviderKind::Cursor,
+        provider_cli: "cursor-agent",
+        supported_modes: CURSOR_MODES,
+    },
+    ProviderMetadata {
+        provider: ProviderKind::Kimi,
+        provider_cli: "pi",
+        supported_modes: ALL_MODES,
+    },
+    ProviderMetadata {
+        provider: ProviderKind::Codex,
+        provider_cli: "codex",
+        supported_modes: ALL_MODES,
+    },
+];
+
+pub fn metadata() -> &'static [ProviderMetadata] {
+    PROVIDER_METADATA
+}
+
+fn metadata_for(provider: ProviderKind) -> &'static ProviderMetadata {
+    metadata()
+        .iter()
+        .find(|metadata| metadata.provider == provider)
+        .expect("all providers should have runtime metadata")
+}
+
+fn mode_names(modes: &'static [TaskMode]) -> Vec<&'static str> {
+    modes.iter().map(|mode| mode.as_str()).collect()
+}
+
 pub fn capabilities() -> Value {
     json!({
         "claude": {
-            "modes": ["research", "review", "implement", "command"],
+            "modes": mode_names(metadata_for(ProviderKind::Claude).supported_modes),
             "supportsReply": false,
             "supportsResume": false,
             "supportsWorktreeIsolation": true,
             "effort": ["low", "medium", "high", "xhigh", "max"]
         },
         "cursor": {
-            "modes": ["research", "review", "implement"],
+            "modes": mode_names(metadata_for(ProviderKind::Cursor).supported_modes),
             "supportsReply": false,
             "supportsResume": false,
             "supportsWorktreeIsolation": true
         },
         "kimi": {
-            "modes": ["research", "review", "implement", "command"],
+            "modes": mode_names(metadata_for(ProviderKind::Kimi).supported_modes),
             "supportsReply": false,
             "supportsResume": false,
             "supportsWorktreeIsolation": true,
             "thinking": ["off", "minimal", "low", "medium", "high", "xhigh"]
         },
         "codex": {
-            "modes": ["research", "review", "implement", "command"],
+            "modes": mode_names(metadata_for(ProviderKind::Codex).supported_modes),
             "supportsReply": false,
             "supportsResume": false,
             "supportsWorktreeIsolation": true,
