@@ -68,6 +68,8 @@ impl McpClient {
             .env("PI_BIN", &env.fake_provider)
             .env("CODEX_BIN", &env.fake_provider)
             .env("ANTHROPIC_API_KEY", "test-key")
+            .env("ANTHROPIC_AUTH_TOKEN", "test-auth-token")
+            .env("CLAUDE_CODE_OAUTH_TOKEN", "test-code-oauth-token")
             .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:8787")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -299,6 +301,10 @@ fn sorted_provider_keys(value: &Value) -> Vec<String> {
     keys
 }
 
+fn review_actions_text(result: &Value) -> String {
+    serde_json::to_string(&result["reviewPacket"]["recommendedActions"]).unwrap()
+}
+
 fn make_executable(path: &Path) {
     let mut permissions = std::fs::metadata(path).unwrap().permissions();
     permissions.set_mode(0o755);
@@ -393,11 +399,26 @@ fn stdio_protocol_and_tool_schema_smoke() {
 
     let prompts = client.request("prompts/list", json!({}));
     let prompts = prompts["result"]["prompts"].as_array().unwrap();
-    assert_eq!(prompts.len(), 4);
+    assert_eq!(prompts.len(), 7);
     assert!(
         prompts
             .iter()
             .any(|prompt| prompt["name"] == "agent_bridge_delegate_implementation")
+    );
+    assert!(
+        prompts
+            .iter()
+            .any(|prompt| prompt["name"] == "agent_bridge_claude_host_lifecycle")
+    );
+    assert!(
+        prompts
+            .iter()
+            .any(|prompt| prompt["name"] == "agent_bridge_dogfood_workflows")
+    );
+    assert!(
+        prompts
+            .iter()
+            .any(|prompt| prompt["name"] == "agent_bridge_compare_providers")
     );
 
     let prompt = client.request(
@@ -412,11 +433,21 @@ fn stdio_protocol_and_tool_schema_smoke() {
 
     let resources = client.request("resources/list", json!({}));
     let resources = resources["result"]["resources"].as_array().unwrap();
-    assert_eq!(resources.len(), 3);
+    assert_eq!(resources.len(), 5);
     assert!(
         resources
             .iter()
             .any(|resource| resource["uri"] == "agent-bridge://guidance/caller-workflow")
+    );
+    assert!(
+        resources
+            .iter()
+            .any(|resource| resource["uri"] == "agent-bridge://guidance/claude-host-lifecycle")
+    );
+    assert!(
+        resources
+            .iter()
+            .any(|resource| resource["uri"] == "agent-bridge://guidance/dogfood-workflows")
     );
 
     let resource = client.request(
@@ -431,6 +462,32 @@ fn stdio_protocol_and_tool_schema_smoke() {
             .unwrap()
             .contains("task_result")
     );
+    assert!(
+        resource_content["text"]
+            .as_str()
+            .unwrap()
+            .contains("reviewPacket")
+    );
+
+    let host_lifecycle = client.request(
+        "resources/read",
+        json!({"uri": "agent-bridge://guidance/claude-host-lifecycle"}),
+    );
+    let host_lifecycle_text = host_lifecycle["result"]["contents"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(host_lifecycle_text.contains("claude-host-runner"));
+    assert!(host_lifecycle_text.contains("ping"));
+    assert!(host_lifecycle_text.contains("workspace_policy_mismatch"));
+
+    let dogfood = client.request(
+        "resources/read",
+        json!({"uri": "agent-bridge://guidance/dogfood-workflows"}),
+    );
+    let dogfood_text = dogfood["result"]["contents"][0]["text"].as_str().unwrap();
+    assert!(dogfood_text.contains("read-only review"));
+    assert!(dogfood_text.contains("isolated implementation"));
+    assert!(dogfood_text.contains("provider comparison"));
 
     let missing_resource = client.request("resources/read", json!({"uri": "file:///etc/passwd"}));
     assert_eq!(missing_resource["error"]["code"], -32002);
@@ -583,6 +640,20 @@ fn stdio_providers_preview_and_safety_checks() {
             .iter()
             .any(|key| key == "ANTHROPIC_API_KEY")
     );
+    assert!(
+        claude["envKeys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|key| key == "ANTHROPIC_AUTH_TOKEN")
+    );
+    assert!(
+        claude["envKeys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|key| key == "CLAUDE_CODE_OAUTH_TOKEN")
+    );
 
     let outside = temp_dir("agent-bridge-outside");
     let link = env.root.join("escape");
@@ -608,6 +679,39 @@ fn stdio_providers_preview_and_safety_checks() {
         }),
     );
     assert!(error.contains("prompt exceeds"));
+}
+
+#[test]
+fn stdio_claude_host_runner_preview_and_unavailable_smoke_are_explicit() {
+    let env = fixture_env();
+    let mut extra_env = BTreeMap::new();
+    extra_env.insert(
+        "AGENT_BRIDGE_CLAUDE_HOST_SOCKET".to_string(),
+        OsString::from(env.root.join("missing-host.sock")),
+    );
+    let mut client = McpClient::start_with_extra_env(&env, extra_env);
+
+    let preview = client.tool(
+        "task_preview",
+        json!({
+            "provider": "claude",
+            "mode": "review",
+            "prompt": "provider prompt",
+            "cwd": env.root
+        }),
+    );
+    assert_eq!(preview["launchStrategy"], "host_runner");
+
+    let checks = client.tool(
+        "providers_check",
+        json!({"providers": ["claude"], "smoke": true, "timeoutMs": 500}),
+    );
+    let claude = &checks["providers"]["claude"];
+    assert_eq!(claude["available"], false);
+    assert_eq!(
+        claude["diagnostic"]["failureCategory"],
+        "host_runner_unavailable"
+    );
 }
 
 #[test]
@@ -1036,6 +1140,18 @@ fn stdio_task_lifecycle_stop_timeout_and_logs() {
     let result = client.tool("task_result", json!({"taskId": task_id}));
     assert_eq!(result["status"], "succeeded");
     assert_eq!(result["exitCode"], 0);
+    assert_eq!(result["reviewPacket"]["status"], "succeeded");
+    assert_eq!(result["reviewPacket"]["isFinal"], true);
+    assert_eq!(result["reviewPacket"]["hasChanges"], false);
+    assert_eq!(result["reviewPacket"]["changedFiles"], json!([]));
+    assert_eq!(result["reviewPacket"]["stdoutTruncated"], false);
+    assert_eq!(result["reviewPacket"]["stderrTruncated"], false);
+    let actions = review_actions_text(&result);
+    assert!(
+        actions
+            .contains("Inspect stdout, stderr, diagnostics, git status, diff, and changed files.")
+    );
+    assert!(actions.contains("Run the relevant project verification before claiming completion."));
 
     let active = client.tool(
         "task_spawn",
@@ -1048,6 +1164,14 @@ fn stdio_task_lifecycle_stop_timeout_and_logs() {
         }),
     );
     let active_id = active["taskId"].as_str().unwrap();
+    let active_result = client.tool("task_result", json!({"taskId": active_id}));
+    assert_eq!(active_result["reviewPacket"]["isFinal"], false);
+    let actions = review_actions_text(&active_result);
+    assert!(actions.contains("Use task_wait with a bounded timeout."));
+    assert!(actions.contains("Use task_logs with line cursors to inspect incremental output."));
+    assert!(actions.contains("Use task_status to confirm whether the task is still active."));
+    assert!(actions.contains("Use task_stop if the task is no longer useful."));
+
     let remove_error = client.tool_error("task_remove", json!({"taskId": active_id}));
     assert!(remove_error.contains("cannot remove a running task"));
 
@@ -1230,6 +1354,20 @@ fn stdio_claude_task_malformed_output_returns_diagnostic() {
         result["diagnostic"]["failureCategory"],
         "provider_output_error"
     );
+    assert_eq!(result["reviewPacket"]["status"], "failed");
+    assert_eq!(result["reviewPacket"]["errorType"], "provider_output_error");
+    assert_eq!(result["reviewPacket"]["exitCode"], 0);
+    assert_eq!(
+        result["reviewPacket"]["diagnostic"]["failureCategory"],
+        "provider_output_error"
+    );
+    let actions = review_actions_text(&result);
+    assert!(
+        actions.contains("Inspect logs and diagnostic metadata before deciding whether to rerun.")
+    );
+    assert!(actions.contains(
+        "Decide whether to rerun with a narrower prompt, continue manually, or discard."
+    ));
     assert!(
         result["diagnostic"]["stdoutExcerpt"]
             .as_str()
@@ -1344,6 +1482,66 @@ fn stdio_claude_task_diagnostic_redacts_token_values() {
     let result = client.tool("task_result", json!({"taskId": task_id}));
     let diagnostic = serde_json::to_string(&result["diagnostic"]).unwrap();
     assert!(!diagnostic.contains("test-key"), "diagnostic leaked token");
+}
+
+#[test]
+fn stdio_task_result_review_packet_summarizes_worktree_changes() {
+    let env = fixture_env();
+    write_fake_provider(
+        &env,
+        &[
+            "#!/bin/sh",
+            "if [ \"$1\" = \"--version\" ]; then",
+            "  echo fake-provider 1.0.0",
+            "  exit 0",
+            "fi",
+            "case \"$*\" in",
+            "  *modify-readme*)",
+            "    printf 'changed by provider\\n' >> README.md",
+            "    echo modified-readme",
+            "    exit 0",
+            "    ;;",
+            "esac",
+            "echo ok",
+            "exit 0",
+            "",
+        ],
+    );
+    let repo = env.root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_git_repo(&repo);
+
+    let mut client = McpClient::start(&env);
+    let spawned = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "implement",
+            "prompt": "modify-readme",
+            "cwd": repo,
+            "isolation": "worktree",
+            "worktreeName": "review-packet"
+        }),
+    );
+    let task_id = spawned["taskId"].as_str().unwrap();
+    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    assert_eq!(waited["status"], "succeeded");
+
+    let result = client.tool("task_result", json!({"taskId": task_id}));
+    assert_eq!(result["changedFiles"], json!(["README.md"]));
+    assert_eq!(result["reviewPacket"]["hasChanges"], true);
+    assert_eq!(result["reviewPacket"]["changedFiles"], json!(["README.md"]));
+    assert!(
+        result["reviewPacket"]["gitStatusSummary"]
+            .as_str()
+            .unwrap()
+            .contains("README.md")
+    );
+    let actions = review_actions_text(&result);
+    assert!(actions.contains("Inspect gitStatus, gitDiff, and changedFiles before verification."));
+    assert!(
+        actions.contains("Call task_remove only after inspecting the managed worktree result.")
+    );
 }
 
 #[test]

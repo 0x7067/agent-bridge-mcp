@@ -1,7 +1,7 @@
 # rust-single-binary-mcp Specification
 
 ## Purpose
-TBD - created by archiving change port-mcp-to-rust-binary. Update Purpose after archive.
+Define the Rust-built Agent Bridge MCP binary behavior, including stdio protocol compatibility, task lifecycle handling, provider process safety, persisted state, and release packaging expectations.
 ## Requirements
 ### Requirement: Rust binary preserves MCP public API
 The system SHALL provide a Rust-built MCP server binary that preserves the current public MCP tool names, tool input schemas, argument defaults, validation behavior, response shapes, and tool error semantics.
@@ -165,4 +165,3 @@ The Rust MCP binary SHALL advertise and serve the MCP prompts and resources capa
 #### Scenario: Existing tools remain available
 - **WHEN** a caller sends `tools/list` after guidance capability support is added
 - **THEN** the existing provider and task lifecycle tools remain listed with their current public names.
-

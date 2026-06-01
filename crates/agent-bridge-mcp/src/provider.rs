@@ -1,3 +1,4 @@
+use crate::claude_host::ClaudeHostCommand;
 use crate::domain::{ProviderKind, TaskMode};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -10,6 +11,7 @@ pub const PROVIDER_SMOKE_TOKEN: &str = "AGENT_BRIDGE_PROVIDER_SMOKE_OK";
 pub struct ProviderCommand {
     pub provider: ProviderKind,
     pub command_kind: Option<String>,
+    pub claude_host: Option<ClaudeHostCommand>,
     pub command: String,
     pub args: Vec<String>,
     pub stdin: Option<String>,
@@ -99,6 +101,7 @@ pub fn version_command(provider: ProviderKind) -> ProviderCommand {
     ProviderCommand {
         provider,
         command_kind: provider_command_kind(provider),
+        claude_host: None,
         command: resolve_command(provider),
         args: vec!["--version".to_string()],
         stdin: None,
@@ -134,6 +137,7 @@ pub fn smoke_command(
         ProviderKind::Cursor => ProviderCommand {
             provider: task.provider,
             command_kind: None,
+            claude_host: None,
             command: env_or("CURSOR_AGENT_BIN", "cursor-agent"),
             args: [
                 vec![
@@ -160,6 +164,7 @@ pub fn smoke_command(
         ProviderKind::Kimi => ProviderCommand {
             provider: task.provider,
             command_kind: None,
+            claude_host: None,
             command: env_or("PI_BIN", "pi"),
             args: vec![
                 "-p".to_string(),
@@ -178,6 +183,7 @@ pub fn smoke_command(
         ProviderKind::Codex => ProviderCommand {
             provider: task.provider,
             command_kind: None,
+            claude_host: None,
             command: env_or("CODEX_BIN", "codex"),
             args: vec![
                 "exec".to_string(),
@@ -208,6 +214,7 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
         ProviderKind::Cursor => ProviderCommand {
             provider: task.provider,
             command_kind: None,
+            claude_host: None,
             command: env_or("CURSOR_AGENT_BIN", "cursor-agent"),
             args: [
                 vec![
@@ -231,6 +238,7 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
         ProviderKind::Kimi => ProviderCommand {
             provider: task.provider,
             command_kind: None,
+            claude_host: None,
             command: env_or("PI_BIN", "pi"),
             args: [
                 vec![
@@ -254,6 +262,7 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
         ProviderKind::Codex => ProviderCommand {
             provider: task.provider,
             command_kind: None,
+            claude_host: None,
             command: env_or("CODEX_BIN", "codex"),
             args: [
                 vec![
@@ -312,7 +321,9 @@ pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
             "CLAUDE_BIN",
             "CLAUDE_P_BIN",
             "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
             "ANTHROPIC_OAUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
             "AGENT_BRIDGE_WORKSPACES",
             "AGENT_BRIDGE_STATE_DIR",
         ][..],
@@ -331,7 +342,9 @@ pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
             "CLAUDE_BIN",
             "CLAUDE_P_BIN",
             "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
             "ANTHROPIC_OAUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
             "ANTHROPIC_BASE_URL",
             "CURSOR_AGENT_BIN",
             "CURSOR_API_KEY",
@@ -406,6 +419,14 @@ fn build_claude_command(task: &ProviderTask<'_>, rendered_prompt: String) -> Pro
     ProviderCommand {
         provider: task.provider,
         command_kind: Some(command_kind),
+        claude_host: Some(ClaudeHostCommand {
+            cwd: task.cwd.to_string(),
+            timeout_seconds: task.timeout_seconds,
+            mode: task.mode,
+            prompt: rendered_prompt.clone(),
+            model: task.model.map(str::to_string),
+            effort: task.effort.map(str::to_string),
+        }),
         command: "/bin/zsh".to_string(),
         args,
         stdin: Some(rendered_prompt.clone()),

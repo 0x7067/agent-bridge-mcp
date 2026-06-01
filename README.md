@@ -39,7 +39,8 @@ Recommended caller workflow:
 4. Call `task_wait` with a bounded `timeoutMs`; if it times out, use `task_logs`
    with line cursors to inspect progress without rereading the whole log.
 5. Once the task is final, call `task_result` once for logs, git status, diff,
-   changed files, exit metadata, and structured `errorType`.
+   changed files, exit metadata, structured `errorType`, and the derived
+   `reviewPacket` inspection summary.
 6. Call `task_remove` intentionally after any managed worktree has been inspected.
 
 Real-world delegation workflow:
@@ -68,7 +69,8 @@ discover how to use Agent Bridge safely:
   implementation, result inspection, and stalled task recovery.
 - `prompts/get` returns user-message guidance for the selected workflow.
 - `resources/list` exposes static `agent-bridge://guidance/...` resources for
-  caller workflow, safety guidance, and provider capabilities.
+  caller workflow, safety guidance, provider capabilities, Claude host-runner
+  lifecycle, and dogfood workflows.
 - `resources/read` returns those resources as `text/markdown` from a hardcoded
   allowlist. It does not map resource URIs to local files.
 
@@ -106,7 +108,7 @@ Provider/mode combinations are validated. For example, Cursor does not support
 - Rust-built `agent-bridge-mcp` binary for the MCP runtime.
 - `git` on `PATH`.
 - `claude-p` on `PATH`, or set `CLAUDE_P_BIN` to an explicit wrapper path.
-- Optional: set `CLAUDE_BIN` to use native `claude -p` instead of `claude-p`. `CLAUDE_P_BIN` takes precedence when both are set.
+- Optional: set `AGENT_BRIDGE_CLAUDE_HOST_SOCKET` to route Claude provider calls through the bridge's Claude host runner. This is required when Claude Code auth is stored in macOS Keychain and the MCP server runs inside a sandbox that cannot access Keychain.
 - `cursor-agent` on `PATH`, or set `CURSOR_AGENT_BIN`.
 - `pi` on `PATH`, or set `PI_BIN`.
 - `codex` on `PATH`, or set `CODEX_BIN`.
@@ -164,7 +166,8 @@ supported targets.
 - Task stdout/stderr, git status, and git diff are capped at 1 MiB each.
 - Provider processes use ignored stdin unless a provider requires stdin prompt transport. Most providers receive a restricted environment allowlist.
 - Claude provider runs through `/bin/zsh -flc` and manually sources `~/.zshenv`, `~/.zprofile`, and `~/.zshrc` with stdin redirected from `/dev/null` before executing `claude-p` or native `claude`, so MCP behavior matches the terminal path without letting startup files consume provider prompts. The shell script is constant; provider paths and cwd values are passed through `exec "$@"`, and prompt text is written to child stdin.
-- Claude provider receives a focused CLI environment allowlist so Claude Code and `claude-p` can find auth/config without inheriting unrelated host secrets. The bridge strips injected `ANTHROPIC_BASE_URL` values that can point Claude at Codex-local proxy endpoints. `claude-p` is the default; set `CLAUDE_BIN` to opt into native `claude -p` when `CLAUDE_P_BIN` is unset.
+- Claude provider receives a focused CLI environment allowlist so Claude Code and `claude-p` can find auth/config without inheriting unrelated host secrets. The bridge strips injected `ANTHROPIC_BASE_URL` values that can point Claude at Codex-local proxy endpoints. `claude-p` is the default.
+- When `AGENT_BRIDGE_CLAUDE_HOST_SOCKET` is configured, Claude provider smoke checks and tasks use a local Unix-socket host runner. The runner reconstructs the `claude-p` command from structured request fields and executes it outside Codex's sandbox so macOS Keychain-backed Claude Code auth remains available.
 - Codex provider passes `--config shell_environment_policy.inherit="all"` to `codex exec` so delegated Codex shell commands see the same tool `PATH` as the provider process.
 - Active task state is persisted under `AGENT_BRIDGE_STATE_DIR`, defaulting to:
 
@@ -193,6 +196,13 @@ Final task payloads include `isFinal`, `phase`, and `durationMs` where timing
 data is available. Failure payloads keep the human-readable `error` string and
 also include `errorType`, such as `timeout`, `provider_exit_error`,
 `provider_start_error`, `provider_output_error`, `stopped`, or `stale`.
+
+`task_result` also includes `reviewPacket`, an additive summary derived from the
+existing result fields. It reports status, finality, provider/mode, cwd,
+changed files, whether git state changed, exit/error metadata, truncation flags,
+diagnostics when present, and recommended next actions. Treat it as an
+inspection aid, not verification; the main caller still runs the relevant tests,
+lint, typecheck, build, or OpenSpec validation before claiming completion.
 
 If a provider appears stalled, call `task_wait` with a short timeout and then
 `task_logs` with the latest line cursors. If there is still no useful output,
@@ -273,8 +283,44 @@ Claude smoke checks and failed Claude task results include additive `diagnostic`
 Selection rules:
 
 - Set `CLAUDE_P_BIN` to force a specific `claude-p` wrapper.
-- Set `CLAUDE_BIN` to use native `claude -p` when `CLAUDE_P_BIN` is not set.
-- If a `claude-p` smoke probe fails and `CLAUDE_BIN` is configured, diagnostics recommend trying native `claude -p`; the bridge does not silently switch commands.
+- Set `AGENT_BRIDGE_CLAUDE_HOST_SOCKET` to force Claude smoke checks and tasks through the host runner.
+- If Claude Code is logged in through macOS Keychain, use the host runner; sandboxed MCP child processes may not be able to read that login state.
+- If the host runner returns `workspace_policy_mismatch`, restart the host runner after changing `AGENT_BRIDGE_WORKSPACES` or Codex workspace settings.
+
+Start the host runner outside the Codex sandbox:
+
+```bash
+mkdir -p ~/.agent-bridge-mcp/run
+AGENT_BRIDGE_WORKSPACES="/Users/pedro/Development:/Users/pedro/Documents" \
+  agent-bridge-mcp claude-host-runner ~/.agent-bridge-mcp/run/claude-host.sock
+```
+
+For a detached local session, run it under `screen`:
+
+```bash
+screen -dmS agent-bridge-claude-host \
+  env AGENT_BRIDGE_WORKSPACES="/Users/pedro/Development:/Users/pedro/Documents" \
+  agent-bridge-mcp claude-host-runner ~/.agent-bridge-mcp/run/claude-host.sock
+```
+
+Then expose the same socket to the MCP server:
+
+```toml
+[mcp_servers.agent-bridge.env]
+AGENT_BRIDGE_WORKSPACES = "/Users/pedro/Development:/Users/pedro/Documents"
+AGENT_BRIDGE_STATE_DIR = "/Users/pedro/.agent-bridge-mcp/state"
+AGENT_BRIDGE_CLAUDE_HOST_SOCKET = "/Users/pedro/.agent-bridge-mcp/run/claude-host.sock"
+```
+
+After reloading MCP configuration, `task_preview` for Claude includes `launchStrategy: "host_runner"` and Claude smoke diagnostics include the same launch strategy.
+
+Host-runner lifecycle checklist:
+
+1. Start `agent-bridge-mcp claude-host-runner <socket>` outside the Codex sandbox with the same `AGENT_BRIDGE_WORKSPACES` value as the MCP server.
+2. Confirm readiness with a Claude-only `providers_check` smoke or a direct host-runner protocol `ping` request when debugging the socket itself.
+3. Restart the host runner after changing `AGENT_BRIDGE_WORKSPACES`; `workspace_policy_mismatch` means the runner and MCP server disagree about workspace policy.
+4. Stop the runner with SIGTERM or SIGINT so it stops accepting new connections and terminates active Claude children.
+5. If the runner reports `host_runner_unavailable`, inspect or restart the runner; the bridge intentionally does not silently fall back to sandboxed Claude execution.
 
 `claude-p` is an external compatibility wrapper around interactive Claude Code. Its README describes PTY startup handling, Stop hook result capture, `--input-file`, stdin prompt input, and caveats that Claude Code terminal or hook behavior changes can break the wrapper: <https://github.com/smithersai/claude-p#readme>. Native Claude Code CLI reference for `claude -p`, `--output-format`, and stdin input formats is available at <https://code.claude.com/docs/en/cli-reference>.
 
@@ -315,6 +361,26 @@ codex mcp add \
   agent-bridge \
   -- agent-bridge-mcp
 ```
+
+## Dogfood Workflows
+
+Use these local workflows intentionally; they are not part of the default test
+suite because they may require installed provider CLIs, auth, network access, or
+paid model usage.
+
+- Read-only review: spawn `review` or `research` with `isolation: "none"`, a
+  small prompt, and bounded waits. Inspect `task_result.reviewPacket`, logs,
+  diagnostics, git status, diff, changed files, and exit metadata.
+- Isolated implementation: spawn `implement` with `isolation: "worktree"`.
+  Inspect the managed worktree, `reviewPacket`, `gitStatus`, `gitDiff`, and
+  `changedFiles`; run verification in the main caller; call `task_remove` only
+  after review.
+- Stalled task recovery: use short `task_wait` calls, incremental `task_logs`
+  cursors, `task_status`, then `task_stop` if the task is no longer useful.
+  Inspect final `task_result` before deciding to rerun or continue manually.
+- Provider comparison: run equivalent read-only prompts against selected
+  providers and compare `reviewPacket`, logs, diagnostics, exit metadata, and
+  provider prose as evidence.
 
 ## Examples
 

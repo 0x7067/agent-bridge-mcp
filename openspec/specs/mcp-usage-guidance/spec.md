@@ -1,7 +1,7 @@
 # mcp-usage-guidance Specification
 
 ## Purpose
-TBD - created by archiving change expose-mcp-usage-guidance. Update Purpose after archive.
+Define the MCP prompts and resources that expose Agent Bridge usage guidance to clients while keeping verification responsibility with the main caller.
 ## Requirements
 ### Requirement: Server exposes delegation prompts
 The system SHALL expose MCP prompt templates that help callers use Agent Bridge for common delegation workflows.
@@ -39,4 +39,3 @@ The system SHALL state in server-discoverable guidance that provider output is e
 #### Scenario: Verification guidance
 - **WHEN** a client reads guidance through prompts or resources
 - **THEN** the guidance tells the caller to inspect task output and run the relevant project verification before claiming work complete.
-

@@ -39,7 +39,10 @@ async fn guidance_prompts_are_listed_and_retrievable() {
             "agent_bridge_delegate_review",
             "agent_bridge_delegate_implementation",
             "agent_bridge_inspect_result",
-            "agent_bridge_recover_stalled_task"
+            "agent_bridge_recover_stalled_task",
+            "agent_bridge_claude_host_lifecycle",
+            "agent_bridge_dogfood_workflows",
+            "agent_bridge_compare_providers"
         ]
     );
 
@@ -55,6 +58,19 @@ async fn guidance_prompts_are_listed_and_retrievable() {
     assert!(text.contains("task_spawn"));
     assert!(text.contains("task_result"));
     assert!(text.contains("main caller remains responsible"));
+
+    let response = handle_request(request(
+        "prompts/get",
+        9,
+        serde_json::json!({ "name": "agent_bridge_claude_host_lifecycle" }),
+    ))
+    .await;
+    let result = response.unwrap().result.unwrap();
+    let text = result["messages"][0]["content"]["text"].as_str().unwrap();
+
+    assert!(text.contains("claude-host-runner"));
+    assert!(text.contains("ping"));
+    assert!(text.contains("workspace_policy_mismatch"));
 }
 
 #[tokio::test]
@@ -87,7 +103,9 @@ async fn guidance_resources_are_listed_and_read_from_allowlist() {
         vec![
             "agent-bridge://guidance/caller-workflow",
             "agent-bridge://guidance/safety",
-            "agent-bridge://guidance/provider-capabilities"
+            "agent-bridge://guidance/provider-capabilities",
+            "agent-bridge://guidance/claude-host-lifecycle",
+            "agent-bridge://guidance/dogfood-workflows"
         ]
     );
 
@@ -108,7 +126,20 @@ async fn guidance_resources_are_listed_and_read_from_allowlist() {
             .unwrap()
             .contains("providers_check")
     );
+    assert!(content["text"].as_str().unwrap().contains("reviewPacket"));
     assert!(content["text"].as_str().unwrap().contains("task_remove"));
+
+    let response = handle_request(request(
+        "resources/read",
+        10,
+        serde_json::json!({ "uri": "agent-bridge://guidance/dogfood-workflows" }),
+    ))
+    .await;
+    let result = response.unwrap().result.unwrap();
+    let text = result["contents"][0]["text"].as_str().unwrap();
+    assert!(text.contains("read-only review"));
+    assert!(text.contains("isolated implementation"));
+    assert!(text.contains("provider comparison"));
 }
 
 #[tokio::test]

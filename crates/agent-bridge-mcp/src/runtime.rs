@@ -8,6 +8,21 @@ pub async fn main_entry() {
     if std::env::var("AGENT_BRIDGE_FORCE_PANIC").ok().as_deref() == Some("1") {
         panic!("forced panic for integration test");
     }
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("claude-host-runner") {
+        let socket_path = match args.next() {
+            Some(path) => std::path::PathBuf::from(path),
+            None => {
+                eprintln!("[agent-bridge] fatal claude-host-runner requires socket path");
+                std::process::exit(2);
+            }
+        };
+        if let Err(error) = crate::claude_host::run_server(socket_path).await {
+            eprintln!("[agent-bridge] fatal {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Err(error) = run_until_shutdown().await {
         eprintln!("[agent-bridge] fatal {error}");
         std::process::exit(1);

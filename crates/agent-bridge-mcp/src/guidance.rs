@@ -4,6 +4,8 @@ use serde_json::{Value, json};
 const CALLER_WORKFLOW_URI: &str = "agent-bridge://guidance/caller-workflow";
 const SAFETY_URI: &str = "agent-bridge://guidance/safety";
 const PROVIDER_CAPABILITIES_URI: &str = "agent-bridge://guidance/provider-capabilities";
+const CLAUDE_HOST_LIFECYCLE_URI: &str = "agent-bridge://guidance/claude-host-lifecycle";
+const DOGFOOD_WORKFLOWS_URI: &str = "agent-bridge://guidance/dogfood-workflows";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -37,6 +39,18 @@ pub fn prompt_definitions() -> Vec<Value> {
             "agent_bridge_recover_stalled_task",
             "Recover from a stalled provider task using bounded waits, logs, stop, and result inspection.",
         ),
+        prompt_definition(
+            "agent_bridge_claude_host_lifecycle",
+            "Operate the Claude host runner lifecycle for sandbox-safe Claude delegation.",
+        ),
+        prompt_definition(
+            "agent_bridge_dogfood_workflows",
+            "Run reproducible Agent Bridge dogfood workflows without making live provider execution mandatory.",
+        ),
+        prompt_definition(
+            "agent_bridge_compare_providers",
+            "Compare provider behavior with bounded read-only tasks and caller-owned verification.",
+        ),
     ]
 }
 
@@ -63,6 +77,18 @@ pub fn get_prompt(params: Value) -> Result<Value, String> {
         "agent_bridge_recover_stalled_task" => (
             "Recover from a stalled Agent Bridge task.",
             RECOVER_STALLED_PROMPT,
+        ),
+        "agent_bridge_claude_host_lifecycle" => (
+            "Operate the Claude host runner lifecycle.",
+            CLAUDE_HOST_LIFECYCLE_PROMPT,
+        ),
+        "agent_bridge_dogfood_workflows" => (
+            "Run Agent Bridge dogfood delegation workflows.",
+            DOGFOOD_WORKFLOWS_PROMPT,
+        ),
+        "agent_bridge_compare_providers" => (
+            "Compare Agent Bridge providers safely.",
+            COMPARE_PROVIDERS_PROMPT,
         ),
         _ => return Err(format!("Unknown prompt: {}", params.name)),
     };
@@ -98,6 +124,16 @@ pub fn resource_definitions() -> Vec<Value> {
             "provider-capabilities",
             "Agent Bridge provider capability summary",
         ),
+        resource_definition(
+            CLAUDE_HOST_LIFECYCLE_URI,
+            "claude-host-lifecycle",
+            "Claude host runner lifecycle guidance",
+        ),
+        resource_definition(
+            DOGFOOD_WORKFLOWS_URI,
+            "dogfood-workflows",
+            "Reproducible Agent Bridge dogfood workflows",
+        ),
     ]
 }
 
@@ -109,6 +145,8 @@ pub fn read_resource(params: Value) -> Result<Value, String> {
         CALLER_WORKFLOW_URI => CALLER_WORKFLOW_RESOURCE,
         SAFETY_URI => SAFETY_RESOURCE,
         PROVIDER_CAPABILITIES_URI => PROVIDER_CAPABILITIES_RESOURCE,
+        CLAUDE_HOST_LIFECYCLE_URI => CLAUDE_HOST_LIFECYCLE_RESOURCE,
+        DOGFOOD_WORKFLOWS_URI => DOGFOOD_WORKFLOWS_RESOURCE,
         _ => return Err(format!("Resource not found: {}", params.uri)),
     };
 
@@ -163,6 +201,7 @@ Suggested flow:
 const INSPECT_RESULT_PROMPT: &str = r#"Inspect an Agent Bridge task result.
 
 Use task_result for the final payload, then review:
+- reviewPacket as the concise operator summary
 - status and errorType
 - stdout/stderr excerpts and diagnostics
 - gitStatus, diff, and changedFiles
@@ -180,6 +219,38 @@ Suggested flow:
 5. Call task_result after stopping or completion to inspect logs, diagnostics, exit metadata, and partial git state.
 6. Decide in the main caller whether to discard, rerun with a narrower prompt, or manually continue."#;
 
+const CLAUDE_HOST_LIFECYCLE_PROMPT: &str = r#"Operate the Claude host runner lifecycle.
+
+Use this when Claude Code auth depends on macOS Keychain or another host resource unavailable to the sandboxed MCP process.
+
+Suggested flow:
+1. Start `agent-bridge-mcp claude-host-runner <socket>` outside the Codex sandbox with the same AGENT_BRIDGE_WORKSPACES value used by the MCP server.
+2. Use the host-runner `ping` request or a Claude-only providers_check smoke to confirm readiness.
+3. If diagnostics report workspace_policy_mismatch, restart the host runner after updating AGENT_BRIDGE_WORKSPACES.
+4. Stop the runner with SIGTERM or SIGINT so active Claude child processes are terminated and reaped.
+5. If startup finds a stale socket, let the runner remove it only when the connection probe confirms no live runner is listening.
+6. If AGENT_BRIDGE_CLAUDE_HOST_SOCKET is configured but unavailable, do not silently fall back; inspect diagnostics and restart the runner."#;
+
+const DOGFOOD_WORKFLOWS_PROMPT: &str = r#"Run Agent Bridge dogfood workflows.
+
+Suggested workflows:
+1. For read-only review, use mode "review" or "research", isolation "none", a small prompt, bounded task_wait, and final task_result review.
+2. For isolated implementation, use mode "implement", isolation "worktree", inspect reviewPacket, gitStatus, gitDiff, changedFiles, stdout, stderr, and diagnostics, then run verification in the main caller.
+3. For stalled-task recovery, use bounded task_wait, incremental task_logs cursors, task_status, task_stop if needed, and final task_result inspection.
+4. For provider comparison, run equivalent read-only prompts against selected providers, compare task_result evidence, and keep final conclusions in the main caller.
+
+Live provider execution remains opt-in and should not be added to default CI."#;
+
+const COMPARE_PROVIDERS_PROMPT: &str = r#"Compare Agent Bridge providers safely.
+
+Suggested flow:
+1. Call providers_check for the selected providers; use smoke only when startup readiness matters.
+2. Use task_preview to confirm command shape, cwd, launch strategy, and provider options.
+3. Spawn equivalent read-only review or research tasks with short prompts and bounded timeouts.
+4. Use task_wait, task_logs, and task_result for each task.
+5. Compare reviewPacket, logs, diagnostics, exit metadata, and provider prose as evidence.
+6. Keep correctness decisions and project verification in the main caller."#;
+
 const CALLER_WORKFLOW_RESOURCE: &str = r#"# Agent Bridge Caller Workflow
 
 Use Agent Bridge when a separate coding agent can provide useful research, review, command execution, or isolated implementation work.
@@ -189,7 +260,7 @@ Recommended flow:
 2. Call `task_preview` when cwd, flags, environment, prompt transport, or worktree isolation need inspection.
 3. Call `task_spawn` for the real delegated task.
 4. Call `task_wait` with a bounded timeout. If it times out, call `task_logs` with line cursors to inspect progress.
-5. Once final, call `task_result` for logs, git status, diff, changed files, exit metadata, diagnostics, and `errorType`.
+5. Once final, call `task_result` for `reviewPacket`, logs, git status, diff, changed files, exit metadata, diagnostics, and `errorType`.
 6. Treat provider output as evidence for the main caller, not as final verification.
 7. Call `task_remove` intentionally after any managed worktree has been inspected.
 "#;
@@ -220,4 +291,43 @@ Supported modes:
 - `command`: bounded command-oriented work.
 
 Use `providers_list` for the authoritative runtime provider summary and `providers_check` for availability and startup checks.
+"#;
+
+const CLAUDE_HOST_LIFECYCLE_RESOURCE: &str = r#"# Claude Host Runner Lifecycle
+
+Use `agent-bridge-mcp claude-host-runner <socket>` when Claude provider calls need host access that the sandboxed MCP server does not have, such as macOS Keychain-backed Claude Code auth.
+
+Lifecycle:
+1. Start the runner outside the sandbox with the same `AGENT_BRIDGE_WORKSPACES` value as the MCP server.
+2. Confirm readiness with the host-runner `ping` request or a Claude-only `providers_check` smoke.
+3. Configure the MCP server with `AGENT_BRIDGE_CLAUDE_HOST_SOCKET`.
+4. Restart the runner after workspace-policy changes; a `workspace_policy_mismatch` diagnostic means the runner and MCP server disagree about `AGENT_BRIDGE_WORKSPACES`.
+5. Stop the runner with SIGTERM or SIGINT so it stops accepting new connections and terminates active Claude children.
+6. Treat `host_runner_unavailable` as a setup problem to inspect, not as permission to silently fall back to sandboxed Claude execution.
+
+Socket behavior:
+- The socket directory must be owner-only.
+- A stale socket may be removed only after a connection probe confirms no live runner is listening.
+- A live socket causes startup to fail without unlinking it.
+"#;
+
+const DOGFOOD_WORKFLOWS_RESOURCE: &str = r#"# Agent Bridge Dogfood Workflows
+
+These workflows are reproducible local operator checks. They intentionally keep live provider execution opt-in and outside default CI.
+
+## read-only review
+
+Use `task_spawn` with mode `review` or `research`, `isolation: "none"`, a small prompt, and a bounded timeout. Use `task_wait`, then inspect `task_result.reviewPacket`, stdout, stderr, diagnostics, git status, diff, changed files, and exit metadata.
+
+## isolated implementation
+
+Use `task_spawn` with mode `implement` and `isolation: "worktree"`. After completion, inspect `reviewPacket`, `gitStatus`, `gitDiff`, and `changedFiles`; run the relevant verification in the main caller; call `task_remove` only after the managed worktree has been reviewed.
+
+## stalled-task recovery
+
+Use short bounded `task_wait` calls. If the task does not finish, call `task_logs` with `stdoutLine` and `stderrLine` cursors, then `task_status`. Call `task_stop` only when the task is no longer useful, then inspect final `task_result`.
+
+## provider comparison
+
+Run equivalent read-only prompts against selected providers. Compare `reviewPacket`, logs, diagnostics, exit metadata, and provider prose as evidence; keep final conclusions and verification responsibility with the main caller.
 "#;

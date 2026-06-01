@@ -154,21 +154,27 @@ impl TaskManagerHandle {
         let logs = self.logs(task_id, max_bytes, None, None).await?;
         let mut public = public_task(&task);
         public["exitCode"] = task.exit_code.map_or(Value::Null, Value::from);
-        public["signal"] = task.signal.map_or(Value::Null, Value::from);
+        public["signal"] = task.signal.clone().map_or(Value::Null, Value::from);
         public["error"] = task.error.clone().map_or(Value::Null, Value::from);
         public["stdout"] = logs["stdout"].clone();
         public["stderr"] = logs["stderr"].clone();
         public["stdoutTruncated"] = logs["stdoutTruncated"].clone();
         public["stderrTruncated"] = logs["stderrTruncated"].clone();
         public["diagnostic"] = task.diagnostic.clone().unwrap_or(Value::Null);
-        public["gitStatus"] = Value::String(task.git_status.unwrap_or_default());
-        public["gitDiff"] = Value::String(task.git_diff.unwrap_or_default());
+        public["gitStatus"] = Value::String(task.git_status.clone().unwrap_or_default());
+        public["gitDiff"] = Value::String(task.git_diff.clone().unwrap_or_default());
         public["changedFiles"] = Value::Array(
             task.changed_files
+                .clone()
                 .unwrap_or_default()
                 .into_iter()
                 .map(Value::String)
                 .collect(),
+        );
+        public["reviewPacket"] = review_packet(
+            &task,
+            logs["stdoutTruncated"].as_bool().unwrap_or(false),
+            logs["stderrTruncated"].as_bool().unwrap_or(false),
         );
         Ok(public)
     }
@@ -337,12 +343,12 @@ impl TaskActor {
         };
 
         match launch_task(task_id.clone(), command, task_dir, self.tx.clone()).await {
-            Ok(pid) => {
-                record.pid = Some(pid);
+            Ok(active) => {
+                record.pid = active.pid;
                 transition_status(&mut record, TaskStatus::Running)?;
                 record.started_at = Some(now_iso());
                 record.updated_at = record.started_at.clone().unwrap();
-                self.active.insert(task_id.clone(), ActiveTask { pid });
+                self.active.insert(task_id.clone(), active);
             }
             Err(error) => {
                 transition_status(&mut record, TaskStatus::Failed)?;
@@ -358,7 +364,7 @@ impl TaskActor {
     }
 
     async fn stop(&mut self, task_id: &str) -> Result<Value, String> {
-        let active = self.active.get(task_id).copied();
+        let active = self.active.remove(task_id);
         let task = self.require_task_mut(task_id)?;
         if active.is_none() {
             if is_final(task.status) {
@@ -371,8 +377,13 @@ impl TaskActor {
         task.updated_at = now_iso();
         let public = public_task(task);
         self.save().await?;
-        if let Some(active) = active {
-            send_signal(active.pid, libc::SIGTERM);
+        if let Some(mut active) = active {
+            if let Some(pid) = active.pid {
+                send_signal(pid, libc::SIGTERM);
+            }
+            if let Some(cancel) = active.cancel.take() {
+                let _ = cancel.send(());
+            }
         }
         Ok(public)
     }
@@ -399,13 +410,22 @@ impl TaskActor {
     }
 
     async fn shutdown(&mut self) -> Result<(), String> {
-        let pids: Vec<u32> = self.active.values().map(|active| active.pid).collect();
+        let pids: Vec<u32> = self
+            .active
+            .values()
+            .filter_map(|active| active.pid)
+            .collect();
         for pid in &pids {
             send_signal(*pid, libc::SIGTERM);
         }
         sleep(CHILD_SHUTDOWN_GRACE).await;
-        for active in self.active.values() {
-            send_signal(active.pid, libc::SIGKILL);
+        for active in self.active.values_mut() {
+            if let Some(pid) = active.pid {
+                send_signal(pid, libc::SIGKILL);
+            }
+            if let Some(cancel) = active.cancel.take() {
+                let _ = cancel.send(());
+            }
         }
         Ok(())
     }
@@ -529,9 +549,9 @@ pub struct TaskRecord {
     pub changed_files: Option<Vec<String>>,
 }
 
-#[derive(Clone, Copy)]
 struct ActiveTask {
-    pid: u32,
+    pid: Option<u32>,
+    cancel: Option<oneshot::Sender<()>>,
 }
 
 struct TaskCompletion {
@@ -554,7 +574,34 @@ async fn launch_task(
     command: ProviderCommand,
     task_dir: PathBuf,
     tx: mpsc::Sender<ActorCommand>,
-) -> Result<u32, String> {
+) -> Result<ActiveTask, String> {
+    if command.provider == ProviderKind::Claude
+        && let (Some(socket_path), Some(claude_command)) = (
+            crate::claude_host::socket_path_from_env(),
+            command.claude_host.clone(),
+        )
+    {
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let completion = run_host_task(
+                task_id,
+                command,
+                claude_command,
+                socket_path,
+                task_dir,
+                cancel_rx,
+            )
+            .await;
+            if tx.send(ActorCommand::Complete(completion)).await.is_err() {
+                eprintln!("[agent-bridge] task manager dropped completion message");
+                std::process::abort();
+            }
+        });
+        return Ok(ActiveTask {
+            pid: None,
+            cancel: Some(cancel_tx),
+        });
+    }
     let stdout_path = task_dir.join("stdout.log");
     let stderr_path = task_dir.join("stderr.log");
     let mut child = ProcessCommand::new(&command.command)
@@ -607,7 +654,149 @@ async fn launch_task(
             std::process::abort();
         }
     });
-    Ok(pid)
+    Ok(ActiveTask {
+        pid: Some(pid),
+        cancel: None,
+    })
+}
+
+async fn run_host_task(
+    task_id: String,
+    command: ProviderCommand,
+    claude_command: crate::claude_host::ClaudeHostCommand,
+    socket_path: PathBuf,
+    task_dir: PathBuf,
+    cancel_rx: oneshot::Receiver<()>,
+) -> TaskCompletion {
+    let result = tokio::select! {
+        result = crate::claude_host::run_claude(&socket_path, &claude_command) => result,
+        _ = cancel_rx => {
+            return TaskCompletion {
+                task_id,
+                status: TaskStatus::Stopped,
+                exit_code: None,
+                signal: Some("SIGTERM".to_string()),
+                error: Some("task stopped".to_string()),
+                error_type: Some(ErrorType::Stopped),
+                diagnostic: None,
+            };
+        }
+    };
+    match result {
+        Ok(response) if response.ok => {
+            complete_host_response(task_id, command, task_dir, response).await
+        }
+        Ok(response) => TaskCompletion {
+            task_id,
+            status: TaskStatus::Failed,
+            exit_code: None,
+            signal: None,
+            error: response
+                .error
+                .map(|error| error.message)
+                .or_else(|| Some("host runner failed".to_string())),
+            error_type: Some(ErrorType::ProviderStartError),
+            diagnostic: None,
+        },
+        Err(error) => TaskCompletion {
+            task_id,
+            status: TaskStatus::Failed,
+            exit_code: None,
+            signal: None,
+            error: Some(error),
+            error_type: Some(ErrorType::ProviderStartError),
+            diagnostic: None,
+        },
+    }
+}
+
+async fn complete_host_response(
+    task_id: String,
+    command: ProviderCommand,
+    task_dir: PathBuf,
+    response: crate::claude_host::HostResponse,
+) -> TaskCompletion {
+    let Some(crate::claude_host::HostResult::Run {
+        exit_code,
+        signal,
+        stdout,
+        stderr,
+        failure_category,
+        ..
+    }) = response.result
+    else {
+        return TaskCompletion {
+            task_id,
+            status: TaskStatus::Failed,
+            exit_code: None,
+            signal: None,
+            error: Some("host runner returned unexpected response".to_string()),
+            error_type: Some(ErrorType::ProviderOutputError),
+            diagnostic: None,
+        };
+    };
+    let stdout_bytes = stdout.as_bytes().to_vec();
+    let stderr_bytes = stderr.as_bytes().to_vec();
+    let _ = fs::write(task_dir.join("stdout.log"), &stdout_bytes).await;
+    let _ = fs::write(task_dir.join("stderr.log"), &stderr_bytes).await;
+    let success = exit_code == Some(0) && failure_category.is_none();
+    if success && !claude_output_is_parseable(&stdout_bytes) {
+        return TaskCompletion {
+            task_id,
+            status: TaskStatus::Failed,
+            exit_code,
+            signal: signal.clone(),
+            error: Some("claude provider output was not parseable".to_string()),
+            error_type: Some(ErrorType::ProviderOutputError),
+            diagnostic: Some(task_diagnostic(
+                &command,
+                "provider_output_error",
+                command.timeout_seconds * 1000,
+                exit_code,
+                signal_name_from_string(signal.as_deref()),
+                &stdout_bytes,
+                &stderr_bytes,
+            )),
+        };
+    }
+    if success {
+        TaskCompletion {
+            task_id,
+            status: TaskStatus::Succeeded,
+            exit_code,
+            signal,
+            error: None,
+            error_type: None,
+            diagnostic: None,
+        }
+    } else {
+        let category = failure_category.unwrap_or_else(|| "provider_exit_error".to_string());
+        TaskCompletion {
+            task_id,
+            status: TaskStatus::Failed,
+            exit_code,
+            signal: signal.clone(),
+            error: Some(category.clone()),
+            error_type: Some(if category == "provider_timeout" {
+                ErrorType::Timeout
+            } else {
+                ErrorType::ProviderExitError
+            }),
+            diagnostic: Some(task_diagnostic(
+                &command,
+                &category,
+                command.timeout_seconds * 1000,
+                exit_code,
+                signal,
+                &stdout_bytes,
+                &stderr_bytes,
+            )),
+        }
+    }
+}
+
+fn signal_name_from_string(signal: Option<&str>) -> Option<String> {
+    signal.map(str::to_string)
 }
 
 async fn wait_for_child(
@@ -756,6 +945,7 @@ fn task_diagnostic(
         "provider": command_provider_hint(command).as_str(),
         "commandKind": claude_command_kind(command),
         "commandPath": claude_command_path(command),
+        "launchStrategy": if command.provider == ProviderKind::Claude && crate::claude_host::socket_path_from_env().is_some() { "host_runner" } else { "direct" },
         "startupVerified": false,
         "timeoutMs": timeout_ms,
         "exitCode": exit_code,
@@ -986,6 +1176,69 @@ fn public_task(task: &TaskRecord) -> Value {
         "durationMs": duration_ms(task),
         "errorType": task.error_type
     })
+}
+
+fn review_packet(task: &TaskRecord, stdout_truncated: bool, stderr_truncated: bool) -> Value {
+    let is_final = is_final(task.status);
+    let git_status = task.git_status.clone().unwrap_or_default();
+    let changed_files = task.changed_files.clone().unwrap_or_default();
+    let has_changes = !changed_files.is_empty() || !git_status.trim().is_empty();
+    json!({
+        "taskId": task.task_id,
+        "provider": task.provider,
+        "mode": task.mode,
+        "title": task.title,
+        "status": task.status,
+        "cwd": task.cwd,
+        "isolation": task.isolation,
+        "worktreePath": task.worktree_path,
+        "isFinal": is_final,
+        "phase": match task.status {
+            TaskStatus::Queued => TaskPhase::Pending,
+            TaskStatus::Running => TaskPhase::Active,
+            _ => TaskPhase::Done,
+        },
+        "hasChanges": has_changes,
+        "gitStatusSummary": git_status,
+        "changedFiles": changed_files,
+        "exitCode": task.exit_code,
+        "signal": task.signal,
+        "errorType": task.error_type,
+        "diagnostic": task.diagnostic,
+        "stdoutTruncated": stdout_truncated,
+        "stderrTruncated": stderr_truncated,
+        "recommendedActions": recommended_actions(task, has_changes)
+    })
+}
+
+fn recommended_actions(task: &TaskRecord, has_changes: bool) -> Vec<&'static str> {
+    if !is_final(task.status) {
+        return vec![
+            "Use task_wait with a bounded timeout.",
+            "Use task_logs with line cursors to inspect incremental output.",
+            "Use task_status to confirm whether the task is still active.",
+            "Use task_stop if the task is no longer useful.",
+        ];
+    }
+
+    let mut actions =
+        vec!["Inspect stdout, stderr, diagnostics, git status, diff, and changed files."];
+    if has_changes {
+        actions.push("Inspect gitStatus, gitDiff, and changedFiles before verification.");
+    }
+    if task.error_type.is_some()
+        || matches!(task.status, TaskStatus::Failed | TaskStatus::FailedStale)
+    {
+        actions.push("Inspect logs and diagnostic metadata before deciding whether to rerun.");
+        actions
+            .push("Decide whether to rerun with a narrower prompt, continue manually, or discard.");
+    } else {
+        actions.push("Run the relevant project verification before claiming completion.");
+    }
+    if task.worktree_managed {
+        actions.push("Call task_remove only after inspecting the managed worktree result.");
+    }
+    actions
 }
 
 fn is_final(status: TaskStatus) -> bool {

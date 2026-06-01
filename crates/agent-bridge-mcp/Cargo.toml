@@ -18,5 +18,5 @@ chrono = { version = "0.4.44", default-features = false, features = ["clock", "s
 libc = "0.2.186"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.150", features = ["preserve_order"] }
-tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "io-std", "io-util", "signal", "time", "process", "sync", "fs"] }
+tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "io-std", "io-util", "signal", "time", "process", "sync", "fs", "net"] }
 uuid = { version = "1.23.2", features = ["v4"] }

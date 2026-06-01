@@ -1,18 +1,4 @@
-# provider-adapter-contract Specification
-
-## Purpose
-Define the provider adapter contract that keeps provider-specific capabilities, command construction, environment policy, and provider checks behind a stable boundary while preserving the public MCP task lifecycle API.
-## Requirements
-### Requirement: Provider adapters preserve public provider capabilities
-The system SHALL expose the same public provider names, supported modes, and provider-specific option values through the provider registry that are currently exposed through `providers_list` and task validation.
-
-#### Scenario: Listing providers
-- **WHEN** a caller invokes `providers_list`
-- **THEN** the response includes `claude`, `cursor`, `kimi`, and `codex` with their supported modes and provider-specific options unchanged.
-
-#### Scenario: Validating provider-specific options
-- **WHEN** a caller previews or spawns a task with provider-specific fields such as `effort` or `thinking`
-- **THEN** validation accepts only the values supported by the selected provider and rejects unsupported values before command construction.
+## MODIFIED Requirements
 
 ### Requirement: Provider adapters build stable task commands
 The system SHALL build provider command descriptors through provider adapters while preserving public task behavior, cwd, timeout, prompt rendering semantics, task metadata behavior, and preview redaction. Provider adapters MAY change internal command arguments, prompt transport mechanisms, or launch strategy metadata when required to improve provider safety or reliability, provided the public MCP task lifecycle behavior remains compatible.
@@ -33,17 +19,6 @@ The system SHALL build provider command descriptors through provider adapters wh
 - **WHEN** a provider adapter marks a command for a provider-specific launch strategy such as Claude host-runner execution
 - **THEN** preview, smoke checks, and task spawning use that launch strategy without changing the public task lifecycle API shape.
 
-### Requirement: Provider adapters own provider environment policy
-The system SHALL build provider process environments through provider adapters or adapter-owned environment policy while preserving current allowlists and provider-specific exclusions.
-
-#### Scenario: Building Claude environment
-- **WHEN** the system builds an environment for the Claude provider
-- **THEN** it preserves the existing Claude credential and CLI variables and removes injected `ANTHROPIC_BASE_URL`.
-
-#### Scenario: Building non-Claude environment
-- **WHEN** the system builds an environment for Cursor, Kimi, or Codex
-- **THEN** it preserves the existing allowed local CLI, credential, and bridge state variables.
-
 ### Requirement: Provider checks use adapter-owned command resolution
 The system SHALL use provider adapter command resolution and launch strategy metadata for provider availability checks and startup smoke probes.
 
@@ -58,15 +33,3 @@ The system SHALL use provider adapter command resolution and launch strategy met
 #### Scenario: Startup smoke with provider-specific launch strategy
 - **WHEN** a provider adapter uses a provider-specific launch strategy for normal task execution
 - **THEN** the provider smoke probe uses the same launch strategy unless the adapter explicitly documents a safer version-only check.
-
-### Requirement: Provider adapter refactor is public-API preserving
-The system SHALL keep the public MCP tool surface and task lifecycle response shapes unchanged during the provider adapter refactor.
-
-#### Scenario: Listing MCP tools
-- **WHEN** a caller invokes `tools/list`
-- **THEN** the same tool names and accepted public argument names remain available.
-
-#### Scenario: Reading task lifecycle results
-- **WHEN** a caller uses task lifecycle tools such as `task_status`, `task_logs`, `task_wait`, or `task_result`
-- **THEN** their response shapes remain compatible with the behavior before the provider adapter refactor.
-

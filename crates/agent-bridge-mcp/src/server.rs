@@ -439,6 +439,11 @@ async fn smoke_one_provider(
                     value["startupVerified"] = json!(true);
                     value["smokeDurationMs"] = json!(output.duration_ms);
                     value["smokePromptStrategy"] = json!(strategy);
+                    if provider == ProviderKind::Claude
+                        && crate::claude_host::socket_path_from_env().is_some()
+                    {
+                        value["launchStrategy"] = json!("host_runner");
+                    }
                     value
                 }
                 _ => {
@@ -447,6 +452,11 @@ async fn smoke_one_provider(
                     value["startupVerified"] = json!(false);
                     value["smokeDurationMs"] = json!(output.duration_ms);
                     value["smokePromptStrategy"] = json!(strategy);
+                    if provider == ProviderKind::Claude
+                        && crate::claude_host::socket_path_from_env().is_some()
+                    {
+                        value["launchStrategy"] = json!("host_runner");
+                    }
                     value["error"] = json!(probe_error_text(&output));
                     value["diagnostic"] = provider_diagnostic(
                         provider,
@@ -485,6 +495,25 @@ async fn run_probe(
     timeout_ms: u64,
     phase: &'static str,
 ) -> ProbeResult {
+    if provider == ProviderKind::Claude
+        && let (Some(socket_path), Some(claude_command)) = (
+            crate::claude_host::socket_path_from_env(),
+            command.claude_host.as_ref(),
+        )
+    {
+        let started = Instant::now();
+        return match crate::claude_host::run_claude(&socket_path, claude_command).await {
+            Ok(response) => host_probe_result(response, started.elapsed().as_millis() as u64),
+            Err(error) => ProbeResult {
+                status: None,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                failure_category: Some("host_runner_unavailable"),
+                error: Some(error),
+                duration_ms: started.elapsed().as_millis() as u64,
+            },
+        };
+    }
     let started = Instant::now();
     let mut process = tokio::process::Command::new(&command.command);
     process
@@ -596,6 +625,75 @@ async fn run_probe(
     }
 }
 
+fn host_probe_result(response: crate::claude_host::HostResponse, duration_ms: u64) -> ProbeResult {
+    if !response.ok {
+        return ProbeResult {
+            status: None,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            failure_category: Some("host_runner_unavailable"),
+            error: response.error.map(|error| error.message),
+            duration_ms,
+        };
+    }
+    match response.result {
+        Some(crate::claude_host::HostResult::Run {
+            exit_code,
+            signal,
+            stdout,
+            stderr,
+            failure_category,
+            duration_ms,
+            ..
+        }) => ProbeResult {
+            status: host_exit_status(exit_code, signal.as_deref()),
+            stdout: stdout.into_bytes(),
+            stderr: stderr.into_bytes(),
+            failure_category: failure_category.as_deref().map(|category| match category {
+                "provider_timeout" => "provider_timeout",
+                "provider_exit_error" => "provider_exit_error",
+                _ => "provider_output_error",
+            }),
+            error: failure_category,
+            duration_ms,
+        },
+        _ => ProbeResult {
+            status: None,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            failure_category: Some("host_runner_unavailable"),
+            error: Some("host runner returned unexpected response".to_string()),
+            duration_ms,
+        },
+    }
+}
+
+#[cfg(unix)]
+fn host_exit_status(
+    exit_code: Option<i32>,
+    signal: Option<&str>,
+) -> Option<std::process::ExitStatus> {
+    use std::os::unix::process::ExitStatusExt;
+    if let Some(code) = exit_code {
+        return Some(std::process::ExitStatus::from_raw(code << 8));
+    }
+    let signal = signal.and_then(|signal| signal.strip_prefix("SIG"));
+    let number = match signal {
+        Some("TERM") => libc::SIGTERM,
+        Some("KILL") => libc::SIGKILL,
+        _ => return None,
+    };
+    Some(std::process::ExitStatus::from_raw(number))
+}
+
+#[cfg(not(unix))]
+fn host_exit_status(
+    _exit_code: Option<i32>,
+    _signal: Option<&str>,
+) -> Option<std::process::ExitStatus> {
+    None
+}
+
 #[cfg(unix)]
 fn configure_child_process_group(command: &mut tokio::process::Command) {
     unsafe {
@@ -653,6 +751,7 @@ fn provider_diagnostic(
         "provider": provider.as_str(),
         "commandKind": command_kind(provider, command),
         "commandPath": command_path(provider, command),
+        "launchStrategy": if provider == ProviderKind::Claude && crate::claude_host::socket_path_from_env().is_some() { "host_runner" } else { "direct" },
         "startupVerified": startup_verified,
         "timeoutMs": timeout_ms,
         "elapsedMs": output.duration_ms,
@@ -799,14 +898,20 @@ fn task_preview(arguments: Value) -> Result<Value, String> {
         })
         .collect();
     let env_keys: Vec<String> = env.keys().cloned().collect();
-    Ok(json!({
+    let mut preview = json!({
         "command": command.command,
         "cwd": command.cwd,
         "timeoutSeconds": command.timeout_seconds,
         "args": args,
         "stdin": command.stdin.as_ref().map(|_| "<prompt redacted>"),
         "envKeys": env_keys
-    }))
+    });
+    if input.provider == ProviderKind::Claude
+        && crate::claude_host::socket_path_from_env().is_some()
+    {
+        preview["launchStrategy"] = json!("host_runner");
+    }
+    Ok(preview)
 }
 
 fn validate_preview_input(input: &TaskPreviewInput) -> Result<(), String> {
