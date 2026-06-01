@@ -1,0 +1,42 @@
+## 1. Reproduction And Diagnosis
+
+- [ ] 1.1 Add a failing stdio regression test for a Codex task that exits after emitting `patch rejected` / outside-project / approval-denied stderr evidence.
+- [ ] 1.2 Add a failing stdio regression test for a Codex task that emits the same fatal denial evidence and then hangs until Agent Bridge terminates it.
+- [ ] 1.3 Add test assertions proving MCP stdout remains clean and stderr/log excerpts capture the denial without exposing the task prompt or secret-like environment values.
+- [ ] 1.4 Inspect the current Codex command descriptor from `task_preview` and document whether `--cd`, sandbox mode, prompt transport, or installed-binary drift contributed to the observed failure.
+
+## 2. Lifecycle Finalization
+
+- [ ] 2.1 Implement Codex fatal-denial detection with a narrow, documented pattern for sandbox, approval, and out-of-project patch rejection evidence.
+- [ ] 2.2 Ensure fatal-denial detection transitions the task to final `failed` state through the normal task manager completion path.
+- [ ] 2.3 Ensure a hanging Codex process with fatal-denial evidence is terminated and reaped within a bounded cleanup deadline.
+- [ ] 2.4 Preserve existing timeout behavior for providers that do not emit known fatal-denial evidence.
+
+## 3. Diagnostics And Review Packet
+
+- [ ] 3.1 Add a stable diagnostic failure category for Codex sandbox/approval denial while preserving compatible `errorType` behavior.
+- [ ] 3.2 Include provider name, command path/kind, launch strategy, exit metadata, and redacted stdout/stderr excerpts in failed Codex diagnostics.
+- [ ] 3.3 Update `reviewPacket.recommendedActions` for Codex denial failures to direct callers to inspect logs, cwd/workspace policy, prompt scope, and isolation strategy.
+- [ ] 3.4 Add tests proving review packets do not recommend silently relaxing sandbox permissions or blindly retrying.
+
+## 4. Codex Adapter Corrections
+
+- [ ] 4.1 If diagnosis identifies command-shape or prompt-scope issues, update the Codex provider adapter with focused tests for `task_preview` and `task_spawn`.
+- [ ] 4.2 If diagnosis does not identify adapter issues, document that the fix is lifecycle/diagnostic handling only and keep Codex command behavior unchanged.
+- [ ] 4.3 Verify normal successful Codex-like fake-provider tasks still succeed and preserve existing public lifecycle response shapes.
+
+## 5. Guidance And Operator Runbook
+
+- [ ] 5.1 Add failing guidance tests proving recovery/safety/provider guidance mentions Codex patch rejection or sandbox/approval denial symptoms.
+- [ ] 5.2 Update MCP prompts/resources and README guidance with bounded recovery steps using `task_wait`, `task_logs`, `task_status`, and `task_result`.
+- [ ] 5.3 Ensure guidance tells callers to inspect `cwd`, workspace policy, prompt scope, and isolation strategy before retrying.
+
+## 6. Verification
+
+- [ ] 6.1 Run focused stdio tests for Codex denial finalization, diagnostics, and review packet guidance.
+- [ ] 6.2 Run existing provider lifecycle stdio tests to prove non-Codex behavior remains compatible.
+- [ ] 6.3 Run `cargo fmt --check`.
+- [ ] 6.4 Run `cargo test`.
+- [ ] 6.5 Run `cargo clippy --all-targets -- -D warnings`.
+- [ ] 6.6 Run `openspec validate fix-codex-provider-stalled-after-sandbox-rejection`.
+- [ ] 6.7 Optionally run a live Codex dogfood task with a harmless prompt and document whether the original failure reproduces.
