@@ -116,6 +116,7 @@ pub enum ErrorType {
     ProviderExitError,
     ProviderStartError,
     ProviderOutputError,
+    CodexSandboxDenied,
     Stopped,
     Stale,
 }

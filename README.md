@@ -394,6 +394,11 @@ paid model usage.
 - Stalled task recovery: use short `task_wait` calls, incremental `task_logs`
   cursors, `task_status`, then `task_stop` if the task is no longer useful.
   Inspect final `task_result` before deciding to rerun or continue manually.
+- Codex sandbox and approval denials: if logs mention `patch rejected`,
+  sandbox denial, approval denial, outside of the project, or out-of-workspace
+  writes, inspect `cwd`, workspace policy, prompt scope, isolation strategy,
+  diagnostics, and final `task_result` before retrying. Prefer narrowing the
+  prompt or using managed worktree isolation over loosening sandbox permissions.
 - Provider comparison: run equivalent read-only prompts against selected
   providers and compare `reviewPacket`, logs, diagnostics, exit metadata, and
   provider prose as evidence.

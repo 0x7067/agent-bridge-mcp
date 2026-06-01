@@ -1859,3 +1859,216 @@ fn stdio_managed_worktree_lifecycle() {
     assert_eq!(removed["status"], "removed");
     assert!(!worktree_path.exists());
 }
+
+#[test]
+fn stdio_codex_task_sandbox_denial_exits_immediately() {
+    let env = fixture_env();
+    write_fake_provider(
+        &env,
+        &[
+            "#!/bin/sh",
+            "stdin=$(cat)",
+            "if [ \"$1\" = \"--version\" ]; then",
+            "  echo fake-provider 1.0.0",
+            "  exit 0",
+            "fi",
+            "echo 'patch rejected: writing outside of the project; rejected by user approval settings' >&2",
+            "exit 1",
+            "",
+        ],
+    );
+    let mut client = McpClient::start(&env);
+
+    let spawned = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "implement",
+            "prompt": "codex-sandbox-denial",
+            "cwd": env.root
+        }),
+    );
+    let task_id = spawned["taskId"].as_str().unwrap();
+    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    assert_eq!(waited["status"], "failed");
+    assert_eq!(waited["errorType"], "codex_sandbox_denied");
+
+    let logs = client.tool("task_logs", json!({"taskId": task_id}));
+    assert!(logs["stderr"].as_str().unwrap().contains("patch rejected"));
+
+    let result = client.tool("task_result", json!({"taskId": task_id}));
+    assert_eq!(
+        result["diagnostic"]["failureCategory"],
+        "provider_sandbox_denied"
+    );
+    assert_eq!(result["diagnostic"]["provider"], "codex");
+    assert_eq!(result["diagnostic"]["launchStrategy"], "direct");
+    assert_eq!(result["reviewPacket"]["status"], "failed");
+    assert_eq!(result["reviewPacket"]["errorType"], "codex_sandbox_denied");
+
+    let actions = review_actions_text(&result);
+    for expected in ["logs", "cwd", "workspace", "prompt", "isolation"] {
+        assert!(
+            actions.contains(expected),
+            "actions should mention {expected}: {actions}"
+        );
+    }
+    assert!(
+        actions.contains("Do not silently relax sandbox permissions"),
+        "actions should reject unsafe sandbox relaxation: {actions}"
+    );
+    assert!(
+        actions.contains("blindly retry"),
+        "actions should warn against blind retry: {actions}"
+    );
+}
+
+#[test]
+fn stdio_codex_task_sandbox_denial_hangs_and_is_terminated_early() {
+    let env = fixture_env();
+    write_fake_provider(
+        &env,
+        &[
+            "#!/bin/sh",
+            "stdin=$(cat)",
+            "if [ \"$1\" = \"--version\" ]; then",
+            "  echo fake-provider 1.0.0",
+            "  exit 0",
+            "fi",
+            "echo 'patch rejected: writing outside of the project; rejected by user approval settings' >&2",
+            "sleep 20 &",
+            "child=$!",
+            "echo child=$child",
+            "wait \"$child\"",
+            "",
+        ],
+    );
+    let mut client = McpClient::start(&env);
+
+    let spawned = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "implement",
+            "prompt": "codex-sandbox-denial-hang",
+            "cwd": env.root,
+            "timeoutSeconds": 20
+        }),
+    );
+    let task_id = spawned["taskId"].as_str().unwrap();
+    let pid = spawned["pid"].as_i64().unwrap() as i32;
+    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    assert_eq!(waited["status"], "failed");
+    assert_eq!(waited["errorType"], "codex_sandbox_denied");
+
+    let result = client.tool("task_result", json!({"taskId": task_id}));
+    assert_eq!(
+        result["diagnostic"]["failureCategory"],
+        "provider_sandbox_denied"
+    );
+    assert_eq!(result["diagnostic"]["provider"], "codex");
+    let logs = client.tool("task_logs", json!({"taskId": task_id}));
+    let stdout = logs["stdout"].as_str().unwrap();
+    let child_pid = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("child="))
+        .and_then(|pid| pid.parse::<i32>().ok())
+        .expect("fake provider should emit child pid");
+    for _ in 0..20 {
+        if !process_is_alive(child_pid) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        !process_is_alive(pid),
+        "provider process should be reaped after fatal denial"
+    );
+    assert!(
+        !process_is_alive(child_pid),
+        "provider child process should be terminated after fatal denial"
+    );
+}
+
+#[test]
+fn stdio_codex_task_sandbox_denial_redacts_prompt_and_secrets() {
+    let env = fixture_env();
+    write_fake_provider(
+        &env,
+        &[
+            "#!/bin/sh",
+            "stdin=$(cat)",
+            "if [ \"$1\" = \"--version\" ]; then",
+            "  echo fake-provider 1.0.0",
+            "  exit 0",
+            "fi",
+            "echo 'patch rejected: outside of the project' >&2",
+            "printf '%s\n' \"$*\" >&2",
+            "echo \"secret: $ANTHROPIC_API_KEY\" >&2",
+            "exit 1",
+            "",
+        ],
+    );
+    let mut client = McpClient::start(&env);
+
+    let spawned = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "implement",
+            "prompt": "secret-prompt-content",
+            "cwd": env.root
+        }),
+    );
+    let task_id = spawned["taskId"].as_str().unwrap();
+    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    assert_eq!(waited["status"], "failed");
+
+    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let diagnostic_text = serde_json::to_string(&result["diagnostic"]).unwrap();
+    assert!(
+        !diagnostic_text.contains("secret-prompt-content"),
+        "diagnostic leaked prompt content: {diagnostic_text}"
+    );
+    assert!(
+        !diagnostic_text.contains("test-key"),
+        "diagnostic leaked token: {diagnostic_text}"
+    );
+
+    let review_packet_text = serde_json::to_string(&result["reviewPacket"]).unwrap();
+    assert!(
+        !review_packet_text.contains("secret-prompt-content"),
+        "reviewPacket leaked prompt content: {review_packet_text}"
+    );
+    assert!(
+        !review_packet_text.contains("test-key"),
+        "reviewPacket leaked token: {review_packet_text}"
+    );
+}
+
+#[test]
+fn stdio_codex_task_success_still_reports_success() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let spawned = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "review",
+            "prompt": "emit-logs",
+            "cwd": env.root
+        }),
+    );
+    let task_id = spawned["taskId"].as_str().unwrap();
+    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    assert_eq!(waited["status"], "succeeded");
+    assert_eq!(waited["errorType"], Value::Null);
+
+    let result = client.tool("task_result", json!({"taskId": task_id}));
+    assert_eq!(result["status"], "succeeded");
+    assert_eq!(result["errorType"], Value::Null);
+    assert_eq!(result["reviewPacket"]["status"], "succeeded");
+    assert_eq!(result["reviewPacket"]["isFinal"], true);
+    assert_eq!(result["reviewPacket"]["errorType"], Value::Null);
+}

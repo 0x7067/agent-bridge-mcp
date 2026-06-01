@@ -379,7 +379,7 @@ impl TaskActor {
         self.save().await?;
         if let Some(mut active) = active {
             if let Some(pid) = active.pid {
-                send_signal(pid, libc::SIGTERM);
+                terminate_child_tree(pid, libc::SIGTERM);
             }
             if let Some(cancel) = active.cancel.take() {
                 let _ = cancel.send(());
@@ -416,12 +416,12 @@ impl TaskActor {
             .filter_map(|active| active.pid)
             .collect();
         for pid in &pids {
-            send_signal(*pid, libc::SIGTERM);
+            terminate_child_tree(*pid, libc::SIGTERM);
         }
         sleep(CHILD_SHUTDOWN_GRACE).await;
         for active in self.active.values_mut() {
             if let Some(pid) = active.pid {
-                send_signal(pid, libc::SIGKILL);
+                terminate_child_tree(pid, libc::SIGKILL);
             }
             if let Some(cancel) = active.cancel.take() {
                 let _ = cancel.send(());
@@ -604,7 +604,8 @@ async fn launch_task(
     }
     let stdout_path = task_dir.join("stdout.log");
     let stderr_path = task_dir.join("stderr.log");
-    let mut child = ProcessCommand::new(&command.command)
+    let mut process = ProcessCommand::new(&command.command);
+    process
         .args(&command.args)
         .current_dir(&command.cwd)
         .env_clear()
@@ -615,9 +616,9 @@ async fn launch_task(
             std::process::Stdio::null()
         })
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|error| error.to_string())?;
+        .stderr(std::process::Stdio::piped());
+    configure_child_process_group(&mut process);
+    let mut child = process.spawn().map_err(|error| error.to_string())?;
     if let Some(stdin) = command.stdin.clone()
         && let Some(mut child_stdin) = child.stdin.take()
     {
@@ -799,6 +800,39 @@ fn signal_name_from_string(signal: Option<&str>) -> Option<String> {
     signal.map(str::to_string)
 }
 
+fn codex_denial_detected(command: &ProviderCommand, stderr: &[u8]) -> bool {
+    if command_provider_hint(command) != ProviderKind::Codex {
+        return false;
+    }
+    codex_denial_text(stderr)
+}
+
+fn codex_denial_text(stderr: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    let mentions_patch_rejection = text.contains("patch rejected");
+    let mentions_outside_workspace = text.contains("outside of the project")
+        || text.contains("outside the project")
+        || text.contains("outside of the workspace")
+        || text.contains("outside the workspace")
+        || text.contains("out-of-workspace");
+    let mentions_sandbox_denial = text.contains("sandbox denied")
+        || text.contains("sandbox denial")
+        || text.contains("sandbox permission")
+        || text.contains("sandbox permissions")
+        || text.contains("sandbox policy");
+    let mentions_approval_denial = text.contains("approval denied")
+        || text.contains("approval denial")
+        || text.contains("rejected by approval")
+        || text.contains("rejected by user approval")
+        || text.contains("user approval settings")
+        || text.contains("user denied approval");
+
+    mentions_patch_rejection
+        || mentions_outside_workspace
+        || mentions_sandbox_denial
+        || mentions_approval_denial
+}
+
 async fn wait_for_child(
     task_id: String,
     pid: u32,
@@ -808,23 +842,45 @@ async fn wait_for_child(
     task_dir: PathBuf,
     drains: ChildIoDrains,
 ) -> TaskCompletion {
-    let wait = timeout(Duration::from_secs(timeout_seconds as u64), child.wait()).await;
+    let wait = child.wait();
+    tokio::pin!(wait);
+    let task_timeout = sleep(Duration::from_secs(timeout_seconds as u64));
+    tokio::pin!(task_timeout);
     let mut timed_out = false;
-    let output: Result<std::process::ExitStatus, String> = match wait {
-        Ok(wait_result) => wait_result.map_err(|error| error.to_string()),
-        Err(_) => {
-            timed_out = true;
-            send_signal(pid, libc::SIGTERM);
-            match timeout(CHILD_SHUTDOWN_GRACE, child.wait()).await {
-                Ok(result) => result,
-                Err(_) => {
-                    send_signal(pid, libc::SIGKILL);
-                    child.wait().await
+    let mut fatal_denial = false;
+    let stderr_path = task_dir.join("stderr.log");
+    let output: Result<std::process::ExitStatus, String> = loop {
+        tokio::select! {
+            wait_result = &mut wait => {
+                break wait_result.map_err(|error| error.to_string());
+            }
+            _ = &mut task_timeout => {
+                timed_out = true;
+                terminate_child_tree(pid, libc::SIGTERM);
+                break match timeout(CHILD_SHUTDOWN_GRACE, &mut wait).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        terminate_child_tree(pid, libc::SIGKILL);
+                        (&mut wait).await
+                    }
+                }
+                .map_err(|error| error.to_string());
+            }
+            _ = sleep(Duration::from_millis(50)), if command_provider_hint(&command) == ProviderKind::Codex => {
+                let stderr = fs::read(&stderr_path).await.unwrap_or_default();
+                if codex_denial_text(&stderr) {
+                    fatal_denial = true;
+                    terminate_child_tree(pid, libc::SIGTERM);
+                    break match timeout(CHILD_SHUTDOWN_GRACE, &mut wait).await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            terminate_child_tree(pid, libc::SIGKILL);
+                            (&mut wait).await
+                        }
+                    }
+                    .map_err(|error| error.to_string());
                 }
             }
-            .map(|status| (status, true))
-            .map_err(|error| error.to_string())
-            .map(|(status, _)| status)
         }
     };
     if let Some(handle) = drains.stdout {
@@ -835,6 +891,21 @@ async fn wait_for_child(
     }
     match output {
         Ok(status) if status.success() => {
+            if command_provider_hint(&command) == ProviderKind::Codex || fatal_denial {
+                let stdout = std::fs::read(task_dir.join("stdout.log")).unwrap_or_default();
+                let stderr = std::fs::read(task_dir.join("stderr.log")).unwrap_or_default();
+                if fatal_denial || codex_denial_detected(&command, &stderr) {
+                    return codex_denial_completion(
+                        task_id,
+                        &command,
+                        timeout_seconds,
+                        status.code(),
+                        signal_name(&status),
+                        &stdout,
+                        &stderr,
+                    );
+                }
+            }
             if command_provider_hint(&command) == ProviderKind::Claude {
                 let stdout = std::fs::read(task_dir.join("stdout.log")).unwrap_or_default();
                 let stderr = std::fs::read(task_dir.join("stderr.log")).unwrap_or_default();
@@ -872,6 +943,17 @@ async fn wait_for_child(
             let signal = signal_name(&status);
             let stdout = std::fs::read(task_dir.join("stdout.log")).unwrap_or_default();
             let stderr = std::fs::read(task_dir.join("stderr.log")).unwrap_or_default();
+            if fatal_denial || codex_denial_detected(&command, &stderr) {
+                return codex_denial_completion(
+                    task_id,
+                    &command,
+                    timeout_seconds,
+                    status.code(),
+                    signal,
+                    &stdout,
+                    &stderr,
+                );
+            }
             TaskCompletion {
                 task_id,
                 status: TaskStatus::Failed,
@@ -917,6 +999,34 @@ async fn wait_for_child(
     }
 }
 
+fn codex_denial_completion(
+    task_id: String,
+    command: &ProviderCommand,
+    timeout_seconds: i64,
+    exit_code: Option<i32>,
+    signal: Option<String>,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> TaskCompletion {
+    TaskCompletion {
+        task_id,
+        status: TaskStatus::Failed,
+        exit_code,
+        signal: signal.clone(),
+        error: Some("Codex sandbox or approval denied".to_string()),
+        error_type: Some(ErrorType::CodexSandboxDenied),
+        diagnostic: Some(task_diagnostic(
+            command,
+            "provider_sandbox_denied",
+            timeout_seconds * 1000,
+            exit_code,
+            signal,
+            stdout,
+            stderr,
+        )),
+    }
+}
+
 fn claude_output_is_parseable(stdout: &[u8]) -> bool {
     let text = String::from_utf8_lossy(stdout);
     text.lines().any(|line| {
@@ -943,8 +1053,8 @@ fn task_diagnostic(
     json!({
         "failureCategory": failure_category,
         "provider": command_provider_hint(command).as_str(),
-        "commandKind": claude_command_kind(command),
-        "commandPath": claude_command_path(command),
+        "commandKind": command_kind(command),
+        "commandPath": command_path(command),
         "launchStrategy": if command.provider == ProviderKind::Claude && crate::claude_host::socket_path_from_env().is_some() { "host_runner" } else { "direct" },
         "startupVerified": false,
         "timeoutMs": timeout_ms,
@@ -969,15 +1079,15 @@ fn diagnostic_redactions(command: &ProviderCommand) -> Vec<String> {
     redactions
 }
 
-fn claude_command_kind(command: &ProviderCommand) -> String {
+fn command_kind(command: &ProviderCommand) -> String {
     command
         .command_kind
         .as_deref()
-        .unwrap_or("native-claude")
+        .unwrap_or(command.provider.as_str())
         .to_string()
 }
 
-fn claude_command_path(command: &ProviderCommand) -> String {
+fn command_path(command: &ProviderCommand) -> String {
     if command.command == "/bin/zsh" {
         return command
             .args
@@ -1218,6 +1328,16 @@ fn recommended_actions(task: &TaskRecord, has_changes: bool) -> Vec<&'static str
             "Use task_logs with line cursors to inspect incremental output.",
             "Use task_status to confirm whether the task is still active.",
             "Use task_stop if the task is no longer useful.",
+        ];
+    }
+
+    if task.error_type == Some(ErrorType::CodexSandboxDenied) {
+        return vec![
+            "Inspect task logs, stderr, and diagnostic metadata for the exact Codex denial reason.",
+            "Inspect cwd and workspace policy before retrying.",
+            "Inspect prompt scope and confirm it does not request changes outside the project.",
+            "Inspect isolation strategy; prefer managed worktree isolation for write-capable retries.",
+            "Do not silently relax sandbox permissions or blindly retry without understanding the cause.",
         ];
     }
 
@@ -1474,11 +1594,31 @@ fn expand_home(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
-fn send_signal(pid: u32, signal: i32) {
+#[cfg(unix)]
+fn configure_child_process_group(command: &mut ProcessCommand) {
     unsafe {
-        libc::kill(pid as libc::pid_t, signal);
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
     }
 }
+
+#[cfg(not(unix))]
+fn configure_child_process_group(_command: &mut ProcessCommand) {}
+
+#[cfg(unix)]
+fn terminate_child_tree(pid: u32, signal: i32) {
+    unsafe {
+        libc::killpg(pid as libc::pid_t, signal);
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_child_tree(_pid: u32, _signal: i32) {}
 
 #[cfg(unix)]
 fn signal_name(status: &std::process::ExitStatus) -> Option<String> {
@@ -1578,18 +1718,52 @@ mod tests {
         assert!(error.contains("failed to parse registry.json"));
     }
 
+    #[test]
+    fn codex_denial_text_matches_specific_fatal_denial_phrases() {
+        for stderr in [
+            "patch rejected",
+            "Patch rejected: file is outside the workspace",
+            "write outside of the project",
+            "sandbox denied",
+            "sandbox permission blocked command",
+            "approval denied",
+            "rejected by user approval settings",
+        ] {
+            assert!(
+                codex_denial_text(stderr.as_bytes()),
+                "expected fatal Codex denial for: {stderr}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_denial_text_avoids_broad_sandbox_false_positives() {
+        for stderr in [
+            "sandbox connection denied by proxy",
+            "permission denied while reading cache",
+            "approval requested",
+            "patch failed to apply cleanly",
+        ] {
+            assert!(
+                !codex_denial_text(stderr.as_bytes()),
+                "unexpected fatal Codex denial for: {stderr}"
+            );
+        }
+    }
+
     #[tokio::test]
-    async fn send_signal_sends_sigterm_to_unix_process() {
-        let mut child = ProcessCommand::new("/bin/sleep")
+    async fn terminate_child_tree_sends_sigterm_to_unix_process_group() {
+        let mut command = ProcessCommand::new("/bin/sleep");
+        command
             .arg("30")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+            .stderr(Stdio::null());
+        configure_child_process_group(&mut command);
+        let mut child = command.spawn().unwrap();
         let pid = child.id().unwrap();
 
-        send_signal(pid, libc::SIGTERM);
+        terminate_child_tree(pid, libc::SIGTERM);
         let status = timeout(Duration::from_secs(3), child.wait())
             .await
             .unwrap()

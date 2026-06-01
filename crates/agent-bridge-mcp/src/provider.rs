@@ -284,11 +284,11 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
                         ]
                     })
                     .unwrap_or_default(),
-                vec![rendered_prompt],
+                vec![rendered_prompt.clone()],
             ]
             .concat(),
             stdin: None,
-            redactions: Vec::new(),
+            redactions: vec![rendered_prompt, task.prompt.to_string()],
             cwd: task.cwd.to_string(),
             timeout_seconds: task.timeout_seconds,
             env: BTreeMap::new(),

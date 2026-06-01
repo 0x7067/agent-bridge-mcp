@@ -155,6 +155,84 @@ async fn guidance_resources_are_listed_and_read_from_allowlist() {
     assert!(text.contains("provider comparison"));
 }
 
+fn assert_codex_denial_guidance(text: &str, surface: &str) {
+    let mentions_symptom = [
+        "patch rejected",
+        "sandbox denial",
+        "approval denial",
+        "outside of the project",
+        "out-of-workspace",
+    ]
+    .iter()
+    .any(|symptom| text.contains(symptom));
+    assert!(
+        mentions_symptom,
+        "{surface} should mention Codex denial symptoms"
+    );
+
+    for tool in ["task_wait", "task_logs", "task_status", "task_result"] {
+        assert!(text.contains(tool), "{surface} should mention {tool}");
+    }
+
+    for inspection in ["cwd", "workspace policy", "prompt scope", "isolation"] {
+        assert!(
+            text.contains(inspection),
+            "{surface} should tell callers to inspect {inspection}"
+        );
+    }
+
+    let lower = text.to_ascii_lowercase();
+    assert!(
+        !lower.contains("silently relax sandbox") && !lower.contains("blindly retry"),
+        "{surface} should warn against unsafe retry instead of recommending it"
+    );
+}
+
+#[tokio::test]
+async fn codex_denial_guidance_is_documented_in_recovery_safety_and_provider_surfaces() {
+    let recover = handle_request(request(
+        "prompts/get",
+        12,
+        serde_json::json!({ "name": "agent_bridge_recover_stalled_task" }),
+    ))
+    .await
+    .unwrap()
+    .result
+    .unwrap();
+    assert_codex_denial_guidance(
+        recover["messages"][0]["content"]["text"].as_str().unwrap(),
+        "recover stalled prompt",
+    );
+
+    let safety = handle_request(request(
+        "resources/read",
+        13,
+        serde_json::json!({ "uri": "agent-bridge://guidance/safety" }),
+    ))
+    .await
+    .unwrap()
+    .result
+    .unwrap();
+    assert_codex_denial_guidance(
+        safety["contents"][0]["text"].as_str().unwrap(),
+        "safety resource",
+    );
+
+    let providers = handle_request(request(
+        "resources/read",
+        14,
+        serde_json::json!({ "uri": "agent-bridge://guidance/provider-capabilities" }),
+    ))
+    .await
+    .unwrap()
+    .result
+    .unwrap();
+    assert_codex_denial_guidance(
+        providers["contents"][0]["text"].as_str().unwrap(),
+        "provider capabilities resource",
+    );
+}
+
 #[tokio::test]
 async fn guidance_resources_reject_non_allowlisted_uris() {
     for uri in [

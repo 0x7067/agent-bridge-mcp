@@ -219,7 +219,9 @@ Suggested flow:
 3. Call task_status to confirm whether the process is still active.
 4. If it is no longer useful, call task_stop.
 5. Call task_result after stopping or completion to inspect logs, diagnostics, exit metadata, and partial git state.
-6. Decide in the main caller whether to discard, rerun with a narrower prompt, or manually continue."#;
+6. Decide in the main caller whether to discard, rerun with a narrower prompt, or manually continue.
+
+Codex denial symptoms such as "patch rejected", sandbox denial, approval denial, outside of the project, or out-of-workspace writes are prompt-scope or workspace-scope failures to inspect. Use task_wait, task_logs, task_status, and final task_result evidence; inspect cwd, workspace policy, prompt scope, and isolation strategy before retrying. Do not loosen sandbox permissions as a reflex or repeat the same request without understanding the diagnostic."#;
 
 const CLAUDE_HOST_LIFECYCLE_PROMPT: &str = r#"Operate the Claude host runner lifecycle.
 
@@ -239,7 +241,7 @@ const DOGFOOD_WORKFLOWS_PROMPT: &str = r#"Run Agent Bridge dogfood workflows.
 Suggested workflows:
 1. For read-only review, use mode "review" or "research", isolation "none", a small prompt, bounded task_wait, and final task_result review.
 2. For isolated implementation, use mode "implement", isolation "worktree", inspect reviewPacket, gitStatus, gitDiff, changedFiles, stdout, stderr, and diagnostics, then run verification in the main caller.
-3. For stalled-task recovery, use bounded task_wait, incremental task_logs cursors, task_status, task_stop if needed, and final task_result inspection.
+3. For stalled-task recovery, use bounded task_wait, incremental task_logs cursors, task_status, task_stop if needed, and final task_result inspection. For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms, inspect cwd, workspace policy, prompt scope, and isolation strategy before retrying.
 4. For provider comparison, run equivalent read-only prompts against selected providers, compare task_result evidence, and keep final conclusions in the main caller.
 
 Live provider execution remains opt-in and should not be added to default CI."#;
@@ -278,6 +280,8 @@ const SAFETY_RESOURCE: &str = r#"# Agent Bridge Safety Guidance
 - Use `command` mode only for bounded command-oriented work with explicit expected evidence.
 - Do not remove a managed worktree until the final result, git status, diff, and changed files have been inspected.
 - If a task stalls, use bounded `task_wait`, incremental `task_logs`, and `task_stop` rather than waiting indefinitely.
+- For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms, use `task_wait`, `task_logs`, `task_status`, and final `task_result`; inspect cwd, workspace policy, prompt scope, and isolation before retrying.
+- Do not loosen Codex sandbox permissions as a reflex or repeat an unchanged request after denial diagnostics.
 "#;
 
 const PROVIDER_CAPABILITIES_RESOURCE: &str = r#"# Agent Bridge Provider Capabilities
@@ -286,7 +290,7 @@ First-class providers:
 - `claude`: local Claude Code through `claude-p` by default, or native `claude -p` when configured.
 - `cursor`: local Cursor Agent through `cursor-agent -p`.
 - `kimi`: local Pi/Kimi through `pi -p`.
-- `codex`: local Codex through `codex exec`.
+- `codex`: local Codex through `codex exec`. Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms should be investigated with `task_wait`, `task_logs`, `task_status`, final `task_result`, `task_preview`, cwd, workspace policy, prompt scope, and isolation strategy before retrying.
 
 Supported modes:
 - `research`: read/analyze only.
@@ -294,7 +298,7 @@ Supported modes:
 - `implement`: write-capable implementation.
 - `command`: bounded command-oriented work.
 
-Use `providers_list` for the authoritative runtime provider summary and `providers_check` for availability and startup checks.
+Use `providers_list` for the authoritative runtime provider summary and `providers_check` for availability and startup checks. Do not loosen Codex sandbox permissions as a reflex or repeat an unchanged request after denial diagnostics.
 "#;
 
 const CLAUDE_HOST_LIFECYCLE_RESOURCE: &str = r#"# Claude Host Runner Lifecycle
@@ -330,6 +334,8 @@ Use `task_spawn` with mode `implement` and `isolation: "worktree"`. After comple
 ## stalled-task recovery
 
 Use short bounded `task_wait` calls. If the task does not finish, call `task_logs` with `stdoutLine` and `stderrLine` cursors, then `task_status`. Call `task_stop` only when the task is no longer useful, then inspect final `task_result`.
+
+For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms, inspect cwd, workspace policy, prompt scope, and isolation before retrying. Prefer narrowing the prompt or using managed worktree isolation over loosening sandbox permissions.
 
 ## provider comparison
 
