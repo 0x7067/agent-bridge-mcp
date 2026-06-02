@@ -1,7 +1,7 @@
 # agent-bridge-doctor Specification
 
 ## Purpose
-TBD - created by archiving change add-agent-bridge-doctor. Update Purpose after archive.
+Define the `doctor` diagnostics surface that helps operators verify Agent Bridge MCP configuration, workspace policy, state storage, provider readiness, and Claude host-runner setup without spawning normal provider tasks.
 ## Requirements
 ### Requirement: Doctor reports bridge setup status
 The system SHALL expose a `doctor` MCP tool that returns a structured diagnostic report for the current Agent Bridge MCP process.
@@ -105,4 +105,3 @@ The system SHALL return concise recommendations derived from detected issues.
 #### Scenario: Default doctor does not spawn delegated work
 - **WHEN** a caller invokes `doctor` with no arguments
 - **THEN** doctor does not create task records, does not execute task prompts, and does not call provider task modes.
-
