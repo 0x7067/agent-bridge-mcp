@@ -74,14 +74,16 @@ The system SHALL handle Claude `StopFailure` hook payloads as provider/API failu
 - **AND** unknown StopFailure classes map to `claude_api_error` with bounded diagnostics.
 
 #### Scenario: StopFailure input mapping
-- **WHEN** a StopFailure payload reports `auth_error`, `authentication_error`, or equivalent Claude auth failure
+- **WHEN** a StopFailure payload reports `authentication_failed` or `oauth_org_not_allowed`
 - **THEN** the runner maps it to `claude_auth_error`.
-- **WHEN** it reports `billing_error`, `credit_exhausted`, or equivalent billing failure
+- **WHEN** it reports `billing_error`
 - **THEN** the runner maps it to `claude_billing_error`.
-- **WHEN** it reports `rate_limit` or equivalent throttling failure
+- **WHEN** it reports `rate_limit`
 - **THEN** the runner maps it to `claude_rate_limit`.
-- **WHEN** it reports `model_unavailable` or equivalent model selection failure
+- **WHEN** it reports `model_not_found`
 - **THEN** the runner maps it to `claude_model_unavailable`.
+- **WHEN** it reports `invalid_request`, `server_error`, `max_output_tokens`, `unknown`, or an unrecognized future error string
+- **THEN** the runner maps it to `claude_api_error`.
 
 ### Requirement: Claude runner owns temporary settings safely
 The system SHALL use runner-owned temporary Claude settings for automation hooks without overwriting user configuration.

@@ -7,6 +7,11 @@ The system SHALL provide an opt-in host runner that executes owned interactive C
 - **WHEN** the MCP server sends a structured Claude request whose protocol version, request type, workspace policy id, cwd, timeout, mode, model, effort, and prompt payload pass host-runner validation
 - **THEN** the host runner executes the owned interactive Claude runner using the official `claude` CLI, returns captured stdout, stderr, transcript diagnostics, truncation flags, exit status or signal, elapsed time, and failure category metadata.
 
+#### Scenario: Host runner accepts protocol v2 request schema
+- **WHEN** the MCP server sends a request with `version: 2`, `requestType: "claude_interactive"`, a valid workspace policy id, cwd, mode, prompt, and timeout
+- **THEN** the host runner validates it against `protocol-v2.md`.
+- **AND** optional `model`, `effort`, `bareProfile`, and `smokeToken` fields are accepted only when their values are valid.
+
 #### Scenario: Host runner rejects non-Claude provider requests
 - **WHEN** the host runner receives a request type for Cursor, Kimi, Codex, or an unknown provider
 - **THEN** it rejects the request without spawning a process.
@@ -14,6 +19,10 @@ The system SHALL provide an opt-in host runner that executes owned interactive C
 #### Scenario: Host runner rejects command descriptor requests
 - **WHEN** the host runner receives a request containing a command string, shell script, arbitrary argv, or executable path to run
 - **THEN** it rejects the request without spawning a process.
+
+#### Scenario: Host runner rejects protocol v2 forbidden fields
+- **WHEN** the host runner receives a Claude request containing `command`, `shell`, `script`, `argv`, `executablePath`, or another caller-supplied execution descriptor
+- **THEN** it rejects the request with `protocol_rejected` without spawning a process.
 
 ### Requirement: Claude host runner uses owned-runner protocol versioning
 The system SHALL bump and validate the host-runner protocol when switching from structured `claude-p` execution to owned interactive Claude execution.
@@ -35,6 +44,12 @@ The system SHALL bump and validate the host-runner protocol when switching from 
 - **WHEN** the host runner returns an owned-runner result
 - **THEN** the result includes `exitCode`, `signal`, `durationMs`, `failureCategory`, `ptyOutputExcerpt`, `ptyOutputTruncated`, `stop`, `stopFailure`, and `transcript` fields where applicable.
 - **AND** `stop` contains bounded Stop payload metadata, `stopFailure` contains bounded StopFailure metadata, and `transcript` contains parse status and bounded diagnostics without raw prompt text.
+
+#### Scenario: MCP receives owned-runner result
+- **WHEN** the MCP server receives a protocol v2 owned-runner result
+- **THEN** it maps `result.finalText` into the existing task result surface on success.
+- **AND** it maps `failureCategory`, `transcript`, `stop`, `stopFailure`, and bounded PTY diagnostics into provider diagnostics on failure.
+- **AND** it does not use legacy print-mode stdout JSON parsing for protocol v2 success.
 
 ### Requirement: Claude host runner setup is explicit
 The system SHALL make owned host-runner use explicit in configuration, previews, provider checks, and documentation.

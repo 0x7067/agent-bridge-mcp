@@ -64,8 +64,11 @@ as a fallback, but not the first implementation for this Tokio codebase.
 
 - Keep all PTY crate usage in one module, tentatively
   `claude_interactive::pty`.
-- Add tests around the adapter using a fake interactive command before wiring
-  real Claude.
+- Add a focused spike test around the adapter using fake interactive Claude
+  before wiring real Claude. The spike must verify split async read/write,
+  terminal probe response bytes, resize behavior, and child session/process
+  cleanup on Pedro's macOS arm64 environment; Linux coverage should be kept in
+  CI where available.
 - Do not interpolate command paths, settings paths, model, effort, cwd, or prompt
   text into shell source. Use structured argv/env/cwd.
 - Preserve prompt redaction: rendered prompts go to PTY input only.

@@ -41,6 +41,12 @@ Production Claude provider execution requires the owned host-runner path. The im
 
 The host-runner protocol for this change is version `2`. Version `2` requests use the existing structured request boundary but replace `RunClaude`/`claude-p` semantics with owned interactive Claude runner semantics. Version `1` requests or responses must fail with `protocol_mismatch` rather than being interpreted as owned-runner work. Version `2` run results include: exit status or signal, duration, failure category, bounded PTY output excerpts with truncation flags, Stop payload metadata, StopFailure metadata when present, and transcript parse diagnostics. The MCP binary and host runner should be upgraded together.
 
+The concrete v2 schema is specified in `protocol-v2.md`. The integration
+boundary between structured v2 results and existing task surfaces is specified
+in `runner-result-contract.md`. Implementation must consume v2 structured
+results directly; legacy print-mode stdout JSON parsing is not the success path
+for owned Claude execution.
+
 ### Decision 3: Port the minimal `claude-p` mechanics, not its package boundary
 
 The port must include the mechanics Agent Bridge needs:
@@ -54,6 +60,22 @@ The port must include the mechanics Agent Bridge needs:
 - clean up temporary settings and child processes on success, timeout, disconnect, and shutdown.
 
 The hook relay should be bridge-owned IPC, not hook stdout. V1 should use a runner-owned FIFO in a `0700` temporary directory, with hook helper commands writing newline-delimited JSON payloads only to that FIFO. Hook stdout must stay empty unless the runner intentionally wants to inject text into Claude context.
+
+The hook relay details are specified in `hook-relay-contract.md`. The runner
+uses Agent Bridge environment names, registers `SessionStart`, `Stop`, and
+`StopFailure`, and opens the relay before spawning Claude so hook helpers cannot
+block indefinitely waiting for a reader.
+
+Startup sequencing is specified in `startup-sequencing.md`: start readers
+before prompt injection, respond to terminal probes, wait for `SessionStart`
+plus PTY quiescence, write the prompt to PTY input, then send Enter as a
+separate bounded write.
+
+The login-shell compatibility decision is intentionally narrow. The host runner
+may use a fixed Agent Bridge-owned `/bin/zsh -flc 'exec "$@"'` bootstrap to
+preserve the user's local Claude/PATH/Keychain environment, but the host-runner
+protocol must never accept caller-supplied shell source, command strings,
+arbitrary argv, or executable paths.
 
 The port should not preserve `claude-p`'s public CLI compatibility layer unless Agent Bridge directly needs a behavior for provider execution.
 
@@ -110,4 +132,6 @@ Rollback before release is to revert this change. After release, rollback requir
 
 ## Open Questions
 
-- Which PTY crate best fits the Rust runtime after source-level evaluation?
+- Does the `pty-process` spike pass on Pedro's macOS arm64 environment with
+  split IO, probe handling, resize, and process-group cleanup before production
+  runner wiring?
