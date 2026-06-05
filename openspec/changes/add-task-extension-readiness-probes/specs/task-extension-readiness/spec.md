@@ -6,7 +6,7 @@ The system SHALL classify MCP task-extension readiness without advertising or im
 #### Scenario: Server does not advertise task support
 - **WHEN** a caller initializes Agent Bridge after readiness probing is added
 - **THEN** the initialize response does not advertise protocol-level task capabilities.
-- **AND** Agent Bridge continues to use existing `task_*` tools for task execution.
+- **AND** Agent Bridge continues to use existing `agent_*` tools for agent execution.
 
 #### Scenario: Readiness report is not execution support
 - **WHEN** Agent Bridge reports task-extension readiness

@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::env;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -21,6 +22,9 @@ use uuid::Uuid;
 const MAX_PROMPT_BYTES: usize = 100 * 1024;
 const MAX_LOG_BYTES: usize = 1024 * 1024;
 const MAX_WAIT_MS: i64 = 60_000;
+const MAX_OBSERVE_MS: i64 = 120_000;
+const MAX_OBSERVE_EVENTS: usize = 500;
+const PROGRESS_TRANSCRIPT_TAIL_BYTES: u64 = 64 * 1024;
 const ACTOR_BUFFER: usize = 128;
 const CHILD_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
@@ -111,6 +115,39 @@ impl TaskManagerHandle {
                 let mut status = status;
                 status["timedOut"] = json!(true);
                 return Ok(status);
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    pub async fn observe(
+        &self,
+        task_id: String,
+        cursor: Option<u64>,
+        limit: Option<u64>,
+        timeout_ms: Option<i64>,
+    ) -> Result<Value, String> {
+        let cursor = cursor.unwrap_or(0) as usize;
+        let limit = normalize_observe_limit(limit);
+        let timeout_ms = normalize_observe_ms(timeout_ms);
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
+        loop {
+            let task: TaskRecord = self
+                .request(|reply| ActorCommand::Get(task_id.clone(), reply))
+                .await?;
+            let transcript = read_transcript(&task, cursor, limit).await?;
+            let next_cursor = transcript["nextCursor"].as_u64().unwrap_or(cursor as u64);
+            let has_events = transcript["events"]
+                .as_array()
+                .is_some_and(|events| !events.is_empty());
+            if has_events || is_final(task.status) {
+                return Ok(observe_payload(task, transcript, false));
+            }
+            if Instant::now() >= deadline {
+                return Ok(observe_payload(task, transcript, true));
+            }
+            if next_cursor > cursor as u64 {
+                return Ok(observe_payload(task, transcript, false));
             }
             sleep(Duration::from_millis(50)).await;
         }
@@ -1761,6 +1798,159 @@ fn compare_for_presentation_list(left: &&TaskRecord, right: &&TaskRecord) -> Ord
     }
 }
 
+struct TranscriptProgressSnapshot {
+    last_event_at: Option<String>,
+    last_output_at: Option<String>,
+}
+
+fn task_progress(task: &TaskRecord) -> Value {
+    let now = Utc::now();
+    let cadence = provider::output_cadence(task.provider);
+    let recommended_poll_ms = cadence_i64(&cadence, "recommendedPollMs", 30_000);
+    let recommended_silent_budget_ms = cadence_i64(&cadence, "recommendedSilentBudgetMs", 120_000);
+    let fallback_after_ms = cadence_i64(&cadence, "fallbackAfterMs", 180_000);
+    let timeout_ms = (task.timeout_seconds > 0).then_some(task.timeout_seconds * 1000);
+    let effective_silent_budget_ms = timeout_ms
+        .map(|value| value.min(recommended_silent_budget_ms))
+        .unwrap_or(recommended_silent_budget_ms);
+    let start_at = task
+        .started_at
+        .as_deref()
+        .unwrap_or(task.created_at.as_str());
+    let elapsed_ms = millis_since(start_at, now).unwrap_or(0).max(0);
+    let transcript = transcript_progress_snapshot(task);
+    let last_event_at = transcript
+        .last_event_at
+        .clone()
+        .or_else(|| Some(task.updated_at.clone()));
+    let last_output_at = transcript.last_output_at.clone();
+    let silent_for_ms = last_output_at
+        .as_deref()
+        .and_then(|timestamp| millis_since(timestamp, now))
+        .unwrap_or(elapsed_ms)
+        .max(0);
+    let until_next_poll = recommended_poll_ms - (elapsed_ms % recommended_poll_ms.max(1));
+    let seconds_until_recommended_check = (until_next_poll.max(0) + 999) / 1000;
+    let timeout_remaining_ms = timeout_ms.map(|timeout_ms| timeout_ms - elapsed_ms);
+    let final_task = is_final(task.status);
+    let stall_risk = if final_task {
+        "none"
+    } else if timeout_remaining_ms.is_some_and(|remaining| remaining <= 30_000)
+        || silent_for_ms >= fallback_after_ms
+    {
+        "high"
+    } else if silent_for_ms >= effective_silent_budget_ms {
+        "medium"
+    } else {
+        "low"
+    };
+
+    json!({
+        "elapsedMs": elapsed_ms,
+        "lastEventAt": last_event_at,
+        "lastOutputAt": last_output_at,
+        "silentForMs": silent_for_ms,
+        "expectedOutputCadence": cadence,
+        "recommendedPollMs": recommended_poll_ms,
+        "recommendedSilentBudgetMs": recommended_silent_budget_ms,
+        "effectiveSilentBudgetMs": effective_silent_budget_ms,
+        "fallbackAfterMs": fallback_after_ms,
+        "secondsUntilRecommendedCheck": if final_task { 0 } else { seconds_until_recommended_check },
+        "stallRisk": stall_risk,
+        "timeoutRemainingMs": timeout_remaining_ms,
+        "noFurtherPollingNeeded": final_task,
+        "recommendedNextTool": if final_task { "agent_result" } else { "agent_observe" }
+    })
+}
+
+fn cadence_i64(cadence: &Value, key: &str, default: i64) -> i64 {
+    cadence.get(key).and_then(Value::as_i64).unwrap_or(default)
+}
+
+fn millis_since(timestamp: &str, now: chrono::DateTime<Utc>) -> Option<i64> {
+    let then = chrono::DateTime::parse_from_rfc3339(timestamp)
+        .ok()?
+        .with_timezone(&Utc);
+    Some((now - then).num_milliseconds())
+}
+
+fn transcript_progress_snapshot(task: &TaskRecord) -> TranscriptProgressSnapshot {
+    let path = PathBuf::from(&task.task_dir).join("transcript.jsonl");
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return TranscriptProgressSnapshot {
+            last_event_at: None,
+            last_output_at: None,
+        };
+    };
+    let Ok(size) = file.seek(SeekFrom::End(0)) else {
+        return TranscriptProgressSnapshot {
+            last_event_at: None,
+            last_output_at: None,
+        };
+    };
+    let start = size.saturating_sub(PROGRESS_TRANSCRIPT_TAIL_BYTES);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return TranscriptProgressSnapshot {
+            last_event_at: None,
+            last_output_at: None,
+        };
+    }
+    let mut text = String::new();
+    if file.read_to_string(&mut text).is_err() {
+        return TranscriptProgressSnapshot {
+            last_event_at: None,
+            last_output_at: None,
+        };
+    }
+    if start > 0
+        && let Some(index) = text.find('\n')
+    {
+        text = text[index + 1..].to_string();
+    }
+    let mut snapshot = TranscriptProgressSnapshot {
+        last_event_at: None,
+        last_output_at: None,
+    };
+    for line in text.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let timestamp = value
+            .get("ts")
+            .or_else(|| value.get("timestamp"))
+            .or_else(|| value.get("at"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if let Some(timestamp) = timestamp {
+            snapshot.last_event_at = Some(timestamp.clone());
+            if value
+                .get("source")
+                .and_then(Value::as_str)
+                .is_some_and(|source| matches!(source, "stdout" | "stderr" | "provider"))
+            {
+                snapshot.last_output_at = Some(timestamp);
+            }
+        }
+    }
+    snapshot
+}
+
+fn observe_payload(task: TaskRecord, transcript: Value, timed_out: bool) -> Value {
+    let public = public_task(&task);
+    json!({
+        "taskId": task.task_id,
+        "status": task.status,
+        "isFinal": is_final(task.status),
+        "task": public,
+        "presentation": public["presentation"],
+        "progress": public["progress"],
+        "events": transcript["events"],
+        "nextCursor": transcript["nextCursor"],
+        "timedOut": timed_out,
+        "nextActions": public["nextActions"]
+    })
+}
+
 fn public_task(task: &TaskRecord) -> Value {
     let is_final = is_final(task.status);
     let phase = match task.status {
@@ -1768,6 +1958,7 @@ fn public_task(task: &TaskRecord) -> Value {
         TaskStatus::Running => TaskPhase::Active,
         _ => TaskPhase::Done,
     };
+    let progress = task_progress(task);
     json!({
         "taskId": task.task_id,
         "provider": task.provider,
@@ -1790,12 +1981,13 @@ fn public_task(task: &TaskRecord) -> Value {
         "promptStrategy": task.prompt_strategy,
         "profileDiagnostics": task.profile_diagnostics,
         "transcriptDiagnostic": task.transcript_diagnostic,
-        "presentation": presentation(task),
-        "nextActions": next_actions(task)
+        "progress": progress,
+        "presentation": presentation(task, &progress),
+        "nextActions": next_actions(task, &progress)
     })
 }
 
-fn presentation(task: &TaskRecord) -> Value {
+fn presentation(task: &TaskRecord, progress: &Value) -> Value {
     let changed_files = task.changed_files.clone().unwrap_or_default();
     let git_status = task.git_status.clone().unwrap_or_default();
     let has_changes = !changed_files.is_empty() || !git_status.trim().is_empty();
@@ -1827,9 +2019,10 @@ fn presentation(task: &TaskRecord) -> Value {
             "partialResultDetected": task.partial_result_detected,
             "reviewPacketAvailable": is_final(task.status)
         },
+        "progress": progress,
         "verificationStatus": "not_verified",
         "actions": presentation_actions(task),
-        "nextActions": next_actions(task)
+        "nextActions": next_actions(task, progress)
     })
 }
 
@@ -1854,28 +2047,34 @@ fn status_tone(status: TaskStatus) -> &'static str {
 fn presentation_actions(task: &TaskRecord) -> Value {
     let mut actions = vec![
         action(
+            "observe",
+            Some("agent_observe"),
+            action_state(!is_final(task.status)),
+            unavailable_reason(is_final(task.status), "task_final"),
+        ),
+        action(
             "wait",
-            Some("task_wait"),
+            Some("agent_wait"),
             action_state(!is_final(task.status)),
             None,
         ),
-        action("inspect_status", Some("task_status"), "available", None),
-        action("inspect_logs", Some("task_logs"), "available", None),
+        action("inspect_status", Some("agent_status"), "available", None),
+        action("inspect_logs", Some("agent_logs"), "available", None),
         action(
             "inspect_transcript",
-            Some("task_transcript"),
+            Some("agent_transcript"),
             action_state(task.transcript_available),
             unavailable_reason(!task.transcript_available, "transcript_unavailable"),
         ),
         action(
             "inspect_result",
-            Some("task_result"),
+            Some("agent_result"),
             action_state(is_final(task.status)),
             unavailable_reason(!is_final(task.status), "task_not_final"),
         ),
         action(
             "stop",
-            Some("task_stop"),
+            Some("agent_stop"),
             action_state(matches!(
                 task.status,
                 TaskStatus::Queued | TaskStatus::Running
@@ -1903,7 +2102,7 @@ fn presentation_actions(task: &TaskRecord) -> Value {
     };
     actions.push(action(
         "cleanup",
-        Some("task_remove"),
+        Some("agent_remove"),
         cleanup_state,
         cleanup_reason,
     ));
@@ -1946,28 +2145,38 @@ fn action(id: &str, tool: Option<&str>, state: &str, reason: Option<&str>) -> Va
     value
 }
 
-fn next_actions(task: &TaskRecord) -> Value {
+fn next_actions(task: &TaskRecord, progress: &Value) -> Value {
     let mut actions = Vec::new();
     if !is_final(task.status) {
+        let recommended_poll_ms = progress["recommendedPollMs"].as_i64().unwrap_or(30_000);
+        let stall_risk = progress["stallRisk"].as_str().unwrap_or("low");
+        actions.push(next_action(
+            "observe",
+            Some("agent_observe"),
+            json!({ "taskId": task.task_id, "cursor": 0, "limit": 100, "timeoutMs": recommended_poll_ms }),
+            "available",
+            "Observe bounded transcript and lifecycle progress before deciding whether to wait, inspect, stop, or fall back.",
+            "safe",
+        ));
         actions.push(next_action(
             "wait",
-            Some("task_wait"),
-            json!({ "taskId": task.task_id, "timeoutMs": 30000 }),
+            Some("agent_wait"),
+            json!({ "taskId": task.task_id, "timeoutMs": recommended_poll_ms.min(MAX_WAIT_MS) }),
             "available",
-            "Wait briefly for the provider task to reach a final state before inspecting the result.",
+            "Wait for finalization using the provider-aware polling interval.",
             "safe",
         ));
         actions.push(next_action(
             "inspect_logs",
-            Some("task_logs"),
+            Some("agent_logs"),
             json!({ "taskId": task.task_id }),
             "available",
-            "Inspect incremental stdout and stderr if the bounded wait times out or progress is unclear.",
+            if stall_risk == "high" { "Inspect logs because the agent has exceeded its recommended observation budget or is near timeout." } else { "Inspect incremental stdout and stderr if observation times out or progress is unclear." },
             "safe",
         ));
         actions.push(next_action(
             "inspect_status",
-            Some("task_status"),
+            Some("agent_status"),
             json!({ "taskId": task.task_id }),
             "available",
             "Confirm the task lifecycle state without assuming provider completion verifies the original request.",
@@ -1975,10 +2184,10 @@ fn next_actions(task: &TaskRecord) -> Value {
         ));
         actions.push(next_action(
             "stop",
-            Some("task_stop"),
+            Some("agent_stop"),
             json!({ "taskId": task.task_id }),
             "available",
-            "Stop only when the task is no longer useful; stopped tasks remain inspectable.",
+            if stall_risk == "high" { "Stop only after deciding the agent is no longer useful; stopped agents remain inspectable." } else { "Stop only when the agent is no longer useful; provider silence within the observation budget is not enough by itself." },
             "unsafe",
         ));
         return Value::Array(actions);
@@ -1987,7 +2196,7 @@ fn next_actions(task: &TaskRecord) -> Value {
     if task.result_inspected_at.is_none() {
         actions.push(next_action(
             "inspect_result",
-            Some("task_result"),
+            Some("agent_result"),
             json!({ "taskId": task.task_id }),
             "available",
             "Inspect final logs, diagnostics, git state, transcript evidence, and review packet before cleanup or verification.",
@@ -1996,7 +2205,7 @@ fn next_actions(task: &TaskRecord) -> Value {
         if task.worktree_managed {
             actions.push(next_action(
                 "cleanup",
-                Some("task_remove"),
+                Some("agent_remove"),
                 json!({ "taskId": task.task_id }),
                 "unsafe",
                 "Managed worktree cleanup requires explicit final result inspection first.",
@@ -2013,7 +2222,7 @@ fn next_actions(task: &TaskRecord) -> Value {
     {
         actions.push(next_action(
             "inspect_logs",
-            Some("task_logs"),
+            Some("agent_logs"),
             json!({ "taskId": task.task_id }),
             "available",
             "Inspect logs and diagnostics before deciding whether to rerun, narrow the prompt, or continue manually.",
@@ -2022,7 +2231,7 @@ fn next_actions(task: &TaskRecord) -> Value {
         if task.transcript_available {
             actions.push(next_action(
                 "inspect_transcript",
-                Some("task_transcript"),
+                Some("agent_transcript"),
                 json!({ "taskId": task.task_id }),
                 "available",
                 "Inspect transcript evidence when provider behavior or final-state classification is unclear.",
@@ -2043,7 +2252,7 @@ fn next_actions(task: &TaskRecord) -> Value {
     if task.worktree_managed {
         actions.push(next_action(
             "cleanup",
-            Some("task_remove"),
+            Some("agent_remove"),
             json!({ "taskId": task.task_id }),
             "available",
             "Remove the managed worktree only after inspecting the result and preserving any needed changes.",
@@ -2074,6 +2283,7 @@ fn next_action(
 
 fn review_packet(task: &TaskRecord, stdout_truncated: bool, stderr_truncated: bool) -> Value {
     let is_final = is_final(task.status);
+    let progress = task_progress(task);
     let git_status = task.git_status.clone().unwrap_or_default();
     let changed_files = task.changed_files.clone().unwrap_or_default();
     let has_changes = !changed_files.is_empty() || !git_status.trim().is_empty();
@@ -2107,7 +2317,8 @@ fn review_packet(task: &TaskRecord, stdout_truncated: bool, stderr_truncated: bo
         "transcriptDiagnostic": task.transcript_diagnostic,
         "stdoutTruncated": stdout_truncated,
         "stderrTruncated": stderr_truncated,
-        "nextActions": next_actions(task),
+        "progress": progress,
+        "nextActions": next_actions(task, &progress),
         "recommendedActions": recommended_actions(task, has_changes)
     })
 }
@@ -2115,10 +2326,10 @@ fn review_packet(task: &TaskRecord, stdout_truncated: bool, stderr_truncated: bo
 fn recommended_actions(task: &TaskRecord, has_changes: bool) -> Vec<&'static str> {
     if !is_final(task.status) {
         return vec![
-            "Use task_wait with a bounded timeout.",
-            "Use task_logs with line cursors to inspect incremental output.",
-            "Use task_status to confirm whether the task is still active.",
-            "Use task_stop if the task is no longer useful.",
+            "Use agent_observe with a bounded timeout before treating silence as a stall.",
+            "Use agent_logs with line cursors to inspect incremental output.",
+            "Use agent_status to confirm whether the agent is still active.",
+            "Use agent_stop if the agent is no longer useful.",
         ];
     }
 
@@ -2135,7 +2346,7 @@ fn recommended_actions(task: &TaskRecord, has_changes: bool) -> Vec<&'static str
     let mut actions =
         vec!["Inspect stdout, stderr, diagnostics, git status, diff, and changed files."];
     if task.transcript_available {
-        actions.push("Inspect task_transcript when provider behavior or final-state classification is unclear.");
+        actions.push("Inspect agent_transcript when provider behavior or final-state classification is unclear.");
     }
     if has_changes {
         actions.push("Inspect gitStatus, gitDiff, and changedFiles before verification.");
@@ -2150,7 +2361,7 @@ fn recommended_actions(task: &TaskRecord, has_changes: bool) -> Vec<&'static str
         actions.push("Run the relevant project verification before claiming completion.");
     }
     if task.worktree_managed {
-        actions.push("Call task_remove only after inspecting the managed worktree result.");
+        actions.push("Call agent_remove only after inspecting the managed worktree result.");
     }
     actions
 }
@@ -2362,6 +2573,14 @@ fn configured_workspace_roots() -> Result<Vec<PathBuf>, String> {
 
 fn normalize_wait_ms(value: Option<i64>) -> i64 {
     value.unwrap_or(30_000).clamp(0, MAX_WAIT_MS)
+}
+
+fn normalize_observe_ms(value: Option<i64>) -> i64 {
+    value.unwrap_or(30_000).clamp(0, MAX_OBSERVE_MS)
+}
+
+fn normalize_observe_limit(value: Option<u64>) -> usize {
+    value.unwrap_or(100).clamp(1, MAX_OBSERVE_EVENTS as u64) as usize
 }
 
 fn normalize_max_bytes(value: Option<i64>) -> usize {
@@ -2584,14 +2803,14 @@ mod tests {
                 .iter()
                 .find(|action| action["id"] == "wait")
                 .unwrap()["tool"],
-            "task_wait"
+            "agent_wait"
         );
         assert_eq!(
             action_state(&running_public, "inspect_result"),
             "unavailable"
         );
-        assert_eq!(next_action(&running_public, 0)["id"], "wait");
-        assert_eq!(next_action(&running_public, 0)["tool"], "task_wait");
+        assert_eq!(next_action(&running_public, 0)["id"], "observe");
+        assert_eq!(next_action(&running_public, 0)["tool"], "agent_observe");
         assert_eq!(
             next_action(&running_public, 0)["arguments"]["taskId"],
             running.task_id

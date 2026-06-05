@@ -1,6 +1,6 @@
 ## Context
 
-Agent Bridge already has a stable provider task lifecycle through `task_*` tools. The `explore-mcp-task-support` compatibility memo blocks protocol-level MCP Tasks implementation because the legacy 2025-11-25 task surface and the newer `io.modelcontextprotocol/tasks` extension have different negotiation and method shapes.
+Agent Bridge already has a stable provider-agent lifecycle through its public MCP tools. The `explore-mcp-task-support` compatibility memo blocks protocol-level MCP Tasks implementation because the legacy 2025-11-25 task surface and the newer `io.modelcontextprotocol/tasks` extension have different negotiation and method shapes.
 
 The useful next step is not task execution. It is gathering deterministic readiness evidence about what task-extension capability metadata clients can send over stdio and how Agent Bridge should report that evidence without advertising task support.
 
@@ -11,7 +11,7 @@ The useful next step is not task execution. It is gathering deterministic readin
 - Detect task-extension capability metadata in MCP client/request metadata without enabling protocol task execution.
 - Classify observed client support as unavailable, legacy-only, extension-capable, unsupported, or unknown.
 - Provide a diagnostic surface that can be tested through stdio fixtures and used by future task-support work.
-- Keep the existing Agent Bridge `task_*` lifecycle as the only execution path.
+- Keep the existing Agent Bridge provider-agent lifecycle as the only execution path; after canonicalization this lifecycle is exposed through `agent_*` tools.
 
 **Non-Goals:**
 
@@ -67,7 +67,7 @@ The diagnostic shape is:
   "observedExtensionIdentifiers": ["io.modelcontextprotocol/tasks"],
   "legacyIndicators": [],
   "unknownIndicators": [],
-  "recommendedNextStep": "Use Agent Bridge task_* tools; protocol task support is not advertised yet.",
+  "recommendedNextStep": "Use Agent Bridge agent_* tools; protocol task support is not advertised yet.",
   "checkedAt": "2026-06-05T10:00:00.000Z"
 }
 ```
@@ -140,7 +140,7 @@ This probe change lands before `explore-mcp-task-support` implements protocol ta
 ## Risks / Trade-offs
 
 - Hosts may not expose per-request capabilities in the same place -> Keep parser tolerant and classify unknown shapes without failing ordinary requests.
-- Diagnostic fields may be mistaken for support -> Include `serverAdvertisesTasks: false` and guidance that task execution still uses `task_*`.
+- Diagnostic fields may be mistaken for support -> Include `serverAdvertisesTasks: false` and guidance that execution still uses Agent Bridge `agent_*` tools.
 - Future extension names may change -> Keep unknown extension identifiers visible in diagnostics rather than hard-failing.
 
 ## Migration Plan

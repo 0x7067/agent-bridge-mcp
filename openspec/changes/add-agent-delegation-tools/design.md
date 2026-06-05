@@ -2,13 +2,25 @@
 
 ## API Shape
 
-`agent_spawn` is an additive launch tool with the same input schema as `task_spawn`. It calls the same task manager spawn path and returns the same task lifecycle payload, including `taskId`. The existing lifecycle remains task-based: callers continue to use `task_status`, `task_wait`, `task_logs`, `task_transcript`, `task_result`, `task_stop`, and `task_remove`.
+The public MCP tool surface uses one canonical `agent_*` namespace. `agent_spawn` starts a provider agent through the existing task manager spawn path and returns the existing lifecycle payload, including the persisted `taskId`. The task registry and `task_...` identifier format remain internal implementation details.
 
-`agents_list` is an additive presentation-first listing tool. It accepts the current `task_list` presentation filters except `presentation` and `scope`; it always uses bounded active/recent presentation mode. The response returns `agents` plus the same list metadata (`scope: "active_recent"`, `limit`) so clients do not need to know that provider agents are backed by task records. Raw/full-history registry inspection remains available through `task_list`.
+`agent_list` is the presentation-first listing tool. It accepts status, provider, mode, workspace, title, and limit filters and always uses bounded active/recent presentation mode. The response returns `agents` plus list metadata (`scope: "active_recent"`, `limit`) so clients do not need to know that provider agents are backed by task records.
 
-## Deprecation Strategy
+Lifecycle inspection and cleanup also use the canonical namespace:
 
-`task_spawn` remains in `tools/list` for this change and is marked as legacy in the description and guidance. Removal requires a later change after `agent_spawn` and `agents_list` are verified against the target harnesses. This avoids breaking existing clients while allowing new clients to migrate immediately.
+- `agent_status`
+- `agent_wait`
+- `agent_logs`
+- `agent_transcript`
+- `agent_result`
+- `agent_stop`
+- `agent_remove`
+
+`agent_preview` replaces `task_preview` for launch inspection. The preview response may still mention internal task-manager details when useful, but the tool name presented to MCP clients remains agent-oriented.
+
+## Removal Strategy
+
+The previous `task_*` public MCP tools are removed from `tools/list` once the `agent_*` equivalents have protocol tests, stdio smoke coverage, and guidance updates. The server does not need to preserve a second public tool set because the target harnesses are being taught the canonical surface before this change is shipped. If compatibility aliases are ever needed later, they should be hidden or feature-gated rather than reintroduced as a normal advertised workflow.
 
 ## Guidance
 
@@ -16,8 +28,6 @@ Initialization instructions and guidance resources should direct new callers to:
 
 1. run `doctor` when setup is uncertain,
 2. use `agent_spawn` to launch provider agents,
-3. use `agents_list` for active/recent native presentation,
-4. use task lifecycle tools for monitoring and final evidence,
+3. use `agent_list` for active/recent native presentation,
+4. use `agent_observe`, `agent_status`, `agent_logs`, `agent_transcript`, `agent_wait`, and `agent_result` for monitoring and final evidence,
 5. run caller-owned verification before claiming delegated work is done.
-
-Guidance should still mention `task_spawn` as a legacy compatibility surface until removal.

@@ -409,30 +409,26 @@ fn stdio_protocol_and_tool_schema_smoke() {
 
     let tools = client.request("tools/list", json!({}));
     let tools = tools["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 15);
-    let task_preview = tools
+    assert_eq!(tools.len(), 14);
+    let agent_preview = tools
         .iter()
-        .find(|tool| tool["name"] == "task_preview")
+        .find(|tool| tool["name"] == "agent_preview")
         .unwrap();
     let agent_spawn = tools
         .iter()
         .find(|tool| tool["name"] == "agent_spawn")
         .unwrap();
-    let agents_list = tools
+    let agent_list = tools
         .iter()
-        .find(|tool| tool["name"] == "agents_list")
+        .find(|tool| tool["name"] == "agent_list")
         .unwrap();
-    let task_spawn = tools
+    let agent_transcript = tools
         .iter()
-        .find(|tool| tool["name"] == "task_spawn")
+        .find(|tool| tool["name"] == "agent_transcript")
         .unwrap();
-    let task_transcript = tools
+    let agent_observe = tools
         .iter()
-        .find(|tool| tool["name"] == "task_transcript")
-        .unwrap();
-    let task_list = tools
-        .iter()
-        .find(|tool| tool["name"] == "task_list")
+        .find(|tool| tool["name"] == "agent_observe")
         .unwrap();
     let doctor = tools.iter().find(|tool| tool["name"] == "doctor").unwrap();
     let providers_check = tools
@@ -462,19 +458,19 @@ fn stdio_protocol_and_tool_schema_smoke() {
         "object"
     );
     assert_eq!(
-        task_preview["inputSchema"]["properties"]["provider"]["enum"],
+        agent_preview["inputSchema"]["properties"]["provider"]["enum"],
         json!(["claude", "cursor", "kimi", "codex"])
     );
     assert_eq!(
-        task_preview["inputSchema"]["properties"]["profile"]["enum"],
+        agent_preview["inputSchema"]["properties"]["profile"]["enum"],
         json!(["bridge", "bare"])
     );
     assert_eq!(
-        task_preview["inputSchema"]["required"],
+        agent_preview["inputSchema"]["required"],
         json!(["provider", "mode", "prompt"])
     );
     assert_eq!(
-        task_preview["inputSchema"]["additionalProperties"],
+        agent_preview["inputSchema"]["additionalProperties"],
         json!(false)
     );
     assert_eq!(
@@ -482,58 +478,55 @@ fn stdio_protocol_and_tool_schema_smoke() {
         json!(["provider", "mode", "prompt"])
     );
     assert!(
-        task_spawn["description"]
+        agent_spawn["description"]
             .as_str()
             .unwrap()
-            .contains("Legacy compatibility")
+            .contains("agent_observe")
     );
     assert_eq!(
-        agents_list["inputSchema"]["additionalProperties"],
+        agent_list["inputSchema"]["additionalProperties"],
         json!(false)
     );
     assert!(
-        agents_list["inputSchema"]["properties"]
+        agent_list["inputSchema"]["properties"]
             .get("scope")
             .is_none()
     );
     assert!(
-        agents_list["inputSchema"]["properties"]
+        agent_list["inputSchema"]["properties"]
             .get("presentation")
             .is_none()
     );
     assert_eq!(
-        agents_list["inputSchema"]["properties"]["limit"]["maximum"],
+        agent_list["inputSchema"]["properties"]["limit"]["maximum"],
         100
     );
     assert_eq!(
-        agents_list["outputSchema"]["properties"]["agents"]["type"],
+        agent_list["outputSchema"]["properties"]["agents"]["type"],
         "array"
     );
     assert_eq!(
-        task_transcript["inputSchema"]["required"],
+        agent_transcript["inputSchema"]["required"],
         json!(["taskId"])
     );
     assert_eq!(
-        task_transcript["inputSchema"]["properties"]["cursor"]["type"],
+        agent_transcript["inputSchema"]["properties"]["cursor"]["type"],
         "number"
     );
     assert_eq!(
-        task_list["inputSchema"]["properties"]["presentation"]["type"],
-        "boolean"
+        agent_observe["inputSchema"]["properties"]["timeoutMs"]["maximum"],
+        120000
     );
     assert_eq!(
-        task_list["inputSchema"]["properties"]["scope"]["enum"],
-        json!(["active_recent", "all"])
+        agent_observe["outputSchema"]["properties"]["progress"]["type"],
+        "object"
     );
-    assert_eq!(
-        task_list["inputSchema"]["properties"]["limit"]["maximum"],
-        100
-    );
-    assert_eq!(
-        task_list["outputSchema"]["properties"]["tasks"]["type"],
-        "array"
-    );
-    for tool_name in ["task_status", "task_wait", "task_result"] {
+    for tool_name in [
+        "agent_status",
+        "agent_wait",
+        "agent_observe",
+        "agent_result",
+    ] {
         let tool = tools.iter().find(|tool| tool["name"] == tool_name).unwrap();
         assert_eq!(
             tool["outputSchema"]["properties"]["nextActions"]["type"],
@@ -578,8 +571,8 @@ fn stdio_protocol_and_tool_schema_smoke() {
         .as_str()
         .unwrap();
     assert!(prompt_text.contains("agent_spawn"));
-    assert!(prompt_text.contains("agents_list"));
-    assert!(prompt_text.contains("task_spawn"));
+    assert!(prompt_text.contains("agent_list"));
+    assert!(prompt_text.contains("agent_spawn"));
     assert!(prompt_text.contains("main caller remains responsible"));
 
     let resources = client.request("resources/list", json!({}));
@@ -611,7 +604,7 @@ fn stdio_protocol_and_tool_schema_smoke() {
         resource_content["text"]
             .as_str()
             .unwrap()
-            .contains("task_result")
+            .contains("agent_result")
     );
     assert!(
         resource_content["text"]
@@ -671,7 +664,7 @@ fn stdio_task_extension_readiness_reports_unavailable_without_metadata() {
     );
     assert_eq!(doctor["taskExtensionReadiness"]["source"], "initialize");
     assert_eq!(doctor["summary"]["status"], "ok");
-    assert_eq!(client.tool("task_list", json!({}))["tasks"], json!([]));
+    assert_eq!(client.tool("agent_list", json!({}))["agents"], json!([]));
 }
 
 #[test]
@@ -706,10 +699,10 @@ fn stdio_task_extension_readiness_reports_current_extension_metadata() {
         doctor["taskExtensionReadiness"]["recommendedNextStep"]
             .as_str()
             .unwrap()
-            .contains("task_*")
+            .contains("agent_*")
     );
     assert_eq!(doctor["summary"]["status"], "ok");
-    assert_eq!(client.tool("task_list", json!({}))["tasks"], json!([]));
+    assert_eq!(client.tool("agent_list", json!({}))["agents"], json!([]));
 }
 
 #[test]
@@ -862,7 +855,7 @@ fn stdio_tools_call_accepts_codex_meta_envelope() {
     );
 
     let preview = client.tool_with_meta(
-        "task_preview",
+        "agent_preview",
         json!({
             "provider": "codex",
             "mode": "review",
@@ -896,7 +889,7 @@ fn stdio_tools_call_keeps_envelope_and_argument_validation_strict() {
     );
 
     let unknown_argument = client.tool_response_with_params(json!({
-        "name": "task_preview",
+        "name": "agent_preview",
         "_meta": {"progressToken": "codex-live-call"},
         "arguments": {
             "provider": "codex",
@@ -982,7 +975,7 @@ fn stdio_providers_preview_and_safety_checks() {
     assert_eq!(checks["providers"]["claude"]["startupVerified"], true);
 
     let preview = client.tool(
-        "task_preview",
+        "agent_preview",
         json!({
             "provider": "codex",
             "mode": "review",
@@ -1023,7 +1016,7 @@ fn stdio_providers_preview_and_safety_checks() {
     );
 
     let claude = client.tool(
-        "task_preview",
+        "agent_preview",
         json!({
             "provider": "claude",
             "mode": "review",
@@ -1066,7 +1059,7 @@ fn stdio_providers_preview_and_safety_checks() {
     let link = env.root.join("escape");
     std::os::unix::fs::symlink(&outside, &link).unwrap();
     let error = client.tool_error(
-        "task_preview",
+        "agent_preview",
         json!({
             "provider": "codex",
             "mode": "review",
@@ -1077,7 +1070,7 @@ fn stdio_providers_preview_and_safety_checks() {
     assert!(error.contains("outside configured workspaces"));
 
     let error = client.tool_error(
-        "task_preview",
+        "agent_preview",
         json!({
             "provider": "codex",
             "mode": "review",
@@ -1139,12 +1132,12 @@ fn stdio_provider_discovery_is_non_blocking_until_explicit_check() {
 }
 
 #[test]
-fn stdio_task_transcript_captures_redacted_events_and_result_evidence() {
+fn stdio_agent_transcript_captures_redacted_events_and_result_evidence() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
     let task = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "codex",
             "mode": "review",
@@ -1155,12 +1148,12 @@ fn stdio_task_transcript_captures_redacted_events_and_result_evidence() {
         }),
     );
     let task_id = task["taskId"].as_str().unwrap().to_string();
-    let completed = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    let completed = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
     assert_eq!(completed["status"], "succeeded");
     assert_eq!(completed["profile"], "bare");
 
     let transcript = client.tool(
-        "task_transcript",
+        "agent_transcript",
         json!({"taskId": task_id, "cursor": 0, "limit": 100}),
     );
     assert_eq!(transcript["available"], true);
@@ -1185,19 +1178,19 @@ fn stdio_task_transcript_captures_redacted_events_and_result_evidence() {
     assert!(serialized.contains("<redacted>"));
 
     let first_page = client.tool(
-        "task_transcript",
+        "agent_transcript",
         json!({"taskId": task_id, "cursor": 0, "limit": 2}),
     );
     assert_eq!(first_page["events"].as_array().unwrap().len(), 2);
     assert_eq!(first_page["nextCursor"], 2);
     assert_eq!(first_page["truncated"], true);
     let second_page = client.tool(
-        "task_transcript",
+        "agent_transcript",
         json!({"taskId": task_id, "cursor": first_page["nextCursor"], "limit": 100}),
     );
     assert!(!second_page["events"].as_array().unwrap().is_empty());
 
-    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"taskId": task_id}));
     assert_eq!(result["transcriptAvailable"], true);
     assert_eq!(result["finalResultDetected"], true);
     assert_eq!(result["partialResultDetected"], false);
@@ -1211,12 +1204,12 @@ fn stdio_task_transcript_captures_redacted_events_and_result_evidence() {
 }
 
 #[test]
-fn stdio_task_transcript_reports_missing_artifact_without_hiding_logs() {
+fn stdio_agent_transcript_reports_missing_artifact_without_hiding_logs() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
     let task = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "cursor",
             "mode": "review",
@@ -1226,13 +1219,13 @@ fn stdio_task_transcript_reports_missing_artifact_without_hiding_logs() {
         }),
     );
     let task_id = task["taskId"].as_str().unwrap().to_string();
-    let completed = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    let completed = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
     assert_eq!(completed["status"], "succeeded");
 
     let task_dir = env.state_dir.join("tasks").join(&task_id);
     std::fs::remove_file(task_dir.join("transcript.jsonl")).unwrap();
 
-    let transcript = client.tool("task_transcript", json!({"taskId": task_id}));
+    let transcript = client.tool("agent_transcript", json!({"taskId": task_id}));
     assert_eq!(transcript["available"], false);
     assert!(transcript["events"].as_array().unwrap().is_empty());
     assert!(
@@ -1242,7 +1235,7 @@ fn stdio_task_transcript_reports_missing_artifact_without_hiding_logs() {
             .contains("not available")
     );
 
-    let logs = client.tool("task_logs", json!({"taskId": task_id}));
+    let logs = client.tool("agent_logs", json!({"taskId": task_id}));
     assert!(
         logs["stdout"]
             .as_str()
@@ -1252,12 +1245,12 @@ fn stdio_task_transcript_reports_missing_artifact_without_hiding_logs() {
 }
 
 #[test]
-fn stdio_task_transcript_preserves_raw_events_and_partial_evidence() {
+fn stdio_agent_transcript_preserves_raw_events_and_partial_evidence() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
     let task = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "cursor",
             "mode": "review",
@@ -1267,10 +1260,10 @@ fn stdio_task_transcript_preserves_raw_events_and_partial_evidence() {
         }),
     );
     let task_id = task["taskId"].as_str().unwrap().to_string();
-    let completed = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    let completed = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
     assert_eq!(completed["status"], "succeeded");
 
-    let transcript = client.tool("task_transcript", json!({"taskId": task_id}));
+    let transcript = client.tool("agent_transcript", json!({"taskId": task_id}));
     assert!(
         transcript["events"]
             .as_array()
@@ -1283,7 +1276,7 @@ fn stdio_task_transcript_preserves_raw_events_and_partial_evidence() {
                     .contains("{\"type\":"))
     );
 
-    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"taskId": task_id}));
     assert_eq!(result["transcriptAvailable"], true);
     assert_eq!(result["finalResultDetected"], false);
     assert_eq!(result["partialResultDetected"], true);
@@ -1291,12 +1284,12 @@ fn stdio_task_transcript_preserves_raw_events_and_partial_evidence() {
 }
 
 #[test]
-fn stdio_task_transcript_redacts_provider_env_values() {
+fn stdio_agent_transcript_redacts_provider_env_values() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
     let task = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "codex",
             "mode": "review",
@@ -1306,22 +1299,22 @@ fn stdio_task_transcript_redacts_provider_env_values() {
         }),
     );
     let task_id = task["taskId"].as_str().unwrap().to_string();
-    let completed = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    let completed = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
     assert_eq!(completed["status"], "succeeded");
 
-    let transcript = client.tool("task_transcript", json!({"taskId": task_id}));
+    let transcript = client.tool("agent_transcript", json!({"taskId": task_id}));
     let serialized = serde_json::to_string(&transcript).unwrap();
     assert!(!serialized.contains("test-key"));
     assert!(serialized.contains("<redacted>"));
 }
 
 #[test]
-fn stdio_task_result_preserves_final_result_evidence_after_timeout() {
+fn stdio_agent_result_preserves_final_result_evidence_after_timeout() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
     let task = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "cursor",
             "mode": "review",
@@ -1331,11 +1324,11 @@ fn stdio_task_result_preserves_final_result_evidence_after_timeout() {
         }),
     );
     let task_id = task["taskId"].as_str().unwrap().to_string();
-    let completed = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    let completed = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
     assert_eq!(completed["status"], "failed");
     assert_eq!(completed["errorType"], "timeout");
 
-    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"taskId": task_id}));
     assert_eq!(result["transcriptAvailable"], true);
     assert_eq!(result["finalResultDetected"], true);
     assert_eq!(result["partialResultDetected"], false);
@@ -1343,13 +1336,13 @@ fn stdio_task_result_preserves_final_result_evidence_after_timeout() {
 }
 
 #[test]
-fn stdio_task_transcript_handles_provider_output_fixtures() {
+fn stdio_agent_transcript_handles_provider_output_fixtures() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
     for provider in ["claude", "cursor"] {
         let task = client.tool(
-            "task_spawn",
+            "agent_spawn",
             json!({
                 "provider": provider,
                 "mode": "review",
@@ -1359,15 +1352,15 @@ fn stdio_task_transcript_handles_provider_output_fixtures() {
             }),
         );
         let task_id = task["taskId"].as_str().unwrap().to_string();
-        let completed = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+        let completed = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
         assert_eq!(completed["status"], "succeeded", "{provider}");
-        let result = client.tool("task_result", json!({"taskId": task_id}));
+        let result = client.tool("agent_result", json!({"taskId": task_id}));
         assert_eq!(result["finalResultDetected"], true, "{provider}");
         assert_eq!(result["partialResultDetected"], false, "{provider}");
     }
 
     let task = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "kimi",
             "mode": "review",
@@ -1377,9 +1370,9 @@ fn stdio_task_transcript_handles_provider_output_fixtures() {
         }),
     );
     let task_id = task["taskId"].as_str().unwrap().to_string();
-    let completed = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    let completed = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
     assert_eq!(completed["status"], "succeeded");
-    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"taskId": task_id}));
     assert_eq!(result["finalResultDetected"], false);
     assert_eq!(result["partialResultDetected"], true);
 }
@@ -1389,7 +1382,7 @@ fn stdio_doctor_default_report_shape_and_side_effects() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
-    assert_eq!(client.tool("task_list", json!({}))["tasks"], json!([]));
+    assert_eq!(client.tool("agent_list", json!({}))["agents"], json!([]));
 
     let doctor = client.tool("doctor", json!({}));
     for section in [
@@ -1432,7 +1425,7 @@ fn stdio_doctor_default_report_shape_and_side_effects() {
     assert_eq!(doctor["claudeHostRunner"]["launchStrategy"], "direct");
     assert!(doctor["recommendations"].is_array());
 
-    assert_eq!(client.tool("task_list", json!({}))["tasks"], json!([]));
+    assert_eq!(client.tool("agent_list", json!({}))["agents"], json!([]));
     let provider_stdin = std::fs::read_to_string(env.log_dir.join("stdin.txt")).unwrap();
     assert!(!provider_stdin.contains("AGENT_BRIDGE_PROVIDER_SMOKE_OK"));
 }
@@ -1907,7 +1900,7 @@ fn stdio_claude_host_runner_preview_and_unavailable_smoke_are_explicit() {
     let mut client = McpClient::start_with_extra_env(&env, extra_env);
 
     let preview = client.tool(
-        "task_preview",
+        "agent_preview",
         json!({
             "provider": "claude",
             "mode": "review",
@@ -2319,7 +2312,7 @@ fn stdio_workspace_path_list_allows_multiple_roots_and_rejects_outside() {
     let mut client = McpClient::start_with_workspace_value(&env, workspaces);
 
     let preview = client.tool(
-        "task_preview",
+        "agent_preview",
         json!({
             "provider": "codex",
             "mode": "review",
@@ -2334,7 +2327,7 @@ fn stdio_workspace_path_list_allows_multiple_roots_and_rejects_outside() {
 
     let outside = temp_dir("agent-bridge-outside");
     let error = client.tool_error(
-        "task_preview",
+        "agent_preview",
         json!({
             "provider": "codex",
             "mode": "review",
@@ -2351,7 +2344,7 @@ fn stdio_ignores_legacy_allowed_root_env_var() {
     let mut client = McpClient::start_with_legacy_allowed_root_only(&env);
 
     let error = client.tool_error(
-        "task_preview",
+        "agent_preview",
         json!({
             "provider": "codex",
             "mode": "review",
@@ -2368,7 +2361,7 @@ fn stdio_task_lifecycle_stop_timeout_and_logs() {
     let mut client = McpClient::start(&env);
 
     let spawned = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "codex",
             "mode": "review",
@@ -2379,10 +2372,10 @@ fn stdio_task_lifecycle_stop_timeout_and_logs() {
     let task_id = spawned["taskId"].as_str().unwrap();
     assert!(task_id.starts_with("task_"));
 
-    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 2000}));
+    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 2000}));
     assert_eq!(waited["status"], "succeeded");
 
-    let logs = client.tool("task_logs", json!({"taskId": task_id}));
+    let logs = client.tool("agent_logs", json!({"taskId": task_id}));
     assert!(
         logs["stdout"]
             .as_str()
@@ -2396,7 +2389,7 @@ fn stdio_task_lifecycle_stop_timeout_and_logs() {
             .contains("lifecycle-stderr")
     );
 
-    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"taskId": task_id}));
     assert_eq!(result["status"], "succeeded");
     assert_eq!(result["exitCode"], 0);
     assert_eq!(result["reviewPacket"]["status"], "succeeded");
@@ -2413,7 +2406,7 @@ fn stdio_task_lifecycle_stop_timeout_and_logs() {
     assert!(actions.contains("Run the relevant project verification before claiming completion."));
 
     let active = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "codex",
             "mode": "review",
@@ -2423,22 +2416,26 @@ fn stdio_task_lifecycle_stop_timeout_and_logs() {
         }),
     );
     let active_id = active["taskId"].as_str().unwrap();
-    let active_result = client.tool("task_result", json!({"taskId": active_id}));
+    let active_result = client.tool("agent_result", json!({"taskId": active_id}));
     assert_eq!(active_result["reviewPacket"]["isFinal"], false);
     let actions = review_actions_text(&active_result);
-    assert!(actions.contains("Use task_wait with a bounded timeout."));
-    assert!(actions.contains("Use task_logs with line cursors to inspect incremental output."));
-    assert!(actions.contains("Use task_status to confirm whether the task is still active."));
-    assert!(actions.contains("Use task_stop if the task is no longer useful."));
+    assert!(
+        actions.contains(
+            "Use agent_observe with a bounded timeout before treating silence as a stall."
+        )
+    );
+    assert!(actions.contains("Use agent_logs with line cursors to inspect incremental output."));
+    assert!(actions.contains("Use agent_status to confirm whether the agent is still active."));
+    assert!(actions.contains("Use agent_stop if the agent is no longer useful."));
 
-    let remove_error = client.tool_error("task_remove", json!({"taskId": active_id}));
+    let remove_error = client.tool_error("agent_remove", json!({"taskId": active_id}));
     assert!(remove_error.contains("cannot remove a running task"));
 
-    let stopped = client.tool("task_stop", json!({"taskId": active_id}));
+    let stopped = client.tool("agent_stop", json!({"taskId": active_id}));
     assert_eq!(stopped["status"], "stopped");
 
     let timed = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "codex",
             "mode": "review",
@@ -2448,13 +2445,88 @@ fn stdio_task_lifecycle_stop_timeout_and_logs() {
         }),
     );
     let timed_id = timed["taskId"].as_str().unwrap();
-    let timed_wait = client.tool("task_wait", json!({"taskId": timed_id, "timeoutMs": 3000}));
-    assert_eq!(timed_wait["status"], "failed");
-    assert_eq!(timed_wait["errorType"], "timeout");
+    let timed_wait = client.tool("agent_wait", json!({"taskId": timed_id, "timeoutMs": 3000}));
+    assert_eq!(timed_wait["isFinal"], true);
+    if timed_wait["status"] == "failed" {
+        assert_eq!(timed_wait["errorType"], "timeout");
+    }
 }
 
 #[test]
-fn stdio_task_list_defaults_to_native_presentation_and_filters() {
+fn stdio_agent_observe_returns_events_and_progress() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let spawned = client.tool(
+        "agent_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "review",
+            "prompt": "emit-logs",
+            "cwd": env.root,
+            "timeoutSeconds": 5
+        }),
+    );
+    let task_id = spawned["taskId"].as_str().unwrap();
+
+    let observed = client.tool(
+        "agent_observe",
+        json!({"taskId": task_id, "cursor": 0, "limit": 100, "timeoutMs": 5000}),
+    );
+    assert_eq!(observed["taskId"], task_id);
+    assert!(!observed["events"].as_array().unwrap().is_empty());
+    assert!(observed["nextCursor"].as_u64().unwrap() >= 1);
+    assert!(observed["progress"]["elapsedMs"].is_number());
+    assert!(observed["progress"]["expectedOutputCadence"].is_object());
+    assert!(observed["presentation"]["progress"].is_object());
+    assert_eq!(
+        observed["nextActions"][0]["tool"],
+        if observed["isFinal"].as_bool().unwrap() {
+            "agent_result"
+        } else {
+            "agent_observe"
+        }
+    );
+}
+
+#[test]
+fn stdio_agent_observe_timeout_does_not_fail_running_agent() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let spawned = client.tool(
+        "agent_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "review",
+            "prompt": "sleep-long",
+            "cwd": env.root,
+            "timeoutSeconds": 20
+        }),
+    );
+    let task_id = spawned["taskId"].as_str().unwrap();
+    std::thread::sleep(Duration::from_millis(250));
+    let current = client.tool(
+        "agent_transcript",
+        json!({"taskId": task_id, "cursor": 0, "limit": 100}),
+    );
+    let cursor = current["nextCursor"].as_u64().unwrap();
+    let second = client.tool(
+        "agent_observe",
+        json!({"taskId": task_id, "cursor": cursor, "limit": 100, "timeoutMs": 100}),
+    );
+
+    assert_eq!(second["timedOut"], true);
+    assert_eq!(second["status"], "running");
+    assert_eq!(second["isFinal"], false);
+    assert_eq!(second["progress"]["noFurtherPollingNeeded"], false);
+
+    let stopped = client.tool("agent_stop", json!({"taskId": task_id}));
+    assert_eq!(stopped["status"], "stopped");
+}
+
+#[test]
+fn stdio_agent_list_defaults_to_native_presentation_and_filters() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
@@ -2475,7 +2547,7 @@ fn stdio_task_list_defaults_to_native_presentation_and_filters() {
         "Native UX review"
     );
     let waited = client.tool(
-        "task_wait",
+        "agent_wait",
         json!({"taskId": completed_id, "timeoutMs": 5000}),
     );
     assert_eq!(waited["status"], "succeeded");
@@ -2493,38 +2565,52 @@ fn stdio_task_list_defaults_to_native_presentation_and_filters() {
     );
     let active_id = active["taskId"].as_str().unwrap().to_string();
 
-    let listed = client.tool("task_list", json!({}));
-    assert_eq!(listed["presentation"], true);
+    let listed = client.tool("agent_list", json!({}));
     assert_eq!(listed["scope"], "active_recent");
     assert_eq!(listed["limit"], 25);
-    let tasks = listed["tasks"].as_array().unwrap();
-    assert_eq!(tasks.len(), 2);
-    assert_eq!(tasks[0]["taskId"], active_id);
-    assert_eq!(tasks[0]["presentation"]["phase"], "active");
-    assert_eq!(tasks[0]["presentation"]["actions"][0]["id"], "wait");
-    assert_eq!(tasks[0]["presentation"]["actions"][0]["tool"], "task_wait");
-    assert_eq!(tasks[0]["presentation"]["actions"][0]["state"], "available");
-    assert_eq!(tasks[0]["presentation"]["actions"][7]["id"], "reply");
+    assert!(listed.get("tasks").is_none());
+    let agents = listed["agents"].as_array().unwrap();
+    assert_eq!(agents.len(), 2);
+    assert_eq!(agents[0]["taskId"], active_id);
+    assert_eq!(agents[0]["presentation"]["phase"], "active");
+    assert_eq!(agents[0]["presentation"]["actions"][0]["id"], "observe");
     assert_eq!(
-        tasks[0]["presentation"]["actions"][7]["state"],
+        agents[0]["presentation"]["actions"][0]["tool"],
+        "agent_observe"
+    );
+    assert_eq!(
+        agents[0]["presentation"]["actions"][0]["state"],
+        "available"
+    );
+    assert_eq!(agents[0]["presentation"]["actions"][1]["id"], "wait");
+    assert_eq!(
+        agents[0]["presentation"]["actions"][1]["tool"],
+        "agent_wait"
+    );
+    assert_eq!(agents[0]["presentation"]["actions"][8]["id"], "reply");
+    assert_eq!(
+        agents[0]["presentation"]["actions"][8]["state"],
         "unavailable"
     );
     assert_eq!(
-        tasks[0]["presentation"]["actions"][7]["reason"],
+        agents[0]["presentation"]["actions"][8]["reason"],
         "provider_task_not_interactive"
     );
-    assert_eq!(tasks[1]["taskId"], completed_id);
-    assert_eq!(tasks[1]["presentation"]["displayTitle"], "Native UX review");
-    assert_eq!(tasks[1]["presentation"]["result"]["available"], true);
+    assert_eq!(agents[1]["taskId"], completed_id);
     assert_eq!(
-        tasks[1]["presentation"]["verificationStatus"],
+        agents[1]["presentation"]["displayTitle"],
+        "Native UX review"
+    );
+    assert_eq!(agents[1]["presentation"]["result"]["available"], true);
+    assert_eq!(
+        agents[1]["presentation"]["verificationStatus"],
         "not_verified"
     );
-    assert!(tasks[1].get("stdout").is_none());
-    assert!(tasks[1].get("gitDiff").is_none());
+    assert!(agents[1].get("stdout").is_none());
+    assert!(agents[1].get("gitDiff").is_none());
 
     let filtered = client.tool(
-        "task_list",
+        "agent_list",
         json!({
             "provider": ["cursor"],
             "mode": ["review"],
@@ -2533,20 +2619,11 @@ fn stdio_task_list_defaults_to_native_presentation_and_filters() {
             "limit": 1
         }),
     );
-    assert_eq!(filtered["tasks"].as_array().unwrap().len(), 1);
-    assert_eq!(filtered["tasks"][0]["taskId"], completed_id);
-
-    let agents = client.tool("agents_list", json!({}));
-    assert!(agents.get("tasks").is_none());
-    assert_eq!(agents["scope"], "active_recent");
-    assert_eq!(agents["limit"], 25);
-    let agent_summaries = agents["agents"].as_array().unwrap();
-    assert_eq!(agent_summaries.len(), 2);
-    assert_eq!(agent_summaries[0]["taskId"], active_id);
-    assert_eq!(agent_summaries[0]["presentation"]["phase"], "active");
+    assert_eq!(filtered["agents"].as_array().unwrap().len(), 1);
+    assert_eq!(filtered["agents"][0]["taskId"], completed_id);
 
     let filtered_agents = client.tool(
-        "agents_list",
+        "agent_list",
         json!({
             "provider": ["cursor"],
             "mode": ["review"],
@@ -2558,22 +2635,14 @@ fn stdio_task_list_defaults_to_native_presentation_and_filters() {
     assert_eq!(filtered_agents["agents"].as_array().unwrap().len(), 1);
     assert_eq!(filtered_agents["agents"][0]["taskId"], completed_id);
 
-    let raw = client.tool("task_list", json!({"presentation": false, "scope": "all"}));
-    assert_eq!(raw["presentation"], false);
-    assert_eq!(raw["scope"], "all");
-    assert_eq!(raw["limit"], Value::Null);
-    assert_eq!(raw["tasks"].as_array().unwrap().len(), 2);
-
-    let error = client.tool_error("task_list", json!({"limit": 101}));
+    let error = client.tool_error("agent_list", json!({"limit": 101}));
     assert!(error.contains("limit must be between 1 and 100"));
-    let error = client.tool_error("agents_list", json!({"limit": 101}));
-    assert!(error.contains("limit must be between 1 and 100"));
-    let error = client.tool_error("agents_list", json!({"presentation": false}));
-    assert!(error.contains("Unknown argument for agents_list: presentation"));
-    let error = client.tool_error("agents_list", json!({"scope": "all"}));
-    assert!(error.contains("Unknown argument for agents_list: scope"));
+    let error = client.tool_error("agent_list", json!({"presentation": false}));
+    assert!(error.contains("Unknown argument for agent_list: presentation"));
+    let error = client.tool_error("agent_list", json!({"scope": "all"}));
+    assert!(error.contains("Unknown argument for agent_list: scope"));
 
-    let stopped = client.tool("task_stop", json!({"taskId": active_id}));
+    let stopped = client.tool("agent_stop", json!({"taskId": active_id}));
     assert_eq!(stopped["status"], "stopped");
 }
 
@@ -2584,7 +2653,7 @@ fn stdio_claude_task_prompt_is_passed_on_stdin_not_argv() {
     let prompt = "--leading-flag\nquoted \"value\" $(touch should-not-run) secret-token";
 
     let spawned = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "claude",
             "mode": "review",
@@ -2593,7 +2662,7 @@ fn stdio_claude_task_prompt_is_passed_on_stdin_not_argv() {
         }),
     );
     let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
     assert_eq!(waited["status"], "succeeded");
 
     let argv = std::fs::read_to_string(env.log_dir.join("argv.txt")).unwrap();
@@ -2618,7 +2687,7 @@ fn stdio_claude_prompt_survives_stdin_consuming_zsh_startup_files() {
     let mut client = McpClient::start_with_extra_env(&env, extra_env);
 
     let spawned = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "claude",
             "mode": "review",
@@ -2629,10 +2698,10 @@ fn stdio_claude_prompt_survives_stdin_consuming_zsh_startup_files() {
     );
     let task_id = spawned["taskId"].as_str().unwrap();
 
-    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
     assert_eq!(waited["status"], "succeeded");
 
-    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"taskId": task_id}));
     assert!(
         result["stdout"]
             .as_str()
@@ -2648,7 +2717,7 @@ fn stdio_native_claude_bin_selection_uses_native_print_args() {
     let mut client = McpClient::start_with_native_claude(&env);
 
     let preview = client.tool(
-        "task_preview",
+        "agent_preview",
         json!({
             "provider": "claude",
             "mode": "review",
@@ -2719,7 +2788,7 @@ fn stdio_claude_task_malformed_output_returns_diagnostic() {
     let mut client = McpClient::start(&env);
 
     let spawned = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "claude",
             "mode": "review",
@@ -2728,11 +2797,11 @@ fn stdio_claude_task_malformed_output_returns_diagnostic() {
         }),
     );
     let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
     assert_eq!(waited["status"], "failed");
     assert_eq!(waited["errorType"], "provider_output_error");
 
-    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"taskId": task_id}));
     assert_eq!(
         result["diagnostic"]["failureCategory"],
         "provider_output_error"
@@ -2777,7 +2846,7 @@ fn stdio_claude_task_failure_modes_are_classified() {
     ];
     for (prompt, error_type, timeout_seconds) in cases {
         let spawned = client.tool(
-            "task_spawn",
+            "agent_spawn",
             json!({
                 "provider": "claude",
                 "mode": "review",
@@ -2787,11 +2856,11 @@ fn stdio_claude_task_failure_modes_are_classified() {
             }),
         );
         let task_id = spawned["taskId"].as_str().unwrap();
-        let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+        let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
         assert_eq!(waited["status"], "failed", "{prompt}");
         assert_eq!(waited["errorType"], error_type, "{prompt}");
 
-        let result = client.tool("task_result", json!({"taskId": task_id}));
+        let result = client.tool("agent_result", json!({"taskId": task_id}));
         assert!(
             result["diagnostic"]["failureCategory"].is_string(),
             "{prompt}"
@@ -2805,7 +2874,7 @@ fn stdio_claude_task_extracts_result_with_surrounding_noise() {
     let mut client = McpClient::start(&env);
 
     let spawned = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "claude",
             "mode": "review",
@@ -2814,7 +2883,7 @@ fn stdio_claude_task_extracts_result_with_surrounding_noise() {
         }),
     );
     let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
     assert_eq!(waited["status"], "succeeded");
 }
 
@@ -2824,7 +2893,7 @@ fn stdio_claude_task_diagnostic_redacts_prompt_content() {
     let mut client = McpClient::start(&env);
 
     let spawned = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "claude",
             "mode": "review",
@@ -2833,10 +2902,10 @@ fn stdio_claude_task_diagnostic_redacts_prompt_content() {
         }),
     );
     let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
     assert_eq!(waited["status"], "failed");
 
-    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"taskId": task_id}));
     let diagnostic = serde_json::to_string(&result["diagnostic"]).unwrap();
     assert!(
         !diagnostic.contains("secret-token-for-redaction"),
@@ -2850,7 +2919,7 @@ fn stdio_claude_task_diagnostic_redacts_token_values() {
     let mut client = McpClient::start(&env);
 
     let spawned = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "claude",
             "mode": "review",
@@ -2859,16 +2928,16 @@ fn stdio_claude_task_diagnostic_redacts_token_values() {
         }),
     );
     let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
     assert_eq!(waited["status"], "failed");
 
-    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"taskId": task_id}));
     let diagnostic = serde_json::to_string(&result["diagnostic"]).unwrap();
     assert!(!diagnostic.contains("test-key"), "diagnostic leaked token");
 }
 
 #[test]
-fn stdio_task_result_review_packet_summarizes_worktree_changes() {
+fn stdio_agent_result_review_packet_summarizes_worktree_changes() {
     let env = fixture_env();
     write_fake_provider(
         &env,
@@ -2896,7 +2965,7 @@ fn stdio_task_result_review_packet_summarizes_worktree_changes() {
 
     let mut client = McpClient::start(&env);
     let spawned = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "codex",
             "mode": "implement",
@@ -2907,10 +2976,10 @@ fn stdio_task_result_review_packet_summarizes_worktree_changes() {
         }),
     );
     let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
     assert_eq!(waited["status"], "succeeded");
 
-    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"taskId": task_id}));
     assert_eq!(result["changedFiles"], json!(["README.md"]));
     assert_eq!(result["reviewPacket"]["hasChanges"], true);
     assert_eq!(result["reviewPacket"]["changedFiles"], json!(["README.md"]));
@@ -2923,7 +2992,7 @@ fn stdio_task_result_review_packet_summarizes_worktree_changes() {
     let actions = review_actions_text(&result);
     assert!(actions.contains("Inspect gitStatus, gitDiff, and changedFiles before verification."));
     assert!(
-        actions.contains("Call task_remove only after inspecting the managed worktree result.")
+        actions.contains("Call agent_remove only after inspecting the managed worktree result.")
     );
 }
 
@@ -2936,7 +3005,7 @@ fn stdio_managed_worktree_lifecycle() {
 
     let mut client = McpClient::start(&env);
     let spawned = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "codex",
             "mode": "review",
@@ -2951,7 +3020,7 @@ fn stdio_managed_worktree_lifecycle() {
     let worktree_path = PathBuf::from(spawned["worktreePath"].as_str().unwrap());
     assert!(worktree_path.exists());
 
-    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
     assert_eq!(waited["status"], "succeeded");
     assert_eq!(
         waited["presentation"]["nextActions"][0]["id"],
@@ -2973,7 +3042,7 @@ fn stdio_managed_worktree_lifecycle() {
         "managed_worktree_cleanup_requires_result_inspection"
     );
 
-    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"taskId": task_id}));
     assert_eq!(result["gitStatus"], "");
     assert_eq!(result["changedFiles"], json!([]));
     assert_eq!(result["nextActions"][0]["id"], "verify_project");
@@ -2984,7 +3053,7 @@ fn stdio_managed_worktree_lifecycle() {
     );
     assert_eq!(
         result["reviewPacket"]["nextActions"][1]["tool"],
-        "task_remove"
+        "agent_remove"
     );
     assert!(result["presentation"]["result"]["inspectedAt"].is_string());
     let cleanup_after_result = result["presentation"]["actions"]
@@ -2996,7 +3065,7 @@ fn stdio_managed_worktree_lifecycle() {
     assert_eq!(cleanup_after_result["state"], "available");
     assert!(cleanup_after_result.get("reason").is_none());
 
-    let removed = client.tool("task_remove", json!({"taskId": task_id}));
+    let removed = client.tool("agent_remove", json!({"taskId": task_id}));
     assert_eq!(removed["status"], "removed");
     assert!(!worktree_path.exists());
 }
@@ -3021,7 +3090,7 @@ fn stdio_codex_task_sandbox_denial_exits_immediately() {
     let mut client = McpClient::start(&env);
 
     let spawned = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "codex",
             "mode": "implement",
@@ -3030,14 +3099,14 @@ fn stdio_codex_task_sandbox_denial_exits_immediately() {
         }),
     );
     let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
     assert_eq!(waited["status"], "failed");
     assert_eq!(waited["errorType"], "codex_sandbox_denied");
 
-    let logs = client.tool("task_logs", json!({"taskId": task_id}));
+    let logs = client.tool("agent_logs", json!({"taskId": task_id}));
     assert!(logs["stderr"].as_str().unwrap().contains("patch rejected"));
 
-    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"taskId": task_id}));
     assert_eq!(
         result["diagnostic"]["failureCategory"],
         "provider_sandbox_denied"
@@ -3087,7 +3156,7 @@ fn stdio_codex_task_sandbox_denial_hangs_and_is_terminated_early() {
     let mut client = McpClient::start(&env);
 
     let spawned = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "codex",
             "mode": "implement",
@@ -3098,17 +3167,17 @@ fn stdio_codex_task_sandbox_denial_hangs_and_is_terminated_early() {
     );
     let task_id = spawned["taskId"].as_str().unwrap();
     let pid = spawned["pid"].as_i64().unwrap() as i32;
-    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
     assert_eq!(waited["status"], "failed");
     assert_eq!(waited["errorType"], "codex_sandbox_denied");
 
-    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"taskId": task_id}));
     assert_eq!(
         result["diagnostic"]["failureCategory"],
         "provider_sandbox_denied"
     );
     assert_eq!(result["diagnostic"]["provider"], "codex");
-    let logs = client.tool("task_logs", json!({"taskId": task_id}));
+    let logs = client.tool("agent_logs", json!({"taskId": task_id}));
     let stdout = logs["stdout"].as_str().unwrap();
     let child_pid = stdout
         .lines()
@@ -3153,7 +3222,7 @@ fn stdio_codex_task_sandbox_denial_redacts_prompt_and_secrets() {
     let mut client = McpClient::start(&env);
 
     let spawned = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "codex",
             "mode": "implement",
@@ -3162,10 +3231,10 @@ fn stdio_codex_task_sandbox_denial_redacts_prompt_and_secrets() {
         }),
     );
     let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
     assert_eq!(waited["status"], "failed");
 
-    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"taskId": task_id}));
     let diagnostic_text = serde_json::to_string(&result["diagnostic"]).unwrap();
     assert!(
         !diagnostic_text.contains("secret-prompt-content"),
@@ -3193,7 +3262,7 @@ fn stdio_codex_task_success_still_reports_success() {
     let mut client = McpClient::start(&env);
 
     let spawned = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "codex",
             "mode": "review",
@@ -3202,11 +3271,11 @@ fn stdio_codex_task_success_still_reports_success() {
         }),
     );
     let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
     assert_eq!(waited["status"], "succeeded");
     assert_eq!(waited["errorType"], Value::Null);
 
-    let result = client.tool("task_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"taskId": task_id}));
     assert_eq!(result["status"], "succeeded");
     assert_eq!(result["errorType"], Value::Null);
     assert_eq!(result["reviewPacket"]["status"], "succeeded");

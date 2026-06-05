@@ -48,6 +48,7 @@ pub fn capabilities() -> Value {
             "effort": ["low", "medium", "high", "xhigh", "max"],
             "launchProfiles": ["bridge", "bare"],
             "presentationActions": presentation_actions(),
+            "outputCadence": output_cadence(ProviderKind::Claude),
             "readiness": default_readiness(),
             "reducedConfiguration": reduced_configuration(ProviderKind::Claude)
         },
@@ -58,6 +59,7 @@ pub fn capabilities() -> Value {
             "supportsWorktreeIsolation": true,
             "launchProfiles": ["bridge", "bare"],
             "presentationActions": presentation_actions(),
+            "outputCadence": output_cadence(ProviderKind::Cursor),
             "readiness": default_readiness(),
             "reducedConfiguration": reduced_configuration(ProviderKind::Cursor)
         },
@@ -69,6 +71,7 @@ pub fn capabilities() -> Value {
             "thinking": ["off", "minimal", "low", "medium", "high", "xhigh"],
             "launchProfiles": ["bridge", "bare"],
             "presentationActions": presentation_actions(),
+            "outputCadence": output_cadence(ProviderKind::Kimi),
             "readiness": default_readiness(),
             "reducedConfiguration": reduced_configuration(ProviderKind::Kimi)
         },
@@ -80,6 +83,7 @@ pub fn capabilities() -> Value {
             "thinking": ["low", "medium", "high", "xhigh"],
             "launchProfiles": ["bridge", "bare"],
             "presentationActions": presentation_actions(),
+            "outputCadence": output_cadence(ProviderKind::Codex),
             "readiness": default_readiness(),
             "reducedConfiguration": reduced_configuration(ProviderKind::Codex)
         }
@@ -89,6 +93,7 @@ pub fn capabilities() -> Value {
 fn presentation_actions() -> Value {
     json!({
         "wait": "supported",
+        "observe": "supported",
         "inspectStatus": "supported",
         "inspectLogs": "supported",
         "inspectTranscript": "supported",
@@ -98,6 +103,47 @@ fn presentation_actions() -> Value {
         "reply": "unsupported",
         "resume": "unsupported"
     })
+}
+
+pub fn output_cadence(provider: ProviderKind) -> Value {
+    match provider {
+        ProviderKind::Cursor => json!({
+            "cadence": "final_json",
+            "firstOutputExpected": "near_final",
+            "recommendedPollMs": 30000,
+            "recommendedSilentBudgetMs": 240000,
+            "fallbackAfterMs": 300000,
+            "advisory": true,
+            "note": "Cursor JSON output may be silent until final completion."
+        }),
+        ProviderKind::Claude => json!({
+            "cadence": "provider_dependent",
+            "firstOutputExpected": "unknown",
+            "recommendedPollMs": 30000,
+            "recommendedSilentBudgetMs": 120000,
+            "fallbackAfterMs": 180000,
+            "advisory": true,
+            "note": "Claude output cadence varies by launch strategy and host runner."
+        }),
+        ProviderKind::Kimi => json!({
+            "cadence": "provider_dependent",
+            "firstOutputExpected": "intermittent",
+            "recommendedPollMs": 30000,
+            "recommendedSilentBudgetMs": 120000,
+            "fallbackAfterMs": 180000,
+            "advisory": true,
+            "note": "Kimi output cadence is provider-dependent."
+        }),
+        ProviderKind::Codex => json!({
+            "cadence": "provider_dependent",
+            "firstOutputExpected": "intermittent",
+            "recommendedPollMs": 30000,
+            "recommendedSilentBudgetMs": 120000,
+            "fallbackAfterMs": 180000,
+            "advisory": true,
+            "note": "Codex output cadence is provider-dependent."
+        }),
+    }
 }
 
 fn default_readiness() -> Value {

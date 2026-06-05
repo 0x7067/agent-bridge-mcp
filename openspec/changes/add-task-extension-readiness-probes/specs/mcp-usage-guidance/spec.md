@@ -5,7 +5,7 @@ The system SHALL explain that task-extension readiness probes are diagnostic evi
 
 #### Scenario: Guidance keeps task execution on Agent Bridge tools
 - **WHEN** a client reads task-extension readiness guidance
-- **THEN** the guidance states that Agent Bridge `task_*` tools remain the supported execution lifecycle.
+- **THEN** the guidance states that Agent Bridge `agent_*` tools remain the supported execution lifecycle.
 
 #### Scenario: Guidance names blocked protocol task support
 - **WHEN** guidance describes task-extension readiness

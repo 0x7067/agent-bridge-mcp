@@ -62,9 +62,9 @@ async fn guidance_prompts_are_listed_and_retrievable() {
     let text = result["messages"][0]["content"]["text"].as_str().unwrap();
 
     assert!(text.contains("agent_spawn"));
-    assert!(text.contains("agents_list"));
-    assert!(text.contains("task_spawn"));
-    assert!(text.contains("task_result"));
+    assert!(text.contains("agent_list"));
+    assert!(text.contains("agent_observe"));
+    assert!(text.contains("agent_result"));
     assert!(text.contains("main caller remains responsible"));
 
     let response = handle_request(request(
@@ -137,7 +137,7 @@ async fn guidance_resources_are_listed_and_read_from_allowlist() {
     );
     assert!(content["text"].as_str().unwrap().contains("doctor"));
     assert!(content["text"].as_str().unwrap().contains("reviewPacket"));
-    assert!(content["text"].as_str().unwrap().contains("task_remove"));
+    assert!(content["text"].as_str().unwrap().contains("agent_remove"));
 
     let response = handle_request(request(
         "resources/read",
@@ -178,7 +178,7 @@ fn assert_codex_denial_guidance(text: &str, surface: &str) {
         "{surface} should mention Codex denial symptoms"
     );
 
-    for tool in ["task_wait", "task_logs", "task_status", "task_result"] {
+    for tool in ["agent_wait", "agent_logs", "agent_status", "agent_result"] {
         assert!(text.contains(tool), "{surface} should mention {tool}");
     }
 
@@ -279,18 +279,17 @@ async fn tools_list_returns_current_public_tool_names() {
             "providers_list",
             "providers_check",
             "doctor",
-            "task_preview",
+            "agent_preview",
             "agent_spawn",
-            "agents_list",
-            "task_spawn",
-            "task_list",
-            "task_status",
-            "task_wait",
-            "task_logs",
-            "task_transcript",
-            "task_result",
-            "task_stop",
-            "task_remove"
+            "agent_list",
+            "agent_status",
+            "agent_wait",
+            "agent_logs",
+            "agent_transcript",
+            "agent_observe",
+            "agent_result",
+            "agent_stop",
+            "agent_remove"
         ]
     );
 }
@@ -412,6 +411,18 @@ async fn providers_list_returns_tool_json_payload() {
         payload["providers"]["codex"]["presentationActions"]["inspectResult"],
         "supported"
     );
+    assert_eq!(
+        payload["providers"]["cursor"]["presentationActions"]["observe"],
+        "supported"
+    );
+    assert_eq!(
+        payload["providers"]["cursor"]["outputCadence"]["cadence"],
+        "final_json"
+    );
+    assert_eq!(
+        payload["providers"]["cursor"]["outputCadence"]["advisory"],
+        true
+    );
     assert_eq!(payload["providers"]["codex"]["readiness"]["state"], "stale");
     assert_eq!(
         payload["providers"]["codex"]["readiness"]["launchable"],
@@ -424,42 +435,17 @@ async fn providers_list_returns_tool_json_payload() {
 }
 
 #[tokio::test]
-async fn task_list_schema_exposes_presentation_filters() {
+async fn canonical_agent_lifecycle_schemas_are_listed() {
     let response = handle_request(request("tools/list", 15, serde_json::json!({}))).await;
     let result = response.unwrap().result.unwrap();
     let tools = result["tools"].as_array().unwrap();
-    let task_list = tools
-        .iter()
-        .find(|tool| tool["name"] == "task_list")
-        .expect("task_list tool should be listed");
-    let properties = &task_list["inputSchema"]["properties"];
 
-    assert_eq!(task_list["inputSchema"]["additionalProperties"], false);
-    assert_eq!(task_list["inputSchema"]["required"], serde_json::json!([]));
-    assert_eq!(
-        task_list["outputSchema"]["properties"]["tasks"]["type"],
-        "array"
-    );
-    assert_eq!(properties["presentation"]["type"], "boolean");
-    assert_eq!(
-        properties["scope"]["enum"],
-        serde_json::json!(["active_recent", "all"])
-    );
-    assert_eq!(
-        properties["status"]["items"]["enum"],
-        serde_json::json!([
-            "queued",
-            "running",
-            "succeeded",
-            "failed",
-            "stopped",
-            "failed_stale",
-            "removed"
-        ])
-    );
-    assert_eq!(properties["limit"]["maximum"], 100);
-
-    for tool_name in ["task_status", "task_wait", "task_result"] {
+    for tool_name in [
+        "agent_status",
+        "agent_wait",
+        "agent_observe",
+        "agent_result",
+    ] {
         let tool = tools
             .iter()
             .find(|tool| tool["name"] == tool_name)
@@ -472,23 +458,20 @@ async fn task_list_schema_exposes_presentation_filters() {
 }
 
 #[tokio::test]
-async fn agents_list_schema_exposes_bounded_presentation_filters() {
+async fn agent_list_schema_exposes_bounded_presentation_filters() {
     let response = handle_request(request("tools/list", 16, serde_json::json!({}))).await;
     let result = response.unwrap().result.unwrap();
     let tools = result["tools"].as_array().unwrap();
-    let agents_list = tools
+    let agent_list = tools
         .iter()
-        .find(|tool| tool["name"] == "agents_list")
-        .expect("agents_list tool should be listed");
-    let properties = &agents_list["inputSchema"]["properties"];
+        .find(|tool| tool["name"] == "agent_list")
+        .expect("agent_list tool should be listed");
+    let properties = &agent_list["inputSchema"]["properties"];
 
-    assert_eq!(agents_list["inputSchema"]["additionalProperties"], false);
+    assert_eq!(agent_list["inputSchema"]["additionalProperties"], false);
+    assert_eq!(agent_list["inputSchema"]["required"], serde_json::json!([]));
     assert_eq!(
-        agents_list["inputSchema"]["required"],
-        serde_json::json!([])
-    );
-    assert_eq!(
-        agents_list["outputSchema"]["properties"]["agents"]["type"],
+        agent_list["outputSchema"]["properties"]["agents"]["type"],
         "array"
     );
     assert!(properties.get("presentation").is_none());
@@ -509,12 +492,12 @@ async fn agents_list_schema_exposes_bounded_presentation_filters() {
 }
 
 #[tokio::test]
-async fn task_preview_rejects_unknown_public_fields() {
+async fn agent_preview_rejects_unknown_public_fields() {
     let response = handle_request(request(
         "tools/call",
         5,
         serde_json::json!({
-            "name": "task_preview",
+            "name": "agent_preview",
             "arguments": { "provider": "codex", "mode": "review", "prompt": "x", "maxTurns": 2 }
         }),
     ))

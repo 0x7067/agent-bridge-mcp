@@ -77,24 +77,19 @@ async fn call_tool(params: Value) -> Value {
             ToolName::ProvidersList => tool_json(json!({ "providers": provider::capabilities() })),
             ToolName::ProvidersCheck => tool_result(providers_check(params.arguments).await),
             ToolName::Doctor => tool_result(doctor(params.arguments).await),
-            ToolName::TaskPreview => match task_preview(params.arguments) {
+            ToolName::AgentPreview => match task_preview(params.arguments) {
                 Ok(payload) => tool_json(payload),
                 Err(error) => tool_error(error),
             },
-            ToolName::AgentSpawn | ToolName::TaskSpawn => match TaskManagerHandle::from_env().await
-            {
+            ToolName::AgentSpawn => match TaskManagerHandle::from_env().await {
                 Ok(manager) => tool_result(manager.spawn(params.arguments).await),
                 Err(error) => tool_error(error),
             },
-            ToolName::AgentsList => match TaskManagerHandle::from_env().await {
-                Ok(manager) => tool_result(agents_list(manager, params.arguments).await),
+            ToolName::AgentList => match TaskManagerHandle::from_env().await {
+                Ok(manager) => tool_result(agent_list(manager, params.arguments).await),
                 Err(error) => tool_error(error),
             },
-            ToolName::TaskList => match TaskManagerHandle::from_env().await {
-                Ok(manager) => tool_result(manager.list(params.arguments).await),
-                Err(error) => tool_error(error),
-            },
-            ToolName::TaskStatus => {
+            ToolName::AgentStatus => {
                 match (
                     require_task_id(&params.arguments),
                     TaskManagerHandle::from_env().await,
@@ -103,7 +98,7 @@ async fn call_tool(params: Value) -> Value {
                     (Err(error), _) | (_, Err(error)) => tool_error(error),
                 }
             }
-            ToolName::TaskWait => {
+            ToolName::AgentWait => {
                 let timeout_ms = params.arguments.get("timeoutMs").and_then(Value::as_i64);
                 match (
                     require_task_id(&params.arguments),
@@ -115,7 +110,7 @@ async fn call_tool(params: Value) -> Value {
                     (Err(error), _) | (_, Err(error)) => tool_error(error),
                 }
             }
-            ToolName::TaskLogs => {
+            ToolName::AgentLogs => {
                 let max_bytes = params.arguments.get("maxBytes").and_then(Value::as_i64);
                 let stdout_line = params
                     .arguments
@@ -139,7 +134,7 @@ async fn call_tool(params: Value) -> Value {
                     (Err(error), _) | (_, Err(error)) => tool_error(error),
                 }
             }
-            ToolName::TaskTranscript => {
+            ToolName::AgentTranscript => {
                 let cursor = params.arguments.get("cursor").and_then(Value::as_u64);
                 let limit = params.arguments.get("limit").and_then(Value::as_u64);
                 match (
@@ -152,7 +147,21 @@ async fn call_tool(params: Value) -> Value {
                     (Err(error), _) | (_, Err(error)) => tool_error(error),
                 }
             }
-            ToolName::TaskResult => {
+            ToolName::AgentObserve => {
+                let cursor = params.arguments.get("cursor").and_then(Value::as_u64);
+                let limit = params.arguments.get("limit").and_then(Value::as_u64);
+                let timeout_ms = params.arguments.get("timeoutMs").and_then(Value::as_i64);
+                match (
+                    require_task_id(&params.arguments),
+                    TaskManagerHandle::from_env().await,
+                ) {
+                    (Ok(task_id), Ok(manager)) => {
+                        tool_result(manager.observe(task_id, cursor, limit, timeout_ms).await)
+                    }
+                    (Err(error), _) | (_, Err(error)) => tool_error(error),
+                }
+            }
+            ToolName::AgentResult => {
                 let max_bytes = params.arguments.get("maxBytes").and_then(Value::as_i64);
                 match (
                     require_task_id(&params.arguments),
@@ -164,7 +173,7 @@ async fn call_tool(params: Value) -> Value {
                     (Err(error), _) | (_, Err(error)) => tool_error(error),
                 }
             }
-            ToolName::TaskStop => {
+            ToolName::AgentStop => {
                 match (
                     require_task_id(&params.arguments),
                     TaskManagerHandle::from_env().await,
@@ -173,7 +182,7 @@ async fn call_tool(params: Value) -> Value {
                     (Err(error), _) | (_, Err(error)) => tool_error(error),
                 }
             }
-            ToolName::TaskRemove => {
+            ToolName::AgentRemove => {
                 match (
                     require_task_id(&params.arguments),
                     TaskManagerHandle::from_env().await,
@@ -204,7 +213,7 @@ fn reject_unknown_arguments(name: ToolName, arguments: &Value) -> Result<(), Str
             "providerTimeoutMs",
             "cwd",
         ][..],
-        ToolName::TaskPreview | ToolName::AgentSpawn | ToolName::TaskSpawn => &[
+        ToolName::AgentPreview | ToolName::AgentSpawn => &[
             "provider",
             "mode",
             "prompt",
@@ -218,7 +227,7 @@ fn reject_unknown_arguments(name: ToolName, arguments: &Value) -> Result<(), Str
             "worktreeName",
             "profile",
         ][..],
-        ToolName::AgentsList => &[
+        ToolName::AgentList => &[
             "status",
             "provider",
             "mode",
@@ -226,21 +235,12 @@ fn reject_unknown_arguments(name: ToolName, arguments: &Value) -> Result<(), Str
             "titleContains",
             "limit",
         ][..],
-        ToolName::TaskList => &[
-            "presentation",
-            "scope",
-            "status",
-            "provider",
-            "mode",
-            "cwd",
-            "titleContains",
-            "limit",
-        ][..],
-        ToolName::TaskStatus | ToolName::TaskStop | ToolName::TaskRemove => &["taskId"][..],
-        ToolName::TaskWait => &["taskId", "timeoutMs"][..],
-        ToolName::TaskLogs => &["taskId", "maxBytes", "stdoutLine", "stderrLine"][..],
-        ToolName::TaskTranscript => &["taskId", "cursor", "limit"][..],
-        ToolName::TaskResult => &["taskId", "maxBytes"][..],
+        ToolName::AgentStatus | ToolName::AgentStop | ToolName::AgentRemove => &["taskId"][..],
+        ToolName::AgentWait => &["taskId", "timeoutMs"][..],
+        ToolName::AgentLogs => &["taskId", "maxBytes", "stdoutLine", "stderrLine"][..],
+        ToolName::AgentTranscript => &["taskId", "cursor", "limit"][..],
+        ToolName::AgentObserve => &["taskId", "cursor", "limit", "timeoutMs"][..],
+        ToolName::AgentResult => &["taskId", "maxBytes"][..],
     };
     let Some(object) = arguments.as_object() else {
         return Ok(());
@@ -261,22 +261,21 @@ fn tool_name_str(name: ToolName) -> &'static str {
         ToolName::ProvidersList => "providers_list",
         ToolName::ProvidersCheck => "providers_check",
         ToolName::Doctor => "doctor",
-        ToolName::TaskPreview => "task_preview",
+        ToolName::AgentPreview => "agent_preview",
         ToolName::AgentSpawn => "agent_spawn",
-        ToolName::AgentsList => "agents_list",
-        ToolName::TaskSpawn => "task_spawn",
-        ToolName::TaskList => "task_list",
-        ToolName::TaskStatus => "task_status",
-        ToolName::TaskWait => "task_wait",
-        ToolName::TaskLogs => "task_logs",
-        ToolName::TaskTranscript => "task_transcript",
-        ToolName::TaskResult => "task_result",
-        ToolName::TaskStop => "task_stop",
-        ToolName::TaskRemove => "task_remove",
+        ToolName::AgentList => "agent_list",
+        ToolName::AgentStatus => "agent_status",
+        ToolName::AgentWait => "agent_wait",
+        ToolName::AgentLogs => "agent_logs",
+        ToolName::AgentTranscript => "agent_transcript",
+        ToolName::AgentObserve => "agent_observe",
+        ToolName::AgentResult => "agent_result",
+        ToolName::AgentStop => "agent_stop",
+        ToolName::AgentRemove => "agent_remove",
     }
 }
 
-async fn agents_list(manager: TaskManagerHandle, arguments: Value) -> Result<Value, String> {
+async fn agent_list(manager: TaskManagerHandle, arguments: Value) -> Result<Value, String> {
     let raw = manager.list(agent_list_arguments(arguments)?).await?;
     Ok(agent_list_response(raw))
 }
@@ -285,7 +284,7 @@ fn agent_list_arguments(arguments: Value) -> Result<Value, String> {
     let mut object = match arguments {
         Value::Null => serde_json::Map::new(),
         Value::Object(object) => object,
-        _ => return Err("agents_list arguments must be an object".to_string()),
+        _ => return Err("agent_list arguments must be an object".to_string()),
     };
     object.insert("presentation".to_string(), json!(true));
     object.insert("scope".to_string(), json!("active_recent"));
@@ -427,19 +426,19 @@ impl TaskExtensionReadiness {
     fn recommended_next_step(&self) -> &'static str {
         match self.classification {
             TaskExtensionClassification::ExtensionCapable => {
-                "Use Agent Bridge task_* tools; protocol task support is not advertised yet. Extension metadata can inform future implementation work."
+                "Use Agent Bridge agent_* tools; protocol task support is not advertised yet. Extension metadata can inform future implementation work."
             }
             TaskExtensionClassification::LegacyOnly => {
-                "Use Agent Bridge task_* tools; legacy task metadata does not unblock current extension-based task support."
+                "Use Agent Bridge agent_* tools; legacy task metadata does not unblock current extension-based task support."
             }
             TaskExtensionClassification::Unknown => {
-                "Use Agent Bridge task_* tools; inspect unknown task-like metadata before designing protocol task support."
+                "Use Agent Bridge agent_* tools; inspect unknown task-like metadata before designing protocol task support."
             }
             TaskExtensionClassification::Unsupported => {
-                "Use Agent Bridge task_* tools; requested protocol task behavior is not implemented or advertised."
+                "Use Agent Bridge agent_* tools; requested protocol task behavior is not implemented or advertised."
             }
             TaskExtensionClassification::Unavailable => {
-                "Use Agent Bridge task_* tools; no MCP task-extension metadata has been observed."
+                "Use Agent Bridge agent_* tools; no MCP task-extension metadata has been observed."
             }
         }
     }

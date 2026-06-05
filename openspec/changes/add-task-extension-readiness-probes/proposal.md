@@ -8,7 +8,7 @@ Agent Bridge should be able to observe whether MCP clients can negotiate the cur
 - Add deterministic compatibility fixtures for clients with no task extension metadata, legacy 2025-11-25-style metadata, and current `io.modelcontextprotocol/tasks` extension metadata.
 - Expose diagnostic output that says whether protocol-level task support is unavailable, unsupported, legacy-only, or extension-capable.
 - Surface the diagnostic output as an additive `doctor.taskExtensionReadiness` section.
-- Keep Agent Bridge `task_*` tools as the only task execution lifecycle in this change.
+- Keep Agent Bridge's normal tool lifecycle as the only execution path; after agent tool canonicalization this is the public `agent_*` lifecycle.
 - Do not add `tasks/*` methods, `CreateTaskResult`, task capability advertisement, task cancellation, or protocol task listing.
 
 ## Capabilities

@@ -12,30 +12,28 @@ pub enum ToolName {
     ProvidersCheck,
     #[serde(rename = "doctor")]
     Doctor,
-    #[serde(rename = "task_preview")]
-    TaskPreview,
+    #[serde(rename = "agent_preview")]
+    AgentPreview,
     #[serde(rename = "agent_spawn")]
     AgentSpawn,
-    #[serde(rename = "agents_list")]
-    AgentsList,
-    #[serde(rename = "task_spawn")]
-    TaskSpawn,
-    #[serde(rename = "task_list")]
-    TaskList,
-    #[serde(rename = "task_status")]
-    TaskStatus,
-    #[serde(rename = "task_wait")]
-    TaskWait,
-    #[serde(rename = "task_logs")]
-    TaskLogs,
-    #[serde(rename = "task_transcript")]
-    TaskTranscript,
-    #[serde(rename = "task_result")]
-    TaskResult,
-    #[serde(rename = "task_stop")]
-    TaskStop,
-    #[serde(rename = "task_remove")]
-    TaskRemove,
+    #[serde(rename = "agent_list")]
+    AgentList,
+    #[serde(rename = "agent_status")]
+    AgentStatus,
+    #[serde(rename = "agent_wait")]
+    AgentWait,
+    #[serde(rename = "agent_logs")]
+    AgentLogs,
+    #[serde(rename = "agent_transcript")]
+    AgentTranscript,
+    #[serde(rename = "agent_observe")]
+    AgentObserve,
+    #[serde(rename = "agent_result")]
+    AgentResult,
+    #[serde(rename = "agent_stop")]
+    AgentStop,
+    #[serde(rename = "agent_remove")]
+    AgentRemove,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -107,21 +105,21 @@ pub fn tool_definitions() -> Vec<Value> {
             "outputSchema": output_schema_for("doctor")
         }),
         spawn_like_tool(
-            "task_preview",
-            "Preview the command that would be run for a task without actually spawning it.",
+            "agent_preview",
+            "Preview the command that would be run for a provider agent without actually spawning it.",
             &provider_enum,
             &mode_enum,
             &profile_enum,
         ),
         spawn_like_tool(
             "agent_spawn",
-            "Start a provider agent. Returns the taskId used by task_status, task_wait, task_logs, task_transcript, task_result, task_stop, and task_remove.",
+            "Start a provider agent. Returns the persisted taskId used by agent_status, agent_wait, agent_logs, agent_transcript, agent_observe, agent_result, agent_stop, and agent_remove.",
             &provider_enum,
             &mode_enum,
             &profile_enum,
         ),
         json!({
-            "name": "agents_list",
+            "name": "agent_list",
             "description": "List active and recent provider agents using bounded presentation summaries.",
             "inputSchema": object_schema(json!({
                 "status": {
@@ -134,46 +132,18 @@ pub fn tool_definitions() -> Vec<Value> {
                 "titleContains": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100}
             }), Vec::<&str>::new()),
-            "outputSchema": output_schema_for("agents_list")
+            "outputSchema": output_schema_for("agent_list")
         }),
-        spawn_like_tool(
-            "task_spawn",
-            "Legacy compatibility launch tool. Prefer agent_spawn for new clients; poll task_status/task_logs/task_result using the returned taskId.",
-            &provider_enum,
-            &mode_enum,
-            &profile_enum,
-        ),
+        task_id_tool_with_output("agent_status", "Read one provider agent's lifecycle state."),
         json!({
-            "name": "task_list",
-            "description": "List tracked provider tasks.",
-            "inputSchema": object_schema(json!({
-                "presentation": {
-                    "type": "boolean",
-                    "description": "Optimize the list for native-client task presentation. Defaults to true with active/recent ordering and a bounded limit."
-                },
-                "scope": {"type": "string", "enum": ["active_recent", "all"]},
-                "status": {
-                    "type": "array",
-                    "items": {"type": "string", "enum": ["queued", "running", "succeeded", "failed", "stopped", "failed_stale", "removed"]}
-                },
-                "provider": {"type": "array", "items": {"type": "string", "enum": provider_enum}},
-                "mode": {"type": "array", "items": {"type": "string", "enum": mode_enum}},
-                "cwd": {"type": "string"},
-                "titleContains": {"type": "string"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 100}
-            }), Vec::<&str>::new()),
-            "outputSchema": output_schema_for("task_list")
-        }),
-        task_id_tool_with_output("task_status", "Read one task's lifecycle state."),
-        json!({
-            "name": "task_wait",
-            "description": "Wait for a task to reach a final state or timeout.",
+            "name": "agent_wait",
+            "description": "Wait for a provider agent to reach a final state or timeout.",
             "inputSchema": object_schema(json!({"taskId": {"type": "string"}, "timeoutMs": {"type": "number"}}), vec!["taskId"]),
-            "outputSchema": output_schema_for("task_wait")
+            "outputSchema": output_schema_for("agent_wait")
         }),
         json!({
-            "name": "task_logs",
-            "description": "Return capped stdout/stderr log slices for a task.",
+            "name": "agent_logs",
+            "description": "Return capped stdout/stderr log slices for a provider agent.",
             "inputSchema": object_schema(json!({
                 "taskId": {"type": "string"},
                 "maxBytes": {"type": "number"},
@@ -182,8 +152,8 @@ pub fn tool_definitions() -> Vec<Value> {
             }), vec!["taskId"])
         }),
         json!({
-            "name": "task_transcript",
-            "description": "Return bounded normalized transcript events for a task.",
+            "name": "agent_transcript",
+            "description": "Return bounded normalized transcript events for a provider agent.",
             "inputSchema": object_schema(json!({
                 "taskId": {"type": "string"},
                 "cursor": {"type": "number"},
@@ -191,15 +161,26 @@ pub fn tool_definitions() -> Vec<Value> {
             }), vec!["taskId"])
         }),
         json!({
-            "name": "task_result",
-            "description": "Return final task metadata, logs, git status, diff, changed files, and exit metadata.",
-            "inputSchema": object_schema(json!({"taskId": {"type": "string"}, "maxBytes": {"type": "number"}}), vec!["taskId"]),
-            "outputSchema": output_schema_for("task_result")
+            "name": "agent_observe",
+            "description": "Observe a provider agent for new transcript/lifecycle events or finalization using bounded long polling.",
+            "inputSchema": object_schema(json!({
+                "taskId": {"type": "string"},
+                "cursor": {"type": "number", "minimum": 0},
+                "limit": {"type": "number", "minimum": 1, "maximum": 500},
+                "timeoutMs": {"type": "number", "minimum": 0, "maximum": 120000}
+            }), vec!["taskId"]),
+            "outputSchema": output_schema_for("agent_observe")
         }),
-        simple_task_id_tool("task_stop", "Terminate a running task."),
+        json!({
+            "name": "agent_result",
+            "description": "Return final provider-agent metadata, logs, git status, diff, changed files, and exit metadata.",
+            "inputSchema": object_schema(json!({"taskId": {"type": "string"}, "maxBytes": {"type": "number"}}), vec!["taskId"]),
+            "outputSchema": output_schema_for("agent_result")
+        }),
+        simple_task_id_tool("agent_stop", "Terminate a running provider agent."),
         simple_task_id_tool(
-            "task_remove",
-            "Remove a finished/stopped task. Managed worktree cleanup is mandatory and failure keeps the task record.",
+            "agent_remove",
+            "Remove a finished/stopped provider agent. Managed worktree cleanup is mandatory and failure keeps the task record.",
         ),
     ]
 }
@@ -285,16 +266,7 @@ fn output_schema_for(name: &str) -> Value {
                 "recommendations",
             ],
         ),
-        "task_list" => output_object_schema(
-            json!({
-                "tasks": {"type": "array"},
-                "presentation": {"type": "boolean"},
-                "scope": {"type": "string"},
-                "limit": {"type": ["integer", "null"]}
-            }),
-            vec!["tasks", "presentation", "scope"],
-        ),
-        "agents_list" => output_object_schema(
+        "agent_list" => output_object_schema(
             json!({
                 "agents": {"type": "array"},
                 "scope": {"type": "string"},
@@ -302,7 +274,7 @@ fn output_schema_for(name: &str) -> Value {
             }),
             vec!["agents", "scope"],
         ),
-        "task_status" | "task_wait" => output_object_schema(
+        "agent_status" | "agent_wait" => output_object_schema(
             json!({
                 "taskId": {"type": "string"},
                 "status": {"type": "string"},
@@ -312,7 +284,33 @@ fn output_schema_for(name: &str) -> Value {
             }),
             vec!["taskId", "status", "isFinal", "presentation"],
         ),
-        "task_result" => output_object_schema(
+        "agent_observe" => output_object_schema(
+            json!({
+                "taskId": {"type": "string"},
+                "status": {"type": "string"},
+                "isFinal": {"type": "boolean"},
+                "task": {"type": "object"},
+                "presentation": {"type": "object"},
+                "progress": {"type": "object"},
+                "events": {"type": "array"},
+                "nextCursor": {"type": "integer"},
+                "timedOut": {"type": "boolean"},
+                "nextActions": {"type": "array"}
+            }),
+            vec![
+                "taskId",
+                "status",
+                "isFinal",
+                "task",
+                "presentation",
+                "progress",
+                "events",
+                "nextCursor",
+                "timedOut",
+                "nextActions",
+            ],
+        ),
+        "agent_result" => output_object_schema(
             json!({
                 "taskId": {"type": "string"},
                 "status": {"type": "string"},

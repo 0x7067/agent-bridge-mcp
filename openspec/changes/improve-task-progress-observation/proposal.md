@@ -14,15 +14,15 @@ Agent Bridge providers can be alive and useful while producing no stdout until f
 ## Capabilities
 
 ### New Capabilities
-- `task-progress-observation`: Progress state, adaptive polling recommendations, and bounded event-style observation for running provider tasks.
+- `task-progress-observation`: Progress state, adaptive polling recommendations, and bounded event-style observation for running provider agents.
 
 ### Modified Capabilities
-- `agent-bridge-agent-presentation`: Presentation and `nextActions` should surface progress-observation recommendations for running tasks.
+- `agent-bridge-agent-presentation`: Presentation and `nextActions` should surface progress-observation recommendations for running agents.
 - `mcp-usage-guidance`: Prompts/resources should teach callers how to poll, long-poll, and avoid premature stop/fallback decisions for silent providers.
 - `provider-adapter-contract`: Provider metadata should describe expected output cadence and recommended observation budgets.
 
 ## Impact
 
-- Affected API: additive task progress fields, additive provider metadata, and possibly a new tool such as `agent_observe` or additive parameters on `task_transcript`.
+- Affected API: additive agent progress fields, additive provider metadata, and the canonical `agent_observe` tool.
 - Affected code: task manager lifecycle records, transcript/log observation, presentation `nextActions`, provider capability metadata, guidance resources, stdio protocol tests.
 - Affected systems: MCP harnesses that delegate to Cursor/Claude/Kimi/Codex and decide when to wait, inspect, stop, or fall back.

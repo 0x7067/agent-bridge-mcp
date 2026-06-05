@@ -17,43 +17,41 @@ This repo lives at:
 - `providers_list`: list first-class providers and their capabilities.
 - `providers_check`: check availability of each provider with `--version`, and optionally run startup smoke probes.
 - `doctor`: return a structured setup report for server, workspace, state, providers, Claude host-runner, and recommendations.
-- `task_preview`: preview the command, args, and environment that would be used for a task without spawning it.
+- `agent_preview`: preview the command, args, and environment that would be used for a task without spawning it.
 - `agent_spawn`: start a provider agent and return the `taskId` used by lifecycle tools.
-- `agents_list`: list active/recent provider agents with bounded native-client presentation summaries.
-- `task_spawn`: legacy compatibility launch tool; prefer `agent_spawn` for new clients.
-- `task_list`: lower-level task registry list; defaults to native-client presentation summaries for active/recent tasks.
-- `task_status`: inspect one task lifecycle state.
-- `task_wait`: wait for a task to reach a final state or return after a timeout.
-- `task_logs`: read capped stdout/stderr slices; supports line cursors for incremental reads.
-- `task_transcript`: read bounded normalized run transcript events with cursor/limit controls.
-- `task_result`: read final result metadata, logs, git status, diff, changed files, and exit data.
-- `task_stop`: terminate a running task.
-- `task_remove`: remove a completed/stopped task; managed worktree cleanup is mandatory.
+- `agent_list`: list active/recent provider agents with bounded native-client presentation summaries.
+- `agent_status`: inspect one task lifecycle state.
+- `agent_wait`: wait for a task to reach a final state or return after a timeout.
+- `agent_logs`: read capped stdout/stderr slices; supports line cursors for incremental reads.
+- `agent_transcript`: read bounded normalized run transcript events with cursor/limit controls.
+- `agent_observe`: wait for new transcript/lifecycle events or finalization with bounded long polling.
+- `agent_result`: read final result metadata, logs, git status, diff, changed files, and exit data.
+- `agent_stop`: terminate a running task.
+- `agent_remove`: remove a completed/stopped task; managed worktree cleanup is mandatory.
 
-`agent_spawn` returns immediately. Callers can poll `task_status`, `task_logs`, or
-`task_result` with the returned `taskId`, or use `task_wait` to block until the
-task completes or a timeout is reached. `task_preview` lets you inspect the
+`agent_spawn` returns immediately. Callers can poll `agent_status`, `agent_logs`, or
+`agent_result` with the returned `taskId`, or use `agent_wait` to block until the
+task completes or a timeout is reached. `agent_preview` lets you inspect the
 exact command, arguments, selected launch profile, profile diagnostics, and
-environment keys before spawning. `task_spawn` remains available as a legacy
-compatibility launch tool until the agent-oriented path is confirmed in target
-harnesses.
+environment keys before spawning.
 
 Recommended caller workflow:
 
 1. Call `doctor` first when setup, workspace, state, provider, or Claude host-runner readiness is uncertain.
 2. Call `providers_check` to catch missing or misconfigured CLIs before delegation. Use `smoke: true` when debugging provider startup, not just binary presence.
-3. Call `task_preview` when debugging provider flags or cwd/env behavior.
+3. Call `agent_preview` when debugging provider flags or cwd/env behavior.
 4. Call `agent_spawn` for the real provider agent.
-5. Call `agents_list` or `task_status` to read each task's `presentation` metadata
+5. Call `agent_list` or `agent_status` to read each task's `presentation` metadata
    for native-client display title, status tone, result availability, structured
    lifecycle actions, ranked `nextActions`, and unavailable reply/resume controls.
-6. Call `task_wait` with a bounded `timeoutMs`; if it times out, use `task_logs`
-   with line cursors and `task_transcript` with cursors to inspect progress
-   without rereading the whole run.
-7. Once the task is final, call `task_result` once for logs, git status, diff,
+6. Call `agent_observe` with a bounded `timeoutMs` and cursor to wait for new
+   transcript/lifecycle events. If it times out, use `agent_logs` with line
+   cursors and `agent_transcript` with cursors to inspect progress without
+   rereading the whole run.
+7. Once the task is final, call `agent_result` once for logs, git status, diff,
    changed files, exit metadata, structured `errorType`, and the derived
    `reviewPacket` inspection summary.
-8. Call `task_remove` intentionally after any managed worktree has been inspected.
+8. Call `agent_remove` intentionally after any managed worktree has been inspected.
 
 For setup troubleshooting, `doctor` is the broad first check:
 
@@ -93,26 +91,26 @@ paths do not match your setup; otherwise the installed path defaults to
 Real-world delegation workflow:
 
 - Treat provider output as evidence for the main Codex thread, not as final verification. Inspect the final report, logs, `gitStatus`, `diff`, `changedFiles`, and exit metadata before using the result.
-- Use the `presentation` object on `agents_list`, `task_status`, and `task_result` for native-feeling UI summaries. `presentation.nextActions`, top-level `nextActions`, and `reviewPacket.nextActions` provide ranked follow-up calls with arguments and safety classifications. `verificationStatus: "not_verified"` means provider completion is not project verification.
-- `agents_list` is the preferred bounded active/recent presentation list for harnesses. Use `task_list.presentation` only when a lower-level task registry view is needed. Use `presentation: false, scope: "all"` only for intentional raw registry inspection; if a client requests `presentation: true, scope: "all"` for historical summaries, pass an explicit `limit`.
+- Use the `presentation` object on `agent_list`, `agent_status`, and `agent_result` for native-feeling UI summaries. `presentation.nextActions`, top-level `nextActions`, and `reviewPacket.nextActions` provide ranked follow-up calls with arguments and safety classifications. `verificationStatus: "not_verified"` means provider completion is not project verification.
+- `agent_list` is the bounded active/recent presentation list for harnesses. It does not expose raw full-history task registry inspection as a separate public MCP workflow.
 - Render `reply` and `resume` presentation actions as unavailable in v1. Provider tasks are batch lifecycle tasks, not interactive resumable conversations.
 - Provider capability `presentationActions` keys are camelCase capability names; per-task `presentation.actions[].id` values are snake_case lifecycle action ids. Treat them as related but separate surfaces.
 - Treat `providers_list.readiness` as non-blocking discovery. It starts as `state: "stale"` and `launchable: false`; run `providers_check` with `smoke: true` to mark a provider `ready` and launchable or `failed` with diagnostics.
 - Removed tasks are excluded from native presentation lists before lifecycle actions are rendered. Present lifecycle controls only for inspectable task records.
-- Use `task_transcript` when analyzing provider behavior, comparing providers, or checking whether a final or partial provider result was detected.
+- Use `agent_transcript` when analyzing provider behavior, comparing providers, or checking whether a final or partial provider result was detected.
 - Use profile `bridge` for normal Agent Bridge task guidance. Use profile `bare` for paired experiments with compact bridge-owned prompts and provider-specific reduced configuration; inspect `profileDiagnostics` because reductions vary by provider.
 - Keep the main thread responsible for project gates. Run the relevant tests, lint, typecheck, build, or OpenSpec validation before claiming the requested work is complete.
 - Use `research` and `review` modes for read-only analysis, second opinions, and plan critique.
 - Use `command` mode only for bounded command-oriented work where the prompt clearly names the command goal and expected evidence.
 - Use `implement` mode with `isolation: "worktree"` by default so provider edits land in a managed git worktree that can be inspected before integration.
-- After inspecting a final managed-worktree task, call `task_remove` intentionally. Cleanup is explicit so callers can review generated files and diffs before the worktree is removed.
+- After inspecting a final managed-worktree task, call `agent_remove` intentionally. Cleanup is explicit so callers can review generated files and diffs before the worktree is removed.
 
 If a provider appears stalled:
 
-1. Call `task_wait` with a short bounded timeout.
-2. Call `task_logs` with `stdoutLine` and `stderrLine` cursors to inspect new output without rereading the whole log.
-3. If the task is still not useful, call `task_stop`.
-4. Call `task_result` on the stopped task to inspect logs, exit metadata, diagnostics, and any partial git state.
+1. Call `agent_observe` with a bounded timeout and cursor to wait for new transcript/lifecycle events.
+2. Call `agent_logs` with `stdoutLine` and `stderrLine` cursors to inspect new output without rereading the whole log.
+3. If the task is still not useful, call `agent_stop`.
+4. Call `agent_result` on the stopped task to inspect logs, exit metadata, diagnostics, and any partial git state.
 5. Decide in the main thread whether to discard, re-run with a narrower prompt, or manually continue from the inspected state.
 
 ## MCP Self-Description
@@ -138,11 +136,11 @@ workflow templates. Resources may be shown in a picker, searched, or included
 automatically only if the host implements those heuristics. Clients that ignore
 `initialize.instructions`, `structuredContent`, output schemas, or `nextActions`
 can still follow the manual lifecycle through `doctor`, `providers_check`,
-`agent_spawn`, `agents_list`, `task_wait`, `task_logs`, `task_transcript`, `task_result`, and
-`task_remove`.
+`agent_spawn`, `agent_list`, `agent_wait`, `agent_logs`, `agent_transcript`, `agent_result`, and
+`agent_remove`.
 
 Protocol-level MCP Tasks are separate from Agent Bridge lifecycle tools. The
-stable Agent Bridge workflow uses `agent_spawn`, `agents_list`, and `task_*` lifecycle tools today. MCP task primitives are
+stable Agent Bridge workflow uses `agent_spawn`, `agent_list`, and `agent_*` lifecycle tools today. MCP task primitives are
 experimental/extension-gated and should be used only after negotiated host and
 client capability support is explicitly implemented and advertised. `doctor`
 includes `taskExtensionReadiness` as passive diagnostic evidence about task-like
@@ -277,16 +275,16 @@ data is available. Failure payloads keep the human-readable `error` string and
 also include `errorType`, such as `timeout`, `provider_exit_error`,
 `provider_start_error`, `provider_output_error`, `stopped`, or `stale`.
 
-`task_result` also includes `reviewPacket`, an additive summary derived from the
+`agent_result` also includes `reviewPacket`, an additive summary derived from the
 existing result fields. It reports status, finality, provider/mode, cwd,
 changed files, whether git state changed, exit/error metadata, truncation flags,
 diagnostics when present, and recommended next actions. Treat it as an
 inspection aid, not verification; the main caller still runs the relevant tests,
 lint, typecheck, build, or OpenSpec validation before claiming completion.
 
-If a provider appears stalled, call `task_wait` with a short timeout and then
-`task_logs` with the latest line cursors. If there is still no useful output,
-call `task_stop`; the stopped task remains inspectable through `task_result`.
+If a provider appears stalled, call `agent_wait` with a short timeout and then
+`agent_logs` with the latest line cursors. If there is still no useful output,
+call `agent_stop`; the stopped task remains inspectable through `agent_result`.
 
 ## Live Smoke Checks
 
@@ -351,7 +349,7 @@ and `isolation: "none"` unless you specifically want a managed worktree:
 }
 ```
 
-Then call `task_wait` with a bounded timeout and inspect `task_result`. Live
+Then call `agent_wait` with a bounded timeout and inspect `agent_result`. Live
 smoke prompts should be small, read-only, and explicit about not editing files.
 
 ## Claude Troubleshooting
@@ -392,7 +390,7 @@ AGENT_BRIDGE_STATE_DIR = "/Users/pedro/.agent-bridge-mcp/state"
 AGENT_BRIDGE_CLAUDE_HOST_SOCKET = "/Users/pedro/.agent-bridge-mcp/run/claude-host.sock"
 ```
 
-After reloading MCP configuration, `task_preview` for Claude includes `launchStrategy: "host_runner"` and Claude smoke diagnostics include the same launch strategy.
+After reloading MCP configuration, `agent_preview` for Claude includes `launchStrategy: "host_runner"` and Claude smoke diagnostics include the same launch strategy.
 
 Host-runner lifecycle checklist:
 
@@ -406,12 +404,12 @@ Host-runner lifecycle checklist:
 
 ## Isolation
 
-`agent_spawn` and legacy `task_spawn` support:
+`agent_spawn` and legacy `agent_spawn` support:
 
 - `isolation: "none"`: run in the validated `cwd`.
 - `isolation: "worktree"`: create a unique git worktree under the state directory.
 
-Managed worktrees are preserved after task completion for inspection. `task_remove`
+Managed worktrees are preserved after task completion for inspection. `agent_remove`
 must successfully run `git worktree remove -f <worktree>` before removing the task
 record. If cleanup fails, the task remains tracked.
 
@@ -449,23 +447,21 @@ suite because they may require installed provider CLIs, auth, network access, or
 paid model usage.
 
 - Read-only review: use `agent_spawn` with `review` or `research`, `isolation: "none"`, a
-  small prompt, and bounded waits. Inspect `task_result.reviewPacket`, logs,
+  small prompt, and bounded observation. Inspect `agent_result.reviewPacket`, logs,
   diagnostics, git status, diff, changed files, and exit metadata.
-- Native agent presentation: call `agents_list` with default arguments to show
-  active provider agents first and recent final agents second. Use `task_list`
-  `presentation: false` with `scope: "all"` only when intentionally inspecting
-  the full raw task registry.
+- Native agent presentation: call `agent_list` with default arguments to show
+  active provider agents first and recent final agents second.
 - Isolated implementation: use `agent_spawn` with `implement` and `isolation: "worktree"`.
   Inspect the managed worktree, `reviewPacket`, `gitStatus`, `gitDiff`, and
-  `changedFiles`; run verification in the main caller; call `task_remove` only
+  `changedFiles`; run verification in the main caller; call `agent_remove` only
   after review.
-- Stalled task recovery: use short `task_wait` calls, incremental `task_logs`
-  cursors, `task_status`, then `task_stop` if the task is no longer useful.
-  Inspect final `task_result` before deciding to rerun or continue manually.
+- Stalled task recovery: use bounded `agent_observe` calls, incremental `agent_logs`
+  cursors, `agent_status`, then `agent_stop` if the task is no longer useful.
+  Inspect final `agent_result` before deciding to rerun or continue manually.
 - Codex sandbox and approval denials: if logs mention `patch rejected`,
   sandbox denial, approval denial, outside of the project, or out-of-workspace
   writes, inspect `cwd`, workspace policy, prompt scope, isolation strategy,
-  diagnostics, and final `task_result` before retrying. Prefer narrowing the
+  diagnostics, and final `agent_result` before retrying. Prefer narrowing the
   prompt or using managed worktree isolation over loosening sandbox permissions.
 - Provider comparison: run equivalent read-only prompts against selected
   providers, optionally in paired `bridge` and `bare` profiles, and compare
@@ -516,7 +512,7 @@ Preview a task before spawning:
 
 ```json
 {
-  "name": "task_preview",
+  "name": "agent_preview",
   "arguments": {
     "provider": "codex",
     "mode": "review",
@@ -530,7 +526,7 @@ Preview a reduced `bare` profile task:
 
 ```json
 {
-  "name": "task_preview",
+  "name": "agent_preview",
   "arguments": {
     "provider": "codex",
     "mode": "review",
@@ -562,7 +558,7 @@ List active/recent agents for native-client presentation:
 
 ```json
 {
-  "name": "agents_list",
+  "name": "agent_list",
   "arguments": {}
 }
 ```
@@ -571,7 +567,7 @@ Filter presentation summaries:
 
 ```json
 {
-  "name": "agents_list",
+  "name": "agent_list",
   "arguments": {
     "provider": ["cursor"],
     "mode": ["review"],
@@ -582,27 +578,11 @@ Filter presentation summaries:
 }
 ```
 
-Inspect the full raw task registry intentionally:
-
-```json
-{
-  "name": "task_list",
-  "arguments": {
-    "presentation": false,
-    "scope": "all"
-  }
-}
-```
-
-For historical presentation summaries, keep `presentation: true` and set
-`scope: "all"` plus an explicit `limit`; the active/recent default bound only
-applies to the default presentation list.
-
 Poll task status:
 
 ```json
 {
-  "name": "task_status",
+  "name": "agent_status",
   "arguments": {
     "taskId": "task_..."
   }
@@ -613,7 +593,7 @@ Read logs incrementally:
 
 ```json
 {
-  "name": "task_logs",
+  "name": "agent_logs",
   "arguments": {
     "taskId": "task_...",
     "stdoutLine": 10,
@@ -626,7 +606,7 @@ Read transcript events incrementally:
 
 ```json
 {
-  "name": "task_transcript",
+  "name": "agent_transcript",
   "arguments": {
     "taskId": "task_...",
     "cursor": 0,
@@ -635,11 +615,25 @@ Read transcript events incrementally:
 }
 ```
 
+Observe progress or finalization:
+
+```json
+{
+  "name": "agent_observe",
+  "arguments": {
+    "taskId": "task_...",
+    "cursor": 0,
+    "limit": 100,
+    "timeoutMs": 30000
+  }
+}
+```
+
 Wait for a task to complete (up to 60s):
 
 ```json
 {
-  "name": "task_wait",
+  "name": "agent_wait",
   "arguments": {
     "taskId": "task_...",
     "timeoutMs": 60000
@@ -651,7 +645,7 @@ Read final result:
 
 ```json
 {
-  "name": "task_result",
+  "name": "agent_result",
   "arguments": {
     "taskId": "task_..."
   }
@@ -662,7 +656,7 @@ Remove a finished task and clean its managed worktree:
 
 ```json
 {
-  "name": "task_remove",
+  "name": "agent_remove",
   "arguments": {
     "taskId": "task_..."
   }

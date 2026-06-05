@@ -24,7 +24,7 @@
 ## 4. Side-Effect Safety
 
 - [x] 4.1 Add tests proving readiness probes do not create task records, logs, transcripts, managed worktrees, or provider processes.
-- [x] 4.2 Add tests proving existing `task_*` lifecycle behavior remains the execution path after readiness probing.
+- [x] 4.2 Add tests proving the existing Agent Bridge `agent_*` lifecycle behavior remains the execution path after readiness probing.
 - [x] 4.3 Add tests proving raw client metadata is not written to state files or public doctor responses.
 
 ## 5. Guidance

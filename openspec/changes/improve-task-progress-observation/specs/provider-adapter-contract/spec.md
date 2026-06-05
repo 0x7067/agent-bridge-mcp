@@ -5,11 +5,11 @@ The system SHALL expose provider-specific output cadence and observation guidanc
 
 #### Scenario: Provider list includes cadence metadata
 - **WHEN** a caller invokes `providers_list`
-- **THEN** each provider includes output cadence metadata describing whether task output is expected incrementally, at final JSON completion, or provider-dependent.
+- **THEN** each provider includes `outputCadence` metadata with `cadence`, `firstOutputExpected`, `recommendedPollMs`, `recommendedSilentBudgetMs`, `fallbackAfterMs`, `advisory`, and `note` fields.
 
 #### Scenario: Cursor cadence is final-output aware
 - **WHEN** a caller reads Cursor provider metadata
-- **THEN** the metadata identifies Cursor's JSON-mode output as final-output-oriented and provides a conservative recommended observation budget before fallback or manual stop.
+- **THEN** the metadata identifies Cursor's JSON-mode output as final-output-oriented with `cadence: "final_json"` and provides a conservative recommended observation budget before fallback or manual stop.
 
 #### Scenario: Cadence metadata is advisory
 - **WHEN** provider output cadence metadata is returned
