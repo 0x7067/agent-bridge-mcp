@@ -21,7 +21,10 @@
 
 - [ ] 4.1 Audit current runtime `providers_list` output for launch profiles, reduced-configuration metadata, reply support, resume support, and presentation-relevant action support; add only missing fields.
 - [ ] 4.2 Ensure runtime tool schemas expose launch profile arguments consistently with source and README examples.
-- [ ] 4.3 Add production-binary fixture tests for `tools/list` and `providers_list` drift.
+- [ ] 4.3 Add a runtime readiness snapshot that distinguishes static provider capabilities from provider states such as checking, ready, stale, and failed.
+- [ ] 4.4 Ensure version-only discovery never marks a provider as launchable unless startup readiness has been verified or explicitly caveated.
+- [ ] 4.5 Ensure `providers_check` or the selected readiness surface can refresh the runtime snapshot with checked timestamps, probe phase, timing fields, and diagnostics.
+- [ ] 4.6 Add production-binary fixture tests for `tools/list`, `providers_list`, and provider readiness drift.
 
 ## 5. Guidance And Documentation
 
@@ -36,7 +39,8 @@
 - [ ] 6.2 Add unit tests for action availability, including unsupported reply/resume and managed-worktree cleanup guidance.
 - [ ] 6.3 Add integration tests for bounded active/recent listing and filters.
 - [ ] 6.4 Add stdio protocol tests for any new tools, arguments, or response fields.
-- [ ] 6.5 Run `cargo test`.
-- [ ] 6.6 Run `cargo fmt --check`.
-- [ ] 6.7 Run `cargo clippy --all-targets -- -D warnings`.
-- [ ] 6.8 Run `openspec validate make-agent-bridge-agents-native-feeling --strict`.
+- [ ] 6.5 Add tests proving startup discovery is non-blocking and explicit rediscovery refreshes launchable-provider readiness.
+- [ ] 6.6 Run `cargo test`.
+- [ ] 6.7 Run `cargo fmt --check`.
+- [ ] 6.8 Run `cargo clippy --all-targets -- -D warnings`.
+- [ ] 6.9 Run `openspec validate make-agent-bridge-agents-native-feeling --strict`.
