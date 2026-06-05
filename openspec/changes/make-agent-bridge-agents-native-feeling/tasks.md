@@ -44,3 +44,7 @@
 - [x] 6.7 Run `cargo fmt --check`.
 - [x] 6.8 Run `cargo clippy --all-targets -- -D warnings`.
 - [x] 6.9 Run `openspec validate make-agent-bridge-agents-native-feeling --strict`.
+
+## 7. Dedicated Review
+
+- [ ] 7.1 Run a named read-only Agent Bridge review task titled `Review native-feeling Agent Bridge presentation` using mode `review`; ask for `review-this`-inspired output with category ratings, an overall rating, a checklist summary, and actionable improvements, then inspect `task_result.reviewPacket` and raw evidence before deciding whether the change is ready to archive.
