@@ -7,14 +7,39 @@ Agent Bridge should not advertise or implement protocol-level MCP task support i
 ## Source Review
 
 - The 2025-11-25 MCP Tasks specification says tasks are experimental and may evolve. It uses request `task` parameters plus `tasks/get`, `tasks/list`, `tasks/result`, and `tasks/cancel`.
-- The newer MCP Tasks extension uses extension negotiation through `io.modelcontextprotocol/tasks`, `CreateTaskResult` with `resultType: "task"`, `tasks/get`, `tasks/update`, and `tasks/cancel`. It also states that the legacy 2025-11-25 capability declarations are not part of the extension and must not be advertised under protocol versions that include the extension.
-- The extension overview says host support varies and task support requires explicit opt-in from both client and server.
+- SEP-2663 is now a Final Extensions Track document for `io.modelcontextprotocol/tasks`. It uses extension negotiation, `CreateTaskResult` with `resultType: "task"`, `tasks/get`, `tasks/update`, and `tasks/cancel`.
+- The extension remains wire-incompatible with the 2025-11-25 experimental task surface. The extension removes `tasks/result`, removes `tasks/list`, ignores the legacy request `task` parameter under the extension surface, and forbids continuing to advertise legacy task capabilities under protocol versions that include the extension.
+- The extension overview says host support varies and task support requires explicit opt-in from both client and server. Current official client-matrix documentation does not list Tasks support as an extension row, so it does not provide first-party evidence that Codex, Cursor, Claude, or other target hosts currently negotiate `io.modelcontextprotocol/tasks`.
 
 References:
 
 - https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks
 - https://modelcontextprotocol.io/extensions/tasks/overview
 - https://modelcontextprotocol.io/seps/2663-tasks-extension
+- https://modelcontextprotocol.io/extensions/client-matrix
+
+## Research Refresh - 2026-06-05
+
+The official docs still support the existing blocked implementation decision.
+The important update is that the extension itself is no longer merely a
+migration signal: SEP-2663 is Final. That makes the target surface clearer, but
+does not make it safe for Agent Bridge to advertise protocol tasks yet.
+
+Implementation remains blocked because:
+
+- Agent Bridge currently answers `initialize` with protocol version `2024-11-05`
+  and capabilities `{ "tools": {}, "prompts": {}, "resources": {} }`, with no
+  `tasks` or extension advertisement.
+- The supported extension shape depends on explicit `io.modelcontextprotocol/tasks`
+  negotiation and per-request client capability metadata before a server may
+  return `CreateTaskResult`.
+- The legacy `2025-11-25` task surface is not compatible with the extension
+  surface planned for the future `2026-06-30` protocol line.
+- The official client matrix does not currently establish task-extension support
+  for the target hosts Agent Bridge cares about.
+- The follow-up readiness-probe change is the correct current strategy: observe
+  extension-capable, legacy-only, unknown, and unsupported metadata passively
+  while keeping protocol task methods unavailable.
 
 ## Host Compatibility
 
