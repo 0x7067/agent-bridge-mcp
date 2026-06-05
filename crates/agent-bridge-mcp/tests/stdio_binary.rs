@@ -68,6 +68,7 @@ impl McpClient {
         command
             .env_remove("AGENT_BRIDGE_ALLOWED_ROOT")
             .env_remove("AGENT_BRIDGE_WORKSPACES")
+            .env("HOME", &env.root)
             .env("AGENT_BRIDGE_STATE_DIR", &env.state_dir)
             .env("CURSOR_AGENT_BIN", &env.fake_provider)
             .env("PI_BIN", &env.fake_provider)
@@ -1152,6 +1153,7 @@ fn stdio_doctor_default_report_shape_and_side_effects() {
         "server",
         "workspace",
         "state",
+        "clients",
         "providers",
         "launchReadiness",
         "claudeHostRunner",
@@ -1168,6 +1170,10 @@ fn stdio_doctor_default_report_shape_and_side_effects() {
     ));
     assert_eq!(doctor["server"]["name"], "agent-bridge-mcp");
     assert_eq!(doctor["server"]["protocolVersion"], "2024-11-05");
+    assert_eq!(doctor["clients"]["codex"]["configPresent"], false);
+    assert_eq!(doctor["clients"]["codex"]["registrationStatus"], "absent");
+    assert_eq!(doctor["clients"]["claude"]["configPresent"], false);
+    assert_eq!(doctor["clients"]["cursor"]["configPresent"], false);
     assert_eq!(doctor["providers"]["claude"]["startupVerified"], false);
     assert_eq!(doctor["providers"]["codex"]["startupVerified"], false);
     assert_eq!(doctor["launchReadiness"]["startupVerified"], false);
@@ -1214,6 +1220,154 @@ fn stdio_doctor_redacts_secret_environment_values() {
     assert!(!serialized.contains("test-key"));
     assert!(!serialized.contains("test-auth-token"));
     assert!(!serialized.contains("test-code-oauth-token"));
+}
+
+#[test]
+fn stdio_doctor_reports_registered_client_configs_without_secret_values() {
+    let env = fixture_env();
+    let bridge_bin = env.root.join("agent-bridge-mcp");
+    std::fs::write(&bridge_bin, "#!/bin/sh\n").unwrap();
+
+    let codex_dir = env.root.join(".codex");
+    let cursor_dir = env.root.join(".cursor");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::create_dir_all(&cursor_dir).unwrap();
+    std::fs::write(
+        codex_dir.join("config.toml"),
+        format!(
+            r#"
+[mcp_servers."agent-bridge"]
+command = "{}"
+args = ["--stdio"]
+env = {{ AGENT_BRIDGE_WORKSPACES = "{}", ANTHROPIC_API_KEY = "codex-secret" }}
+"#,
+            bridge_bin.display(),
+            env.root.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        env.root.join(".claude.json"),
+        format!(
+            r#"{{
+  "mcpServers": {{
+    "agent-bridge": {{
+      "command": "{}",
+      "args": ["--stdio"],
+      "env": {{
+        "AGENT_BRIDGE_WORKSPACES": "{}",
+        "CLAUDE_CODE_OAUTH_TOKEN": "claude-secret"
+      }}
+    }}
+  }}
+}}"#,
+            bridge_bin.display(),
+            env.root.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        cursor_dir.join("mcp.json"),
+        r#"{
+  "mcpServers": {
+    "agent-bridge": {
+      "command": "agent-bridge-mcp",
+      "env": {
+        "CURSOR_TOKEN": "cursor-secret"
+      }
+    }
+  }
+}"#,
+    )
+    .unwrap();
+
+    let mut client = McpClient::start(&env);
+    let doctor = client.tool("doctor", json!({"cwd": env.root}));
+
+    assert_eq!(doctor["clients"]["codex"]["status"], "ok");
+    assert_eq!(
+        doctor["clients"]["codex"]["command"]["resolution"],
+        "absolute_exists"
+    );
+    assert_eq!(
+        doctor["clients"]["codex"]["envKeys"],
+        json!(["AGENT_BRIDGE_WORKSPACES", "ANTHROPIC_API_KEY"])
+    );
+    assert_eq!(
+        doctor["clients"]["codex"]["verificationCommands"][0]["command"],
+        json!(["codex", "mcp", "list"])
+    );
+    assert_eq!(
+        doctor["clients"]["claude"]["registrationStatus"],
+        "registered"
+    );
+    assert_eq!(
+        doctor["clients"]["claude"]["verificationCommands"][0]["command"],
+        json!(["claude", "mcp", "list"])
+    );
+    assert_eq!(
+        doctor["clients"]["cursor"]["command"]["resolution"],
+        "path_lookup_required"
+    );
+    assert_eq!(
+        doctor["clients"]["cursor"]["verificationCommands"],
+        json!([])
+    );
+
+    let recommendations = doctor["recommendations"].as_array().unwrap();
+    assert!(recommendations.iter().any(|recommendation| {
+        recommendation["kind"] == "shell"
+            && recommendation["command"] == json!(["codex", "mcp", "list"])
+    }));
+    assert!(recommendations.iter().any(|recommendation| {
+        recommendation["kind"] == "shell"
+            && recommendation["command"] == json!(["claude", "mcp", "list"])
+    }));
+
+    let serialized = serde_json::to_string(&doctor).unwrap();
+    assert!(!serialized.contains("codex-secret"));
+    assert!(!serialized.contains("claude-secret"));
+    assert!(!serialized.contains("cursor-secret"));
+}
+
+#[test]
+fn stdio_doctor_reports_client_config_absent_malformed_and_missing_command() {
+    let env = fixture_env();
+    std::fs::create_dir_all(env.root.join(".codex")).unwrap();
+    std::fs::create_dir_all(env.root.join(".cursor")).unwrap();
+    std::fs::write(
+        env.root.join(".codex/config.toml"),
+        "[mcp_servers.other]\ncommand = \"agent-bridge-mcp\"\n",
+    )
+    .unwrap();
+    std::fs::write(env.root.join(".claude.json"), "{not-json").unwrap();
+    std::fs::write(
+        env.root.join(".cursor/mcp.json"),
+        r#"{"mcpServers":{"agent-bridge":{"env":{"TOKEN":"secret"}}}}"#,
+    )
+    .unwrap();
+
+    let mut client = McpClient::start(&env);
+    let doctor = client.tool("doctor", json!({"cwd": env.root}));
+
+    assert_eq!(doctor["clients"]["codex"]["parseStatus"], "ok");
+    assert_eq!(doctor["clients"]["codex"]["registrationStatus"], "absent");
+    assert_eq!(doctor["clients"]["codex"]["status"], "info");
+    assert_eq!(doctor["clients"]["claude"]["parseStatus"], "error");
+    assert_eq!(doctor["clients"]["claude"]["status"], "error");
+    assert_eq!(
+        doctor["clients"]["cursor"]["registrationStatus"],
+        "registered"
+    );
+    assert_eq!(
+        doctor["clients"]["cursor"]["command"]["resolution"],
+        "missing"
+    );
+    assert_eq!(doctor["clients"]["cursor"]["status"], "warning");
+    assert_eq!(doctor["summary"]["status"], "ok");
+
+    let serialized = serde_json::to_string(&doctor).unwrap();
+    assert!(!serialized.contains("secret"));
 }
 
 #[test]
@@ -1319,6 +1473,12 @@ fn stdio_doctor_orders_recommendations_from_blockers_to_followups() {
     assert!(messages[0].contains("AGENT_BRIDGE_STATE_DIR"));
     assert!(messages[1].contains("host runner"));
     assert!(messages[2].contains("providers"));
+    assert!(
+        messages
+            .iter()
+            .skip(3)
+            .any(|message| message.contains("user-level MCP config"))
+    );
 }
 
 #[test]

@@ -265,16 +265,17 @@ const CALLER_WORKFLOW_RESOURCE: &str = r#"# Agent Bridge Caller Workflow
 Use Agent Bridge when a separate coding agent can provide useful research, review, command execution, or isolated implementation work.
 
 Recommended flow:
-1. Call `doctor` first when setup, workspace, state, provider, or host-runner readiness is uncertain.
-2. Call `providers_check` to catch missing or misconfigured provider CLIs. Use smoke checks when debugging startup. `doctor.summary.status` covers setup health; `doctor.launchReadiness` covers startup verification and launchability.
-3. Call `task_preview` when cwd, flags, environment, prompt transport, or worktree isolation need inspection.
-4. Call `task_spawn` for the real delegated task.
-5. Use `task_list` and `task_status` `presentation` metadata for native-client rendering: active/recent ordering, display titles, status tone, result availability, structured actions, and ranked `nextActions`.
-6. Render unavailable `reply` and `resume` actions as disabled controls with their reasons; provider tasks are not interactive or resumable in v1.
-7. Call `task_wait` with a bounded timeout. If it times out, call `task_logs` with line cursors and `task_transcript` with cursor/limit to inspect progress.
-8. Once final, call `task_result` for `reviewPacket`, `nextActions`, transcript availability/result evidence, logs, git status, diff, changed files, exit metadata, diagnostics, and `errorType`.
-9. Treat provider output and native-feeling completion as evidence for the main caller, not as final verification.
-10. Call `task_remove` intentionally after any managed worktree has been inspected. `presentation.actions` and `nextActions` may mark cleanup as `unsafe` for managed worktree tasks until result inspection is explicit.
+1. Call `doctor` first when setup, workspace, state, provider, host-runner, or client registration readiness is uncertain.
+2. Inspect `doctor.clients` for static user-level MCP client config diagnostics. It reads only `~/.codex/config.toml`, `~/.claude.json`, and `~/.cursor/mcp.json`; it does not edit config, run client CLIs, search project-level overrides, or prove startup. Follow `kind: "shell"` recommendations such as `codex mcp list` or `claude mcp list` when you need client-side verification.
+3. Call `providers_check` to catch missing or misconfigured provider CLIs. Use smoke checks when debugging startup. `doctor.summary.status` covers setup health; `doctor.launchReadiness` covers startup verification and launchability. Client config issues remain in `doctor.clients` and do not change `summary.status`.
+4. Call `task_preview` when cwd, flags, environment, prompt transport, or worktree isolation need inspection.
+5. Call `task_spawn` for the real delegated task.
+6. Use `task_list` and `task_status` `presentation` metadata for native-client rendering: active/recent ordering, display titles, status tone, result availability, structured actions, and ranked `nextActions`.
+7. Render unavailable `reply` and `resume` actions as disabled controls with their reasons; provider tasks are not interactive or resumable in v1.
+8. Call `task_wait` with a bounded timeout. If it times out, call `task_logs` with line cursors and `task_transcript` with cursor/limit to inspect progress.
+9. Once final, call `task_result` for `reviewPacket`, `nextActions`, transcript availability/result evidence, logs, git status, diff, changed files, exit metadata, diagnostics, and `errorType`.
+10. Treat provider output and native-feeling completion as evidence for the main caller, not as final verification.
+11. Call `task_remove` intentionally after any managed worktree has been inspected. `presentation.actions` and `nextActions` may mark cleanup as `unsafe` for managed worktree tasks until result inspection is explicit.
 
 Self-guided clients should read `initialize.instructions`, `structuredContent`, output schemas, and `nextActions` when available. Clients that ignore those fields can still follow this manual lifecycle.
 

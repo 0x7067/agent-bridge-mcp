@@ -68,6 +68,15 @@ Use `launchReadiness` separately: version-only provider checks can leave provide
 available but not startup-verified or launchable. When startup readiness matters,
 follow the structured recommendation to run `providers_check` with `smoke: true`
 for the selected providers.
+Use `clients` separately for static user-level MCP client configuration
+diagnostics. It inspects only `~/.codex/config.toml`, `~/.claude.json`, and
+`~/.cursor/mcp.json`; it does not search project-level overrides, edit config
+files, run client CLIs, spawn providers, or prove MCP startup. Registered Codex
+and Claude entries include shell follow-up guidance such as `codex mcp list` or
+`claude mcp list` so the caller can verify the client separately. Client config
+issues are reported under `clients` and low-severity recommendations; they do not
+change `summary.status` because the bridge cannot reliably know which client is
+invoking it over stdio.
 
 Real-world delegation workflow:
 

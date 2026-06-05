@@ -20,6 +20,7 @@ const DEFAULT_AGGREGATE_TIMEOUT_MS: u64 = 110_000;
 const MAX_AGGREGATE_TIMEOUT_MS: i64 = 120_000;
 const MAX_PROVIDER_TIMEOUT_MS: i64 = 90_000;
 const CHILD_SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
+const MAX_CLIENT_CONFIG_BYTES: u64 = 1024 * 1024;
 
 pub async fn handle_request(request: JsonRpcRequest) -> Option<JsonRpcResponse> {
     request.id.as_ref()?;
@@ -281,6 +282,7 @@ async fn doctor(arguments: Value) -> Result<Value, String> {
         serde_json::from_value(arguments).map_err(|error| error.to_string())?;
     let workspace = doctor_workspace(input.cwd.as_deref());
     let state = doctor_state();
+    let clients = doctor_clients();
     let claude_host_runner = doctor_claude_host_runner().await;
     let provider_report = providers_check(doctor_provider_arguments(&input)).await?;
     let providers = provider_report
@@ -295,6 +297,7 @@ async fn doctor(arguments: Value) -> Result<Value, String> {
         provider_status,
         claude_host_runner["status"].as_str().unwrap_or("ok"),
         &launch_readiness,
+        &clients,
     );
     let summary_status = aggregate_status([
         workspace["status"].as_str().unwrap_or("ok"),
@@ -316,6 +319,7 @@ async fn doctor(arguments: Value) -> Result<Value, String> {
         },
         "workspace": workspace,
         "state": state,
+        "clients": clients,
         "providers": providers,
         "launchReadiness": launch_readiness,
         "claudeHostRunner": claude_host_runner,
@@ -430,6 +434,512 @@ fn is_sensitive_env_key(key: &str) -> bool {
     ["TOKEN", "API_KEY", "OAUTH", "AUTH", "PASSWORD", "SECRET"]
         .iter()
         .any(|needle| key.contains(needle))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClientKind {
+    Codex,
+    Claude,
+    Cursor,
+}
+
+impl ClientKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+            Self::Cursor => "cursor",
+        }
+    }
+
+    fn config_path(self, home: &Path) -> PathBuf {
+        match self {
+            Self::Codex => home.join(".codex/config.toml"),
+            Self::Claude => home.join(".claude.json"),
+            Self::Cursor => home.join(".cursor/mcp.json"),
+        }
+    }
+
+    fn verification_command(self) -> Option<Vec<&'static str>> {
+        match self {
+            Self::Codex => Some(vec!["codex", "mcp", "list"]),
+            Self::Claude => Some(vec!["claude", "mcp", "list"]),
+            Self::Cursor => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct ClientRegistration {
+    command: Option<String>,
+    args: Vec<String>,
+    env_keys: Vec<String>,
+    similar_registrations: Vec<String>,
+}
+
+struct ClientReport {
+    client: ClientKind,
+    config_path: String,
+    config_present: bool,
+    parse_status: &'static str,
+    registration_status: &'static str,
+    command: Option<Value>,
+    args: Vec<String>,
+    env_keys: Vec<String>,
+    similar_registrations: Vec<String>,
+    status: &'static str,
+    recommendations: Vec<String>,
+    error: Option<String>,
+}
+
+fn doctor_clients() -> Value {
+    let home = env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("~"));
+    doctor_clients_from_home(&home)
+}
+
+fn doctor_clients_from_home(home: &Path) -> Value {
+    let mut clients = serde_json::Map::new();
+    for client in [ClientKind::Codex, ClientKind::Claude, ClientKind::Cursor] {
+        clients.insert(client.name().to_string(), doctor_client(client, home));
+    }
+    Value::Object(clients)
+}
+
+fn doctor_client(client: ClientKind, home: &Path) -> Value {
+    let path = client.config_path(home);
+    let path_text = path.display().to_string();
+    let contents = match read_client_config(&path) {
+        Ok(Some(contents)) => contents,
+        Ok(None) => {
+            return client_report(ClientReport {
+                client,
+                config_path: path_text.clone(),
+                config_present: false,
+                parse_status: "missing",
+                registration_status: "absent",
+                command: None,
+                args: Vec::new(),
+                env_keys: Vec::new(),
+                similar_registrations: Vec::new(),
+                status: "info",
+                recommendations: vec![format!(
+                    "No {} user-level MCP config file was found; add Agent Bridge there only if you use this client.",
+                    client.name()
+                )],
+                error: None,
+            });
+        }
+        Err(error) => {
+            return client_report(ClientReport {
+                client,
+                config_path: path_text.clone(),
+                config_present: true,
+                parse_status: "error",
+                registration_status: "absent",
+                command: None,
+                args: Vec::new(),
+                env_keys: Vec::new(),
+                similar_registrations: Vec::new(),
+                status: "error",
+                recommendations: vec![format!(
+                    "Inspect {} because it could not be read: {error}.",
+                    path_text,
+                )],
+                error: Some(error),
+            });
+        }
+    };
+
+    let parsed = match client {
+        ClientKind::Codex => parse_codex_registration(&contents),
+        ClientKind::Claude | ClientKind::Cursor => parse_json_registration(&contents),
+    };
+    let registration = match parsed {
+        Ok(Some(registration)) => registration,
+        Ok(None) => {
+            return client_report(ClientReport {
+                client,
+                config_path: path_text.clone(),
+                config_present: true,
+                parse_status: "ok",
+                registration_status: "absent",
+                command: None,
+                args: Vec::new(),
+                env_keys: Vec::new(),
+                similar_registrations: Vec::new(),
+                status: "info",
+                recommendations: vec![format!(
+                    "No canonical agent-bridge MCP registration was found in {}.",
+                    path_text,
+                )],
+                error: None,
+            });
+        }
+        Err(error) => {
+            return client_report(ClientReport {
+                client,
+                config_path: path_text,
+                config_present: true,
+                parse_status: "error",
+                registration_status: "absent",
+                command: None,
+                args: Vec::new(),
+                env_keys: Vec::new(),
+                similar_registrations: Vec::new(),
+                status: "error",
+                recommendations: vec![format!("Fix the {} config parse error.", client.name())],
+                error: Some(error),
+            });
+        }
+    };
+
+    let command = command_diagnostic(registration.command.as_deref());
+    let status = if command["status"].as_str() == Some("warning") {
+        "warning"
+    } else {
+        "ok"
+    };
+    let mut recommendations = Vec::new();
+    if status == "warning" {
+        recommendations.push(format!(
+            "Inspect the {} Agent Bridge command configuration.",
+            client.name()
+        ));
+    }
+    let verification_commands = verification_commands(client);
+    if !verification_commands.is_empty() {
+        recommendations.push(format!(
+            "Run {} to verify the {} client can load the registered MCP server.",
+            verification_commands[0]["command"]
+                .as_array()
+                .map(|parts| {
+                    parts
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default(),
+            client.name()
+        ));
+    }
+    client_report(ClientReport {
+        client,
+        config_path: path_text,
+        config_present: true,
+        parse_status: "ok",
+        registration_status: "registered",
+        command: Some(command),
+        args: registration.args,
+        env_keys: registration.env_keys,
+        similar_registrations: registration.similar_registrations,
+        status,
+        recommendations,
+        error: None,
+    })
+}
+
+fn read_client_config(path: &Path) -> Result<Option<String>, String> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if metadata.len() > MAX_CLIENT_CONFIG_BYTES {
+        return Err(format!(
+            "config file exceeds {} bytes",
+            MAX_CLIENT_CONFIG_BYTES
+        ));
+    }
+    std::fs::read_to_string(path)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn client_report(mut report: ClientReport) -> Value {
+    report.env_keys.sort();
+    report.env_keys.dedup();
+    let verification_commands = if report.registration_status == "registered" {
+        verification_commands(report.client)
+    } else {
+        Vec::new()
+    };
+    let mut value = json!({
+        "client": report.client.name(),
+        "status": report.status,
+        "configPath": report.config_path,
+        "configPresent": report.config_present,
+        "parseStatus": report.parse_status,
+        "registrationStatus": report.registration_status,
+        "command": report.command.unwrap_or_else(|| command_diagnostic(None)),
+        "args": report.args,
+        "envKeys": report.env_keys,
+        "verificationStatus": "not_verified",
+        "verificationCommands": verification_commands,
+        "recommendations": report.recommendations
+    });
+    if !report.similar_registrations.is_empty() {
+        value["similarRegistrations"] = json!(report.similar_registrations);
+    }
+    if let Some(error) = report.error {
+        value["error"] = json!(error);
+    }
+    value
+}
+
+fn verification_commands(client: ClientKind) -> Vec<Value> {
+    client
+        .verification_command()
+        .into_iter()
+        .map(|command| {
+            json!({
+                "kind": "shell",
+                "command": command,
+                "description": format!(
+                    "Verify {} can load the registered Agent Bridge MCP server.",
+                    client.name()
+                )
+            })
+        })
+        .collect()
+}
+
+fn command_diagnostic(command: Option<&str>) -> Value {
+    let Some(command) = command.filter(|command| !command.is_empty()) else {
+        return json!({
+            "value": null,
+            "status": "warning",
+            "resolution": "missing",
+            "message": "Agent Bridge registration does not define a command string."
+        });
+    };
+    let path = Path::new(command);
+    if path.is_absolute() {
+        if path.exists() {
+            json!({
+                "value": command,
+                "status": "ok",
+                "resolution": "absolute_exists"
+            })
+        } else {
+            json!({
+                "value": command,
+                "status": "warning",
+                "resolution": "absolute_missing",
+                "message": "Configured absolute command path does not exist."
+            })
+        }
+    } else {
+        json!({
+            "value": command,
+            "status": "info",
+            "resolution": "path_lookup_required",
+            "message": "Command is not absolute; the client PATH controls resolution."
+        })
+    }
+}
+
+fn parse_json_registration(contents: &str) -> Result<Option<ClientRegistration>, String> {
+    let value: Value = serde_json::from_str(contents).map_err(|error| error.to_string())?;
+    let Some(servers) = value.get("mcpServers").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    let similar_registrations = similar_json_registrations(servers);
+    let Some(entry) = servers.get("agent-bridge").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    Ok(Some(ClientRegistration {
+        command: entry
+            .get("command")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        args: entry
+            .get("args")
+            .and_then(Value::as_array)
+            .map(|values| string_array(values))
+            .unwrap_or_default(),
+        env_keys: entry
+            .get("env")
+            .and_then(Value::as_object)
+            .map(|env| env.keys().cloned().collect())
+            .unwrap_or_default(),
+        similar_registrations,
+    }))
+}
+
+fn similar_json_registrations(servers: &serde_json::Map<String, Value>) -> Vec<String> {
+    servers
+        .iter()
+        .filter(|(name, _)| name.as_str() != "agent-bridge")
+        .filter_map(|(name, value)| {
+            value
+                .get("command")
+                .and_then(Value::as_str)
+                .filter(|command| command.contains("agent-bridge-mcp"))
+                .map(|_| name.clone())
+        })
+        .collect()
+}
+
+fn string_array(values: &[Value]) -> Vec<String> {
+    values
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
+}
+
+fn parse_codex_registration(contents: &str) -> Result<Option<ClientRegistration>, String> {
+    let mut current_section = String::new();
+    let mut registration = ClientRegistration::default();
+    let mut found = false;
+    let mut similar = Vec::new();
+    for line in contents.lines() {
+        let line = strip_toml_comment(line).trim().to_string();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(section) = toml_section(&line) {
+            current_section = section;
+            continue;
+        }
+        let Some((key, value)) = toml_assignment(&line) else {
+            continue;
+        };
+        if is_codex_agent_bridge_section(&current_section) {
+            found = true;
+            match key.as_str() {
+                "command" => registration.command = parse_toml_string(&value),
+                "args" => registration.args = parse_toml_string_array(&value),
+                "env" => registration
+                    .env_keys
+                    .extend(parse_toml_inline_table_keys(&value)),
+                _ => {}
+            }
+        } else if is_codex_agent_bridge_env_section(&current_section) {
+            found = true;
+            registration.env_keys.push(key);
+        } else if is_codex_mcp_server_section(&current_section)
+            && key == "command"
+            && parse_toml_string(&value).is_some_and(|command| command.contains("agent-bridge-mcp"))
+            && let Some(name) = codex_mcp_server_name(&current_section)
+            && name != "agent-bridge"
+        {
+            similar.push(name);
+        }
+    }
+    registration.similar_registrations = similar;
+    if found {
+        Ok(Some(registration))
+    } else {
+        Ok(None)
+    }
+}
+
+fn strip_toml_comment(line: &str) -> String {
+    let mut in_quote = false;
+    let mut escaped = false;
+    for (index, character) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' if in_quote => escaped = true,
+            '"' => in_quote = !in_quote,
+            '#' if !in_quote => return line[..index].to_string(),
+            _ => {}
+        }
+    }
+    line.to_string()
+}
+
+fn toml_section(line: &str) -> Option<String> {
+    line.strip_prefix('[')
+        .and_then(|line| line.strip_suffix(']'))
+        .map(|section| section.trim().to_string())
+}
+
+fn toml_assignment(line: &str) -> Option<(String, String)> {
+    let (key, value) = line.split_once('=')?;
+    Some((unquote_toml_key(key.trim()), value.trim().to_string()))
+}
+
+fn unquote_toml_key(key: &str) -> String {
+    key.trim_matches('"').trim_matches('\'').to_string()
+}
+
+fn is_codex_agent_bridge_section(section: &str) -> bool {
+    matches!(
+        section,
+        "mcp_servers.agent-bridge" | "mcp_servers.\"agent-bridge\"" | "mcp_servers.'agent-bridge'"
+    )
+}
+
+fn is_codex_agent_bridge_env_section(section: &str) -> bool {
+    matches!(
+        section,
+        "mcp_servers.agent-bridge.env"
+            | "mcp_servers.\"agent-bridge\".env"
+            | "mcp_servers.'agent-bridge'.env"
+    )
+}
+
+fn is_codex_mcp_server_section(section: &str) -> bool {
+    section.starts_with("mcp_servers.") && !section.ends_with(".env")
+}
+
+fn codex_mcp_server_name(section: &str) -> Option<String> {
+    section
+        .strip_prefix("mcp_servers.")
+        .map(|name| unquote_toml_key(name.trim()))
+}
+
+fn parse_toml_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .map(|value| value.replace("\\\"", "\"").replace("\\\\", "\\"))
+        .or_else(|| {
+            value
+                .strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+                .map(str::to_string)
+        })
+}
+
+fn parse_toml_string_array(value: &str) -> Vec<String> {
+    let Some(inner) = value
+        .trim()
+        .strip_prefix('[')
+        .and_then(|v| v.strip_suffix(']'))
+    else {
+        return Vec::new();
+    };
+    inner
+        .split(',')
+        .filter_map(|item| parse_toml_string(item.trim()))
+        .collect()
+}
+
+fn parse_toml_inline_table_keys(value: &str) -> Vec<String> {
+    let Some(inner) = value
+        .trim()
+        .strip_prefix('{')
+        .and_then(|v| v.strip_suffix('}'))
+    else {
+        return Vec::new();
+    };
+    inner
+        .split(',')
+        .filter_map(|item| {
+            item.split_once('=')
+                .map(|(key, _)| unquote_toml_key(key.trim()))
+        })
+        .collect()
 }
 
 fn doctor_state() -> Value {
@@ -581,6 +1091,7 @@ fn doctor_recommendations(
     provider_status: &str,
     host_status: &str,
     launch_readiness: &Value,
+    clients: &Value,
 ) -> Value {
     let mut recommendations = Vec::new();
     if workspace_status == "error" {
@@ -652,7 +1163,50 @@ fn doctor_recommendations(
             }
         }));
     }
+    recommendations.extend(client_recommendations(clients));
     Value::Array(recommendations)
+}
+
+fn client_recommendations(clients: &Value) -> Vec<Value> {
+    let Some(clients) = clients.as_object() else {
+        return Vec::new();
+    };
+    let mut recommendations = Vec::new();
+    for (name, client) in clients {
+        match client["registrationStatus"].as_str() {
+            Some("registered") => {
+                if let Some(command) = client["verificationCommands"]
+                    .as_array()
+                    .and_then(|commands| commands.first())
+                    .and_then(|command| command["command"].as_array())
+                {
+                    recommendations.push(json!({
+                        "id": format!("verify_{name}_client_config"),
+                        "severity": "info",
+                        "kind": "shell",
+                        "command": command,
+                        "message": format!("Run {} to verify the {name} client can load Agent Bridge.", command.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "))
+                    }));
+                }
+            }
+            Some("absent") if matches!(client["parseStatus"].as_str(), Some("ok" | "missing")) => {
+                recommendations.push(json!({
+                    "id": format!("configure_{name}_client"),
+                    "severity": "info",
+                    "message": format!("Add Agent Bridge to the {name} user-level MCP config only if you use that client.")
+                }));
+            }
+            _ if client["parseStatus"].as_str() == Some("error") => {
+                recommendations.push(json!({
+                    "id": format!("fix_{name}_client_config"),
+                    "severity": "warning",
+                    "message": format!("Fix the {name} MCP config parse/read error before relying on that client.")
+                }));
+            }
+            _ => {}
+        }
+    }
+    recommendations
 }
 
 fn doctor_launch_readiness(providers: &Value, selected: Option<&[ProviderKind]>) -> Value {
@@ -1662,7 +2216,8 @@ mod tests {
         );
         assert_eq!(workspace["status"], "error");
         assert_eq!(workspace["errorCode"], "workspace_policy_mismatch");
-        let recommendations = doctor_recommendations("ok", "ok", "ok", "error", &json!({}));
+        let recommendations =
+            doctor_recommendations("ok", "ok", "ok", "error", &json!({}), &json!({}));
         assert!(
             recommendations
                 .as_array()
@@ -1673,5 +2228,103 @@ mod tests {
                     .unwrap()
                     .contains("AGENT_BRIDGE_WORKSPACES"))
         );
+    }
+
+    #[test]
+    fn parses_codex_agent_bridge_section_and_env_keys() {
+        let registration = parse_codex_registration(
+            r#"
+[mcp_servers."agent-bridge"]
+command = "/tmp/agent-bridge-mcp" # comment
+args = ["--stdio", "extra"]
+env = { AGENT_BRIDGE_WORKSPACES = "/tmp/work", ANTHROPIC_API_KEY = "secret" }
+
+[mcp_servers."agent-bridge".env]
+CLAUDE_CODE_OAUTH_TOKEN = "secret"
+"#,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            registration.command.as_deref(),
+            Some("/tmp/agent-bridge-mcp")
+        );
+        assert_eq!(registration.args, vec!["--stdio", "extra"]);
+        assert!(
+            registration
+                .env_keys
+                .contains(&"AGENT_BRIDGE_WORKSPACES".to_string())
+        );
+        assert!(
+            registration
+                .env_keys
+                .contains(&"ANTHROPIC_API_KEY".to_string())
+        );
+        assert!(
+            registration
+                .env_keys
+                .contains(&"CLAUDE_CODE_OAUTH_TOKEN".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_json_agent_bridge_registration() {
+        let registration = parse_json_registration(
+            r#"{
+  "mcpServers": {
+    "agent-bridge": {
+      "command": "/tmp/agent-bridge-mcp",
+      "args": ["--stdio"],
+      "env": {"TOKEN": "secret"}
+    }
+  }
+}"#,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            registration.command.as_deref(),
+            Some("/tmp/agent-bridge-mcp")
+        );
+        assert_eq!(registration.args, vec!["--stdio"]);
+        assert_eq!(registration.env_keys, vec!["TOKEN"]);
+    }
+
+    #[test]
+    fn command_diagnostics_classify_missing_absolute_and_path_lookup() {
+        let missing = command_diagnostic(None);
+        assert_eq!(missing["resolution"], "missing");
+        assert_eq!(missing["status"], "warning");
+
+        let absolute_missing = command_diagnostic(Some("/tmp/agent-bridge-missing-binary"));
+        assert_eq!(absolute_missing["resolution"], "absolute_missing");
+        assert_eq!(absolute_missing["status"], "warning");
+
+        let path_lookup = command_diagnostic(Some("agent-bridge-mcp"));
+        assert_eq!(path_lookup["resolution"], "path_lookup_required");
+        assert_eq!(path_lookup["status"], "info");
+    }
+
+    #[test]
+    fn client_diagnostics_from_home_do_not_expose_env_values() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-bridge-client-diagnostics-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join(".cursor")).unwrap();
+        std::fs::write(
+            root.join(".cursor/mcp.json"),
+            r#"{"mcpServers":{"agent-bridge":{"command":"agent-bridge-mcp","env":{"API_KEY":"secret-value"}}}}"#,
+        )
+        .unwrap();
+
+        let clients = doctor_clients_from_home(&root);
+        assert_eq!(clients["cursor"]["envKeys"], json!(["API_KEY"]));
+        let serialized = serde_json::to_string(&clients).unwrap();
+        assert!(!serialized.contains("secret-value"));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
