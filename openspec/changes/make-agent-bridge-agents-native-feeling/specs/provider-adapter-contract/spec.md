@@ -35,7 +35,7 @@ The system SHALL expose a runtime provider readiness snapshot so clients can dis
 
 #### Scenario: Startup exposes non-blocking readiness state
 - **WHEN** an MCP client initializes Agent Bridge and then requests provider discovery metadata
-- **THEN** the response distinguishes static provider capability metadata from runtime readiness state such as `checking`, `ready`, `stale`, or `failed`.
+- **THEN** the response distinguishes static provider capability metadata from runtime readiness states such as `stale`, `ready`, or `failed`.
 
 #### Scenario: Version-only discovery does not imply launch readiness
 - **WHEN** a provider binary is present but no task-path smoke probe has succeeded for the current runtime environment

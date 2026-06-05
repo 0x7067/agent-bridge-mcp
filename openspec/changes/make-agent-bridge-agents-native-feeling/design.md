@@ -145,7 +145,7 @@ Action mapping:
 | --- | --- | --- |
 | `wait` | `task_wait` | task is not final |
 | `inspect_status` | `task_status` | always |
-| `inspect_logs` | `task_logs` | task is not removed |
+| `inspect_logs` | `task_logs` | task is inspectable; removed tasks are excluded from presentation lists before action rendering |
 | `inspect_transcript` | `task_transcript` | transcript is available |
 | `inspect_result` | `task_result` | task is final |
 | `stop` | `task_stop` | task is running or queued |

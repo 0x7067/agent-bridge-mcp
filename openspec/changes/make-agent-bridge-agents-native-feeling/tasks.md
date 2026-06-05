@@ -21,7 +21,7 @@
 
 - [x] 4.1 Audit current runtime `providers_list` output for launch profiles, reduced-configuration metadata, reply support, resume support, and presentation-relevant action support; add only missing fields.
 - [x] 4.2 Ensure runtime tool schemas expose launch profile arguments consistently with source and README examples.
-- [x] 4.3 Add a runtime readiness snapshot that distinguishes static provider capabilities from provider states such as checking, ready, stale, and failed.
+- [x] 4.3 Add a runtime readiness snapshot that distinguishes static provider capabilities from provider states such as stale, ready, and failed.
 - [x] 4.4 Ensure version-only discovery never marks a provider as launchable unless startup readiness has been verified or explicitly caveated.
 - [x] 4.5 Ensure `providers_check` or the selected readiness surface can refresh the runtime snapshot with checked timestamps, probe phase, timing fields, and diagnostics.
 - [x] 4.6 Add production-binary fixture tests for `tools/list`, `providers_list`, and provider readiness drift.
@@ -47,4 +47,8 @@
 
 ## 7. Dedicated Review
 
-- [ ] 7.1 Run a named read-only Agent Bridge review task titled `Review native-feeling Agent Bridge presentation` using mode `review`; ask for `review-this`-inspired output with category ratings, an overall rating, a checklist summary, and actionable improvements, then inspect `task_result.reviewPacket` and raw evidence before deciding whether the change is ready to archive.
+- [x] 7.1 Run a named read-only Agent Bridge review task titled `Review native-feeling Agent Bridge presentation` using mode `review`; ask for `review-this`-inspired output with category ratings, an overall rating, a checklist summary, and actionable improvements, then inspect `task_result.reviewPacket` and raw evidence before deciding whether the change is ready to archive.
+- [x] 7.2 Resolve the reviewed `task_list` semantics risk for `presentation: true` with `scope: "all"` by either bounding the default response or documenting the intentional unbounded raw-history path.
+- [x] 7.3 Resolve the reviewed readiness-state drift around `checking` by either implementing an observable checking state or narrowing the OpenSpec/docs language to the states the runtime actually returns.
+- [x] 7.4 Align reviewed removed-task action semantics for `inspect_logs` with the design contract, or document why removed tasks are excluded before presentation action rendering.
+- [x] 7.5 Clarify native-client docs for `task_list.presentation` mode versus per-task `presentation` metadata, `task_list` default migration behavior, and provider-level camelCase action keys versus task-level snake_case action ids.

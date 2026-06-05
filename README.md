@@ -69,8 +69,11 @@ Real-world delegation workflow:
 
 - Treat provider output as evidence for the main Codex thread, not as final verification. Inspect the final report, logs, `gitStatus`, `diff`, `changedFiles`, and exit metadata before using the result.
 - Use the `presentation` object on `task_list`, `task_status`, and `task_result` for native-feeling UI summaries. `verificationStatus: "not_verified"` means provider completion is not project verification.
+- `task_list.presentation` is the list-mode selector; each returned task's `presentation` object is the display metadata. `{}` returns active/recent presentation summaries with the default bound. Use `presentation: false, scope: "all"` only for intentional raw registry inspection; if a client requests `presentation: true, scope: "all"` for historical summaries, pass an explicit `limit`.
 - Render `reply` and `resume` presentation actions as unavailable in v1. Provider tasks are batch lifecycle tasks, not interactive resumable conversations.
-- Treat `providers_list.readiness` as non-blocking discovery. It starts as `state: "stale"` and `launchable: false`; run `providers_check` with `smoke: true` to mark a provider `ready` and launchable.
+- Provider capability `presentationActions` keys are camelCase capability names; per-task `presentation.actions[].id` values are snake_case lifecycle action ids. Treat them as related but separate surfaces.
+- Treat `providers_list.readiness` as non-blocking discovery. It starts as `state: "stale"` and `launchable: false`; run `providers_check` with `smoke: true` to mark a provider `ready` and launchable or `failed` with diagnostics.
+- Removed tasks are excluded from native presentation lists before lifecycle actions are rendered. Present lifecycle controls only for inspectable task records.
 - Use `task_transcript` when analyzing provider behavior, comparing providers, or checking whether a final or partial provider result was detected.
 - Use profile `bridge` for normal Agent Bridge task guidance. Use profile `bare` for paired experiments with compact bridge-owned prompts and provider-specific reduced configuration; inspect `profileDiagnostics` because reductions vary by provider.
 - Keep the main thread responsible for project gates. Run the relevant tests, lint, typecheck, build, or OpenSpec validation before claiming the requested work is complete.
@@ -547,6 +550,10 @@ Inspect the full raw task registry intentionally:
   }
 }
 ```
+
+For historical presentation summaries, keep `presentation: true` and set
+`scope: "all"` plus an explicit `limit`; the active/recent default bound only
+applies to the default presentation list.
 
 Poll task status:
 
