@@ -22,6 +22,7 @@ const MAX_AGGREGATE_TIMEOUT_MS: i64 = 120_000;
 const MAX_PROVIDER_TIMEOUT_MS: i64 = 90_000;
 const CHILD_SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 const MAX_CLIENT_CONFIG_BYTES: u64 = 1024 * 1024;
+const MAX_BINARY_FINGERPRINT_BYTES: u64 = 16 * 1024 * 1024;
 const TASKS_EXTENSION_ID: &str = "io.modelcontextprotocol/tasks";
 
 static TASK_EXTENSION_READINESS: OnceLock<Mutex<TaskExtensionReadiness>> = OnceLock::new();
@@ -287,6 +288,7 @@ async fn doctor(arguments: Value) -> Result<Value, String> {
         serde_json::from_value(arguments).map_err(|error| error.to_string())?;
     let workspace = doctor_workspace(input.cwd.as_deref());
     let state = doctor_state();
+    let binary = doctor_binary(input.cwd.as_deref());
     let clients = doctor_clients();
     let task_extension_readiness = doctor_task_extension_readiness();
     let claude_host_runner = doctor_claude_host_runner().await;
@@ -304,6 +306,7 @@ async fn doctor(arguments: Value) -> Result<Value, String> {
         claude_host_runner["status"].as_str().unwrap_or("ok"),
         &launch_readiness,
         &clients,
+        &binary,
     );
     let summary_status = aggregate_status([
         workspace["status"].as_str().unwrap_or("ok"),
@@ -325,6 +328,7 @@ async fn doctor(arguments: Value) -> Result<Value, String> {
         },
         "workspace": workspace,
         "state": state,
+        "binary": binary,
         "clients": clients,
         "taskExtensionReadiness": task_extension_readiness,
         "providers": providers,
@@ -661,6 +665,8 @@ fn doctor_environment() -> Value {
         "AGENT_BRIDGE_WORKSPACES",
         "AGENT_BRIDGE_STATE_DIR",
         "AGENT_BRIDGE_CLAUDE_HOST_SOCKET",
+        "AGENT_BRIDGE_INSTALLED_BIN",
+        "AGENT_BRIDGE_RELEASE_BIN",
         "CODEX_BIN",
         "CURSOR_AGENT_BIN",
         "PI_BIN",
@@ -688,6 +694,240 @@ fn is_sensitive_env_key(key: &str) -> bool {
     ["TOKEN", "API_KEY", "OAUTH", "AUTH", "PASSWORD", "SECRET"]
         .iter()
         .any(|needle| key.contains(needle))
+}
+
+#[derive(Debug, Clone)]
+struct BinaryTarget {
+    path: PathBuf,
+    exists: bool,
+    readable: bool,
+    size_bytes: Option<u64>,
+    modified_at: Option<String>,
+    fingerprint: Option<String>,
+    fingerprint_status: &'static str,
+    error: Option<String>,
+}
+
+impl BinaryTarget {
+    fn inspect(path: PathBuf) -> Self {
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {
+                let size_bytes = metadata.len();
+                let modified_at = metadata.modified().ok().map(|time| {
+                    chrono::DateTime::<chrono::Utc>::from(time)
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                });
+                let (fingerprint, fingerprint_status, error) = fingerprint_file(&path, size_bytes);
+                Self {
+                    path,
+                    exists: true,
+                    readable: fingerprint_status != "error",
+                    size_bytes: Some(size_bytes),
+                    modified_at,
+                    fingerprint,
+                    fingerprint_status,
+                    error,
+                }
+            }
+            Ok(_) => Self {
+                path,
+                exists: true,
+                readable: false,
+                size_bytes: None,
+                modified_at: None,
+                fingerprint: None,
+                fingerprint_status: "error",
+                error: Some("path is not a regular file".to_string()),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self {
+                path,
+                exists: false,
+                readable: false,
+                size_bytes: None,
+                modified_at: None,
+                fingerprint: None,
+                fingerprint_status: "missing",
+                error: None,
+            },
+            Err(error) => Self {
+                path,
+                exists: true,
+                readable: false,
+                size_bytes: None,
+                modified_at: None,
+                fingerprint: None,
+                fingerprint_status: "error",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "path": self.path.display().to_string(),
+            "exists": self.exists,
+            "readable": self.readable,
+            "sizeBytes": self.size_bytes,
+            "modifiedAt": self.modified_at,
+            "fingerprint": self.fingerprint,
+            "fingerprintStatus": self.fingerprint_status,
+            "error": self.error
+        })
+    }
+}
+
+fn fingerprint_file(
+    path: &Path,
+    size_bytes: u64,
+) -> (Option<String>, &'static str, Option<String>) {
+    if size_bytes > MAX_BINARY_FINGERPRINT_BYTES {
+        return (None, "skipped_too_large", None);
+    }
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => return (None, "error", Some(error.to_string())),
+    };
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    (Some(format!("fnv64:{hash:016x}")), "ok", None)
+}
+
+fn doctor_binary(cwd: Option<&str>) -> Value {
+    let running = match std::env::current_exe() {
+        Ok(path) => BinaryTarget::inspect(path),
+        Err(error) => BinaryTarget {
+            path: PathBuf::new(),
+            exists: false,
+            readable: false,
+            size_bytes: None,
+            modified_at: None,
+            fingerprint: None,
+            fingerprint_status: "error",
+            error: Some(error.to_string()),
+        },
+    };
+    let installed = BinaryTarget::inspect(installed_binary_path());
+    let release = BinaryTarget::inspect(release_binary_path(cwd));
+    binary_report(running, installed, release)
+}
+
+fn installed_binary_path() -> PathBuf {
+    env::var("AGENT_BRIDGE_INSTALLED_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| expand_home("~/.local/bin/agent-bridge-mcp"))
+}
+
+fn release_binary_path(cwd: Option<&str>) -> PathBuf {
+    if let Ok(path) = env::var("AGENT_BRIDGE_RELEASE_BIN") {
+        return PathBuf::from(path);
+    }
+    cwd.map(PathBuf::from)
+        .or_else(|| env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("target/release/agent-bridge-mcp")
+}
+
+fn binary_report(running: BinaryTarget, installed: BinaryTarget, release: BinaryTarget) -> Value {
+    let matches_release = binary_targets_match(&installed, &release);
+    let installed_matches_running = binary_targets_match(&installed, &running);
+    let release_matches_running = binary_targets_match(&release, &running);
+    let status = binary_status(
+        &running,
+        &installed,
+        &release,
+        matches_release,
+        installed_matches_running,
+    );
+    let recommendations =
+        binary_recommendation_strings(status, matches_release, &installed, &release);
+    let mut installed_json = installed.to_json();
+    installed_json["matchesRelease"] = json!(matches_release);
+    installed_json["matchesRunning"] = json!(installed_matches_running);
+    let mut release_json = release.to_json();
+    release_json["matchesRunning"] = json!(release_matches_running);
+    json!({
+        "status": status,
+        "fingerprintLimitBytes": MAX_BINARY_FINGERPRINT_BYTES,
+        "running": running.to_json(),
+        "installed": installed_json,
+        "release": release_json,
+        "recommendations": recommendations
+    })
+}
+
+fn binary_targets_match(left: &BinaryTarget, right: &BinaryTarget) -> bool {
+    left.readable
+        && right.readable
+        && left.size_bytes == right.size_bytes
+        && left.fingerprint_status == "ok"
+        && right.fingerprint_status == "ok"
+        && left.fingerprint == right.fingerprint
+}
+
+fn binary_status(
+    running: &BinaryTarget,
+    installed: &BinaryTarget,
+    release: &BinaryTarget,
+    matches_release: bool,
+    installed_matches_running: bool,
+) -> &'static str {
+    if running.fingerprint_status == "error"
+        || override_path_error("AGENT_BRIDGE_INSTALLED_BIN", installed)
+        || override_path_error("AGENT_BRIDGE_RELEASE_BIN", release)
+    {
+        return "error";
+    }
+    if !installed.exists
+        || !release.exists
+        || !matches_release
+        || !installed_matches_running
+        || [running, installed, release]
+            .iter()
+            .any(|target| target.fingerprint_status == "skipped_too_large")
+    {
+        return "warning";
+    }
+    if installed.readable && release.readable && matches_release {
+        "ok"
+    } else {
+        "unknown"
+    }
+}
+
+fn override_path_error(key: &str, target: &BinaryTarget) -> bool {
+    env::var_os(key).is_some()
+        && target.exists
+        && (!target.readable || target.fingerprint_status == "error")
+}
+
+fn binary_recommendation_strings(
+    status: &str,
+    matches_release: bool,
+    installed: &BinaryTarget,
+    release: &BinaryTarget,
+) -> Vec<String> {
+    let mut recommendations = Vec::new();
+    if !release.exists {
+        recommendations.push(
+            "Build the release binary with cargo build --release --bin agent-bridge-mcp before comparing freshness."
+                .to_string(),
+        );
+    }
+    if !installed.exists {
+        recommendations.push(
+            "Install the release binary to the configured installed binary path.".to_string(),
+        );
+    }
+    if status == "warning" && installed.exists && release.exists && !matches_release {
+        recommendations.push(
+            "Rebuild and install the release binary so the installed copy matches target/release."
+                .to_string(),
+        );
+    }
+    recommendations
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1346,6 +1586,7 @@ fn doctor_recommendations(
     host_status: &str,
     launch_readiness: &Value,
     clients: &Value,
+    binary: &Value,
 ) -> Value {
     let mut recommendations = Vec::new();
     if workspace_status == "error" {
@@ -1418,7 +1659,40 @@ fn doctor_recommendations(
         }));
     }
     recommendations.extend(client_recommendations(clients));
+    recommendations.extend(binary_recommendations(binary));
     Value::Array(recommendations)
+}
+
+fn binary_recommendations(binary: &Value) -> Vec<Value> {
+    let mut recommendations = Vec::new();
+    let status = binary["status"].as_str().unwrap_or("unknown");
+    if status == "ok" {
+        return recommendations;
+    }
+    if binary["release"]["exists"].as_bool() == Some(false) {
+        recommendations.push(json!({
+            "id": "build_release_binary",
+            "severity": "info",
+            "kind": "shell",
+            "command": ["cargo", "build", "--release", "--bin", "agent-bridge-mcp"],
+            "message": "Build the release Agent Bridge binary before comparing or installing binary freshness."
+        }));
+    }
+    if binary["installed"]["exists"].as_bool() == Some(false)
+        || binary["installed"]["matchesRelease"].as_bool() == Some(false)
+    {
+        let installed_path = binary["installed"]["path"]
+            .as_str()
+            .unwrap_or("~/.local/bin/agent-bridge-mcp");
+        recommendations.push(json!({
+            "id": "install_release_binary",
+            "severity": "info",
+            "kind": "shell",
+            "command": ["install", "-m", "0755", "target/release/agent-bridge-mcp", installed_path],
+            "message": "Install the release Agent Bridge binary after building it."
+        }));
+    }
+    recommendations
 }
 
 fn client_recommendations(clients: &Value) -> Vec<Value> {
@@ -2470,8 +2744,15 @@ mod tests {
         );
         assert_eq!(workspace["status"], "error");
         assert_eq!(workspace["errorCode"], "workspace_policy_mismatch");
-        let recommendations =
-            doctor_recommendations("ok", "ok", "ok", "error", &json!({}), &json!({}));
+        let recommendations = doctor_recommendations(
+            "ok",
+            "ok",
+            "ok",
+            "error",
+            &json!({}),
+            &json!({}),
+            &json!({}),
+        );
         assert!(
             recommendations
                 .as_array()
@@ -2580,5 +2861,112 @@ CLAUDE_CODE_OAUTH_TOKEN = "secret"
         assert!(!serialized.contains("secret-value"));
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn binary_report_classifies_matching_and_differing_files() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-bridge-binary-report-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let running = root.join("running");
+        let installed = root.join("installed");
+        let release = root.join("release");
+        std::fs::write(&running, "same").unwrap();
+        std::fs::write(&installed, "same").unwrap();
+        std::fs::write(&release, "same").unwrap();
+
+        let matching = binary_report(
+            BinaryTarget::inspect(running.clone()),
+            BinaryTarget::inspect(installed.clone()),
+            BinaryTarget::inspect(release.clone()),
+        );
+        assert_eq!(matching["status"], "ok");
+        assert_eq!(matching["installed"]["matchesRelease"], true);
+        assert_eq!(matching["installed"]["matchesRunning"], true);
+
+        std::fs::write(&release, "different").unwrap();
+        let differing = binary_report(
+            BinaryTarget::inspect(running),
+            BinaryTarget::inspect(installed),
+            BinaryTarget::inspect(release),
+        );
+        assert_eq!(differing["status"], "warning");
+        assert_eq!(differing["installed"]["matchesRelease"], false);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn binary_report_classifies_missing_and_oversized_files() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-bridge-binary-missing-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let running = root.join("running");
+        let installed = root.join("installed");
+        let release = root.join("release");
+        std::fs::write(&running, "same").unwrap();
+        std::fs::write(&installed, "same").unwrap();
+
+        let missing = binary_report(
+            BinaryTarget::inspect(running.clone()),
+            BinaryTarget::inspect(installed.clone()),
+            BinaryTarget::inspect(release.clone()),
+        );
+        assert_eq!(missing["status"], "warning");
+        assert_eq!(missing["release"]["exists"], false);
+
+        let large = std::fs::File::create(&release).unwrap();
+        large.set_len(MAX_BINARY_FINGERPRINT_BYTES + 1).unwrap();
+        let oversized = binary_report(
+            BinaryTarget::inspect(running),
+            BinaryTarget::inspect(installed),
+            BinaryTarget::inspect(release),
+        );
+        assert_eq!(oversized["status"], "warning");
+        assert_eq!(
+            oversized["release"]["fingerprintStatus"],
+            "skipped_too_large"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn binary_report_classifies_not_regular_file_as_error() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-bridge-binary-error-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let running = root.join("running");
+        let installed = root.join("installed");
+        let release_dir = root.join("release-dir");
+        std::fs::write(&running, "same").unwrap();
+        std::fs::write(&installed, "same").unwrap();
+        std::fs::create_dir_all(&release_dir).unwrap();
+
+        let report = binary_report(
+            BinaryTarget::inspect(running),
+            BinaryTarget::inspect(installed),
+            BinaryTarget::inspect(release_dir),
+        );
+        assert_eq!(report["release"]["fingerprintStatus"], "error");
+        assert_eq!(report["release"]["readable"], false);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn release_binary_path_uses_doctor_cwd_when_no_override() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-bridge-release-path-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let expected = root.join("target/release/agent-bridge-mcp");
+        assert_eq!(release_binary_path(Some(root.to_str().unwrap())), expected);
     }
 }

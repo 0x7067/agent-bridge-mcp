@@ -77,6 +77,14 @@ and Claude entries include shell follow-up guidance such as `codex mcp list` or
 issues are reported under `clients` and low-severity recommendations; they do not
 change `summary.status` because the bridge cannot reliably know which client is
 invoking it over stdio.
+Use `binary` separately for running/installed/release binary freshness
+diagnostics. It compares file metadata and a bounded diagnostic fingerprint for
+the running executable, the installed binary path, and the release candidate
+path. It does not build, copy, install, or delete binaries. Set
+`AGENT_BRIDGE_INSTALLED_BIN` or `AGENT_BRIDGE_RELEASE_BIN` only when the default
+paths do not match your setup; otherwise the installed path defaults to
+`~/.local/bin/agent-bridge-mcp` and the release candidate defaults to
+`<doctor cwd>/target/release/agent-bridge-mcp`.
 
 Real-world delegation workflow:
 

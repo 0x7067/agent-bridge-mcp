@@ -1351,7 +1351,9 @@ fn stdio_doctor_default_report_shape_and_side_effects() {
         "server",
         "workspace",
         "state",
+        "binary",
         "clients",
+        "taskExtensionReadiness",
         "providers",
         "launchReadiness",
         "claudeHostRunner",
@@ -1368,6 +1370,11 @@ fn stdio_doctor_default_report_shape_and_side_effects() {
     ));
     assert_eq!(doctor["server"]["name"], "agent-bridge-mcp");
     assert_eq!(doctor["server"]["protocolVersion"], "2024-11-05");
+    assert!(matches!(
+        doctor["binary"]["status"].as_str(),
+        Some("ok" | "warning" | "error" | "unknown")
+    ));
+    assert!(doctor["binary"]["running"]["path"].is_string());
     assert_eq!(doctor["clients"]["codex"]["configPresent"], false);
     assert_eq!(doctor["clients"]["codex"]["registrationStatus"], "absent");
     assert_eq!(doctor["clients"]["claude"]["configPresent"], false);
@@ -1382,6 +1389,89 @@ fn stdio_doctor_default_report_shape_and_side_effects() {
     assert_eq!(client.tool("task_list", json!({}))["tasks"], json!([]));
     let provider_stdin = std::fs::read_to_string(env.log_dir.join("stdin.txt")).unwrap();
     assert!(!provider_stdin.contains("AGENT_BRIDGE_PROVIDER_SMOKE_OK"));
+}
+
+#[test]
+fn stdio_doctor_reports_binary_freshness_with_overrides_without_mutation() {
+    let env = fixture_env();
+    let installed = env.root.join("installed-agent-bridge-mcp");
+    let release = env.root.join("target/release/agent-bridge-mcp");
+    std::fs::create_dir_all(release.parent().unwrap()).unwrap();
+    std::fs::write(&installed, "old-binary").unwrap();
+    std::fs::write(&release, "new-binary").unwrap();
+    let installed_before = std::fs::metadata(&installed).unwrap();
+    let release_before = std::fs::metadata(&release).unwrap();
+
+    let mut extra_env = BTreeMap::new();
+    extra_env.insert(
+        "AGENT_BRIDGE_INSTALLED_BIN".to_string(),
+        OsString::from(&installed),
+    );
+    extra_env.insert(
+        "AGENT_BRIDGE_RELEASE_BIN".to_string(),
+        OsString::from(&release),
+    );
+    let mut client = McpClient::start_with_extra_env(&env, extra_env);
+
+    let doctor = client.tool("doctor", json!({"cwd": env.root}));
+    assert_eq!(doctor["binary"]["status"], "warning");
+    assert_eq!(
+        doctor["binary"]["installed"]["path"],
+        installed.display().to_string()
+    );
+    assert_eq!(
+        doctor["binary"]["release"]["path"],
+        release.display().to_string()
+    );
+    assert_eq!(doctor["binary"]["installed"]["matchesRelease"], false);
+    assert_eq!(doctor["summary"]["status"], "ok");
+    assert!(
+        doctor["binary"]["recommendations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|recommendation| recommendation
+                .as_str()
+                .unwrap()
+                .contains("Rebuild and install"))
+    );
+    assert!(doctor["recommendations"].as_array().unwrap().iter().any(
+        |recommendation| recommendation["id"] == "install_release_binary"
+            && recommendation["command"][4] == installed.display().to_string()
+    ));
+
+    let installed_after = std::fs::metadata(&installed).unwrap();
+    let release_after = std::fs::metadata(&release).unwrap();
+    assert_eq!(installed_before.len(), installed_after.len());
+    assert_eq!(release_before.len(), release_after.len());
+    assert_eq!(std::fs::read_to_string(&installed).unwrap(), "old-binary");
+    assert_eq!(std::fs::read_to_string(&release).unwrap(), "new-binary");
+}
+
+#[test]
+fn stdio_doctor_binary_uses_cwd_release_path_without_override() {
+    let env = fixture_env();
+    let installed = env.root.join("installed-agent-bridge-mcp");
+    let release = env.root.join("target/release/agent-bridge-mcp");
+    std::fs::create_dir_all(release.parent().unwrap()).unwrap();
+    std::fs::write(&installed, "same-binary").unwrap();
+    std::fs::write(&release, "same-binary").unwrap();
+
+    let mut extra_env = BTreeMap::new();
+    extra_env.insert(
+        "AGENT_BRIDGE_INSTALLED_BIN".to_string(),
+        OsString::from(&installed),
+    );
+    let mut client = McpClient::start_with_extra_env(&env, extra_env);
+
+    let doctor = client.tool("doctor", json!({"cwd": env.root}));
+    assert_eq!(
+        doctor["binary"]["release"]["path"],
+        release.display().to_string()
+    );
+    assert_eq!(doctor["binary"]["installed"]["matchesRelease"], true);
+    assert_eq!(doctor["binary"]["installed"]["fingerprintStatus"], "ok");
+    assert_eq!(doctor["binary"]["release"]["fingerprintStatus"], "ok");
 }
 
 #[test]
