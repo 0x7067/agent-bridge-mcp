@@ -1,10 +1,10 @@
 # Agent Bridge MCP
 
-Rust stdio MCP server for spawning task-native coding agents from Codex.
+Rust stdio MCP server for spawning provider agents from Codex.
 
 This is a breaking redesign. The old `ask_*` and `dispatch_*` tools were removed.
-The public surface is now a provider-neutral task lifecycle API modeled after
-Claude/Codex-style delegated tasks.
+The public surface is now a provider-neutral agent launch API backed by a task
+lifecycle modeled after Claude/Codex-style delegated tasks.
 
 This repo lives at:
 
@@ -18,8 +18,10 @@ This repo lives at:
 - `providers_check`: check availability of each provider with `--version`, and optionally run startup smoke probes.
 - `doctor`: return a structured setup report for server, workspace, state, providers, Claude host-runner, and recommendations.
 - `task_preview`: preview the command, args, and environment that would be used for a task without spawning it.
-- `task_spawn`: start a background task and return a `taskId`.
-- `task_list`: list tracked tasks; defaults to native-client presentation summaries for active/recent tasks.
+- `agent_spawn`: start a provider agent and return the `taskId` used by lifecycle tools.
+- `agents_list`: list active/recent provider agents with bounded native-client presentation summaries.
+- `task_spawn`: legacy compatibility launch tool; prefer `agent_spawn` for new clients.
+- `task_list`: lower-level task registry list; defaults to native-client presentation summaries for active/recent tasks.
 - `task_status`: inspect one task lifecycle state.
 - `task_wait`: wait for a task to reach a final state or return after a timeout.
 - `task_logs`: read capped stdout/stderr slices; supports line cursors for incremental reads.
@@ -28,19 +30,21 @@ This repo lives at:
 - `task_stop`: terminate a running task.
 - `task_remove`: remove a completed/stopped task; managed worktree cleanup is mandatory.
 
-`task_spawn` returns immediately. Callers can poll `task_status`, `task_logs`, or
+`agent_spawn` returns immediately. Callers can poll `task_status`, `task_logs`, or
 `task_result` with the returned `taskId`, or use `task_wait` to block until the
 task completes or a timeout is reached. `task_preview` lets you inspect the
 exact command, arguments, selected launch profile, profile diagnostics, and
-environment keys before spawning.
+environment keys before spawning. `task_spawn` remains available as a legacy
+compatibility launch tool until the agent-oriented path is confirmed in target
+harnesses.
 
 Recommended caller workflow:
 
 1. Call `doctor` first when setup, workspace, state, provider, or Claude host-runner readiness is uncertain.
 2. Call `providers_check` to catch missing or misconfigured CLIs before delegation. Use `smoke: true` when debugging provider startup, not just binary presence.
 3. Call `task_preview` when debugging provider flags or cwd/env behavior.
-4. Call `task_spawn` for the real task.
-5. Call `task_list` or `task_status` to read each task's `presentation` metadata
+4. Call `agent_spawn` for the real provider agent.
+5. Call `agents_list` or `task_status` to read each task's `presentation` metadata
    for native-client display title, status tone, result availability, structured
    lifecycle actions, ranked `nextActions`, and unavailable reply/resume controls.
 6. Call `task_wait` with a bounded `timeoutMs`; if it times out, use `task_logs`
@@ -89,8 +93,8 @@ paths do not match your setup; otherwise the installed path defaults to
 Real-world delegation workflow:
 
 - Treat provider output as evidence for the main Codex thread, not as final verification. Inspect the final report, logs, `gitStatus`, `diff`, `changedFiles`, and exit metadata before using the result.
-- Use the `presentation` object on `task_list`, `task_status`, and `task_result` for native-feeling UI summaries. `presentation.nextActions`, top-level `nextActions`, and `reviewPacket.nextActions` provide ranked follow-up calls with arguments and safety classifications. `verificationStatus: "not_verified"` means provider completion is not project verification.
-- `task_list.presentation` is the list-mode selector; each returned task's `presentation` object is the display metadata. `{}` returns active/recent presentation summaries with the default bound. Use `presentation: false, scope: "all"` only for intentional raw registry inspection; if a client requests `presentation: true, scope: "all"` for historical summaries, pass an explicit `limit`.
+- Use the `presentation` object on `agents_list`, `task_status`, and `task_result` for native-feeling UI summaries. `presentation.nextActions`, top-level `nextActions`, and `reviewPacket.nextActions` provide ranked follow-up calls with arguments and safety classifications. `verificationStatus: "not_verified"` means provider completion is not project verification.
+- `agents_list` is the preferred bounded active/recent presentation list for harnesses. Use `task_list.presentation` only when a lower-level task registry view is needed. Use `presentation: false, scope: "all"` only for intentional raw registry inspection; if a client requests `presentation: true, scope: "all"` for historical summaries, pass an explicit `limit`.
 - Render `reply` and `resume` presentation actions as unavailable in v1. Provider tasks are batch lifecycle tasks, not interactive resumable conversations.
 - Provider capability `presentationActions` keys are camelCase capability names; per-task `presentation.actions[].id` values are snake_case lifecycle action ids. Treat them as related but separate surfaces.
 - Treat `providers_list.readiness` as non-blocking discovery. It starts as `state: "stale"` and `launchable: false`; run `providers_check` with `smoke: true` to mark a provider `ready` and launchable or `failed` with diagnostics.
@@ -134,11 +138,11 @@ workflow templates. Resources may be shown in a picker, searched, or included
 automatically only if the host implements those heuristics. Clients that ignore
 `initialize.instructions`, `structuredContent`, output schemas, or `nextActions`
 can still follow the manual lifecycle through `doctor`, `providers_check`,
-`task_spawn`, `task_wait`, `task_logs`, `task_transcript`, `task_result`, and
+`agent_spawn`, `agents_list`, `task_wait`, `task_logs`, `task_transcript`, `task_result`, and
 `task_remove`.
 
 Protocol-level MCP Tasks are separate from Agent Bridge lifecycle tools. The
-stable Agent Bridge workflow uses `task_*` tools today. MCP task primitives are
+stable Agent Bridge workflow uses `agent_spawn`, `agents_list`, and `task_*` lifecycle tools today. MCP task primitives are
 experimental/extension-gated and should be used only after negotiated host and
 client capability support is explicitly implemented and advertised. `doctor`
 includes `taskExtensionReadiness` as passive diagnostic evidence about task-like
@@ -335,7 +339,7 @@ and `isolation: "none"` unless you specifically want a managed worktree:
 
 ```json
 {
-  "name": "task_spawn",
+  "name": "agent_spawn",
   "arguments": {
     "provider": "codex",
     "mode": "review",
@@ -402,7 +406,7 @@ Host-runner lifecycle checklist:
 
 ## Isolation
 
-`task_spawn` supports:
+`agent_spawn` and legacy `task_spawn` support:
 
 - `isolation: "none"`: run in the validated `cwd`.
 - `isolation: "worktree"`: create a unique git worktree under the state directory.
@@ -444,14 +448,14 @@ Use these local workflows intentionally; they are not part of the default test
 suite because they may require installed provider CLIs, auth, network access, or
 paid model usage.
 
-- Read-only review: spawn `review` or `research` with `isolation: "none"`, a
+- Read-only review: use `agent_spawn` with `review` or `research`, `isolation: "none"`, a
   small prompt, and bounded waits. Inspect `task_result.reviewPacket`, logs,
   diagnostics, git status, diff, changed files, and exit metadata.
-- Native task presentation: call `task_list` with default arguments to show
-  active tasks first and recent final tasks second. Use
+- Native agent presentation: call `agents_list` with default arguments to show
+  active provider agents first and recent final agents second. Use `task_list`
   `presentation: false` with `scope: "all"` only when intentionally inspecting
   the full raw task registry.
-- Isolated implementation: spawn `implement` with `isolation: "worktree"`.
+- Isolated implementation: use `agent_spawn` with `implement` and `isolation: "worktree"`.
   Inspect the managed worktree, `reviewPacket`, `gitStatus`, `gitDiff`, and
   `changedFiles`; run verification in the main caller; call `task_remove` only
   after review.
@@ -537,11 +541,11 @@ Preview a reduced `bare` profile task:
 }
 ```
 
-Spawn a Claude implementation task:
+Spawn a Claude implementation agent:
 
 ```json
 {
-  "name": "task_spawn",
+  "name": "agent_spawn",
   "arguments": {
     "provider": "claude",
     "mode": "implement",
@@ -554,11 +558,11 @@ Spawn a Claude implementation task:
 }
 ```
 
-List active/recent tasks for native-client presentation:
+List active/recent agents for native-client presentation:
 
 ```json
 {
-  "name": "task_list",
+  "name": "agents_list",
   "arguments": {}
 }
 ```
@@ -567,7 +571,7 @@ Filter presentation summaries:
 
 ```json
 {
-  "name": "task_list",
+  "name": "agents_list",
   "arguments": {
     "provider": ["cursor"],
     "mode": ["review"],

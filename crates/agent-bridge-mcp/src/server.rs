@@ -81,8 +81,13 @@ async fn call_tool(params: Value) -> Value {
                 Ok(payload) => tool_json(payload),
                 Err(error) => tool_error(error),
             },
-            ToolName::TaskSpawn => match TaskManagerHandle::from_env().await {
+            ToolName::AgentSpawn | ToolName::TaskSpawn => match TaskManagerHandle::from_env().await
+            {
                 Ok(manager) => tool_result(manager.spawn(params.arguments).await),
+                Err(error) => tool_error(error),
+            },
+            ToolName::AgentsList => match TaskManagerHandle::from_env().await {
+                Ok(manager) => tool_result(agents_list(manager, params.arguments).await),
                 Err(error) => tool_error(error),
             },
             ToolName::TaskList => match TaskManagerHandle::from_env().await {
@@ -199,7 +204,7 @@ fn reject_unknown_arguments(name: ToolName, arguments: &Value) -> Result<(), Str
             "providerTimeoutMs",
             "cwd",
         ][..],
-        ToolName::TaskPreview | ToolName::TaskSpawn => &[
+        ToolName::TaskPreview | ToolName::AgentSpawn | ToolName::TaskSpawn => &[
             "provider",
             "mode",
             "prompt",
@@ -212,6 +217,14 @@ fn reject_unknown_arguments(name: ToolName, arguments: &Value) -> Result<(), Str
             "isolation",
             "worktreeName",
             "profile",
+        ][..],
+        ToolName::AgentsList => &[
+            "status",
+            "provider",
+            "mode",
+            "cwd",
+            "titleContains",
+            "limit",
         ][..],
         ToolName::TaskList => &[
             "presentation",
@@ -249,6 +262,8 @@ fn tool_name_str(name: ToolName) -> &'static str {
         ToolName::ProvidersCheck => "providers_check",
         ToolName::Doctor => "doctor",
         ToolName::TaskPreview => "task_preview",
+        ToolName::AgentSpawn => "agent_spawn",
+        ToolName::AgentsList => "agents_list",
         ToolName::TaskSpawn => "task_spawn",
         ToolName::TaskList => "task_list",
         ToolName::TaskStatus => "task_status",
@@ -259,6 +274,32 @@ fn tool_name_str(name: ToolName) -> &'static str {
         ToolName::TaskStop => "task_stop",
         ToolName::TaskRemove => "task_remove",
     }
+}
+
+async fn agents_list(manager: TaskManagerHandle, arguments: Value) -> Result<Value, String> {
+    let raw = manager.list(agent_list_arguments(arguments)?).await?;
+    Ok(agent_list_response(raw))
+}
+
+fn agent_list_arguments(arguments: Value) -> Result<Value, String> {
+    let mut object = match arguments {
+        Value::Null => serde_json::Map::new(),
+        Value::Object(object) => object,
+        _ => return Err("agents_list arguments must be an object".to_string()),
+    };
+    object.insert("presentation".to_string(), json!(true));
+    object.insert("scope".to_string(), json!("active_recent"));
+    Ok(Value::Object(object))
+}
+
+fn agent_list_response(mut raw: Value) -> Value {
+    let Some(object) = raw.as_object_mut() else {
+        return raw;
+    };
+    let agents = object.remove("tasks").unwrap_or_else(|| json!([]));
+    object.remove("presentation");
+    object.insert("agents".to_string(), agents);
+    raw
 }
 
 #[derive(Deserialize)]

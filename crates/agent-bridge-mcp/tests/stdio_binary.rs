@@ -409,10 +409,22 @@ fn stdio_protocol_and_tool_schema_smoke() {
 
     let tools = client.request("tools/list", json!({}));
     let tools = tools["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 13);
+    assert_eq!(tools.len(), 15);
     let task_preview = tools
         .iter()
         .find(|tool| tool["name"] == "task_preview")
+        .unwrap();
+    let agent_spawn = tools
+        .iter()
+        .find(|tool| tool["name"] == "agent_spawn")
+        .unwrap();
+    let agents_list = tools
+        .iter()
+        .find(|tool| tool["name"] == "agents_list")
+        .unwrap();
+    let task_spawn = tools
+        .iter()
+        .find(|tool| tool["name"] == "task_spawn")
         .unwrap();
     let task_transcript = tools
         .iter()
@@ -464,6 +476,38 @@ fn stdio_protocol_and_tool_schema_smoke() {
     assert_eq!(
         task_preview["inputSchema"]["additionalProperties"],
         json!(false)
+    );
+    assert_eq!(
+        agent_spawn["inputSchema"]["required"],
+        json!(["provider", "mode", "prompt"])
+    );
+    assert!(
+        task_spawn["description"]
+            .as_str()
+            .unwrap()
+            .contains("Legacy compatibility")
+    );
+    assert_eq!(
+        agents_list["inputSchema"]["additionalProperties"],
+        json!(false)
+    );
+    assert!(
+        agents_list["inputSchema"]["properties"]
+            .get("scope")
+            .is_none()
+    );
+    assert!(
+        agents_list["inputSchema"]["properties"]
+            .get("presentation")
+            .is_none()
+    );
+    assert_eq!(
+        agents_list["inputSchema"]["properties"]["limit"]["maximum"],
+        100
+    );
+    assert_eq!(
+        agents_list["outputSchema"]["properties"]["agents"]["type"],
+        "array"
     );
     assert_eq!(
         task_transcript["inputSchema"]["required"],
@@ -533,6 +577,8 @@ fn stdio_protocol_and_tool_schema_smoke() {
     let prompt_text = prompt["result"]["messages"][0]["content"]["text"]
         .as_str()
         .unwrap();
+    assert!(prompt_text.contains("agent_spawn"));
+    assert!(prompt_text.contains("agents_list"));
     assert!(prompt_text.contains("task_spawn"));
     assert!(prompt_text.contains("main caller remains responsible"));
 
@@ -2413,7 +2459,7 @@ fn stdio_task_list_defaults_to_native_presentation_and_filters() {
     let mut client = McpClient::start(&env);
 
     let completed = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "cursor",
             "mode": "review",
@@ -2424,6 +2470,10 @@ fn stdio_task_list_defaults_to_native_presentation_and_filters() {
         }),
     );
     let completed_id = completed["taskId"].as_str().unwrap().to_string();
+    assert_eq!(
+        completed["presentation"]["displayTitle"],
+        "Native UX review"
+    );
     let waited = client.tool(
         "task_wait",
         json!({"taskId": completed_id, "timeoutMs": 5000}),
@@ -2431,7 +2481,7 @@ fn stdio_task_list_defaults_to_native_presentation_and_filters() {
     assert_eq!(waited["status"], "succeeded");
 
     let active = client.tool(
-        "task_spawn",
+        "agent_spawn",
         json!({
             "provider": "codex",
             "mode": "review",
@@ -2486,6 +2536,28 @@ fn stdio_task_list_defaults_to_native_presentation_and_filters() {
     assert_eq!(filtered["tasks"].as_array().unwrap().len(), 1);
     assert_eq!(filtered["tasks"][0]["taskId"], completed_id);
 
+    let agents = client.tool("agents_list", json!({}));
+    assert!(agents.get("tasks").is_none());
+    assert_eq!(agents["scope"], "active_recent");
+    assert_eq!(agents["limit"], 25);
+    let agent_summaries = agents["agents"].as_array().unwrap();
+    assert_eq!(agent_summaries.len(), 2);
+    assert_eq!(agent_summaries[0]["taskId"], active_id);
+    assert_eq!(agent_summaries[0]["presentation"]["phase"], "active");
+
+    let filtered_agents = client.tool(
+        "agents_list",
+        json!({
+            "provider": ["cursor"],
+            "mode": ["review"],
+            "cwd": env.root,
+            "titleContains": "ux",
+            "limit": 1
+        }),
+    );
+    assert_eq!(filtered_agents["agents"].as_array().unwrap().len(), 1);
+    assert_eq!(filtered_agents["agents"][0]["taskId"], completed_id);
+
     let raw = client.tool("task_list", json!({"presentation": false, "scope": "all"}));
     assert_eq!(raw["presentation"], false);
     assert_eq!(raw["scope"], "all");
@@ -2494,6 +2566,12 @@ fn stdio_task_list_defaults_to_native_presentation_and_filters() {
 
     let error = client.tool_error("task_list", json!({"limit": 101}));
     assert!(error.contains("limit must be between 1 and 100"));
+    let error = client.tool_error("agents_list", json!({"limit": 101}));
+    assert!(error.contains("limit must be between 1 and 100"));
+    let error = client.tool_error("agents_list", json!({"presentation": false}));
+    assert!(error.contains("Unknown argument for agents_list: presentation"));
+    let error = client.tool_error("agents_list", json!({"scope": "all"}));
+    assert!(error.contains("Unknown argument for agents_list: scope"));
 
     let stopped = client.tool("task_stop", json!({"taskId": active_id}));
     assert_eq!(stopped["status"], "stopped");

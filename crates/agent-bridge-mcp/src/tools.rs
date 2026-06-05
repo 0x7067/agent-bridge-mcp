@@ -14,6 +14,10 @@ pub enum ToolName {
     Doctor,
     #[serde(rename = "task_preview")]
     TaskPreview,
+    #[serde(rename = "agent_spawn")]
+    AgentSpawn,
+    #[serde(rename = "agents_list")]
+    AgentsList,
     #[serde(rename = "task_spawn")]
     TaskSpawn,
     #[serde(rename = "task_list")]
@@ -110,8 +114,31 @@ pub fn tool_definitions() -> Vec<Value> {
             &profile_enum,
         ),
         spawn_like_tool(
+            "agent_spawn",
+            "Start a provider agent. Returns the taskId used by task_status, task_wait, task_logs, task_transcript, task_result, task_stop, and task_remove.",
+            &provider_enum,
+            &mode_enum,
+            &profile_enum,
+        ),
+        json!({
+            "name": "agents_list",
+            "description": "List active and recent provider agents using bounded presentation summaries.",
+            "inputSchema": object_schema(json!({
+                "status": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["queued", "running", "succeeded", "failed", "stopped", "failed_stale", "removed"]}
+                },
+                "provider": {"type": "array", "items": {"type": "string", "enum": provider_enum}},
+                "mode": {"type": "array", "items": {"type": "string", "enum": mode_enum}},
+                "cwd": {"type": "string"},
+                "titleContains": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100}
+            }), Vec::<&str>::new()),
+            "outputSchema": output_schema_for("agents_list")
+        }),
+        spawn_like_tool(
             "task_spawn",
-            "Start a background provider task. Returns immediately; poll task_status/task_logs/task_result using the returned taskId.",
+            "Legacy compatibility launch tool. Prefer agent_spawn for new clients; poll task_status/task_logs/task_result using the returned taskId.",
             &provider_enum,
             &mode_enum,
             &profile_enum,
@@ -266,6 +293,14 @@ fn output_schema_for(name: &str) -> Value {
                 "limit": {"type": ["integer", "null"]}
             }),
             vec!["tasks", "presentation", "scope"],
+        ),
+        "agents_list" => output_object_schema(
+            json!({
+                "agents": {"type": "array"},
+                "scope": {"type": "string"},
+                "limit": {"type": ["integer", "null"]}
+            }),
+            vec!["agents", "scope"],
         ),
         "task_status" | "task_wait" => output_object_schema(
             json!({

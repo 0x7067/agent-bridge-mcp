@@ -61,6 +61,8 @@ async fn guidance_prompts_are_listed_and_retrievable() {
     let result = response.unwrap().result.unwrap();
     let text = result["messages"][0]["content"]["text"].as_str().unwrap();
 
+    assert!(text.contains("agent_spawn"));
+    assert!(text.contains("agents_list"));
     assert!(text.contains("task_spawn"));
     assert!(text.contains("task_result"));
     assert!(text.contains("main caller remains responsible"));
@@ -278,6 +280,8 @@ async fn tools_list_returns_current_public_tool_names() {
             "providers_check",
             "doctor",
             "task_preview",
+            "agent_spawn",
+            "agents_list",
             "task_spawn",
             "task_list",
             "task_status",
@@ -465,6 +469,43 @@ async fn task_list_schema_exposes_presentation_filters() {
             "{tool_name}"
         );
     }
+}
+
+#[tokio::test]
+async fn agents_list_schema_exposes_bounded_presentation_filters() {
+    let response = handle_request(request("tools/list", 16, serde_json::json!({}))).await;
+    let result = response.unwrap().result.unwrap();
+    let tools = result["tools"].as_array().unwrap();
+    let agents_list = tools
+        .iter()
+        .find(|tool| tool["name"] == "agents_list")
+        .expect("agents_list tool should be listed");
+    let properties = &agents_list["inputSchema"]["properties"];
+
+    assert_eq!(agents_list["inputSchema"]["additionalProperties"], false);
+    assert_eq!(
+        agents_list["inputSchema"]["required"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        agents_list["outputSchema"]["properties"]["agents"]["type"],
+        "array"
+    );
+    assert!(properties.get("presentation").is_none());
+    assert!(properties.get("scope").is_none());
+    assert_eq!(
+        properties["status"]["items"]["enum"],
+        serde_json::json!([
+            "queued",
+            "running",
+            "succeeded",
+            "failed",
+            "stopped",
+            "failed_stale",
+            "removed"
+        ])
+    );
+    assert_eq!(properties["limit"]["maximum"], 100);
 }
 
 #[tokio::test]
