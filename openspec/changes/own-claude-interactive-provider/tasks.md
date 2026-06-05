@@ -12,7 +12,7 @@
 ## 2. Owned Runner Implementation
 
 - [x] 2.1 After task 1.7 passes, add an owned Claude runner module that starts official interactive `claude` in a PTY with the documented login-shell-compatible environment setup.
-- [ ] 2.2 Implement terminal probe detection/responses needed for Claude Code startup without writing probe noise to MCP stdout.
+- [x] 2.2 Implement terminal probe detection/responses needed for Claude Code startup without writing probe noise to MCP stdout.
 - [ ] 2.3 Implement prompt injection through PTY input and ensure rendered task prompts never appear in process argv or diagnostics.
 - [ ] 2.4 Generate temporary runner-owned `--settings` JSON for `SessionStart`, `Stop`, and `StopFailure` hooks without editing durable Claude config.
 - [ ] 2.5 Implement runner-owned hook relay IPC per `hook-relay-contract.md`, including owner-only permissions, bounded reads, cleanup, and no hook stdout leakage into Claude context.
