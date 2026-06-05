@@ -1,4 +1,5 @@
 pub mod claude_host;
+pub mod claude_interactive;
 pub mod domain;
 pub mod guidance;
 pub mod mcp;

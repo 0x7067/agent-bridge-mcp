@@ -3,8 +3,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const FIXTURE_DIR: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/interactive_claude");
+const FIXTURE_DIR: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/interactive_claude"
+);
 
 #[test]
 fn interactive_claude_fixtures_cover_required_scenarios() {
@@ -66,7 +68,8 @@ fn interactive_claude_fixtures_cover_required_scenarios() {
 
     let login = std::fs::read_to_string(fixture_dir.join("setup_prompts/login.txt")).unwrap();
     assert!(login.contains("/login"));
-    let trust = std::fs::read_to_string(fixture_dir.join("setup_prompts/workspace_trust.txt")).unwrap();
+    let trust =
+        std::fs::read_to_string(fixture_dir.join("setup_prompts/workspace_trust.txt")).unwrap();
     assert!(trust.to_lowercase().contains("trust"));
     assert!(trust.to_lowercase().contains("folder"));
 }
@@ -109,5 +112,8 @@ fn assert_jsonl(path: &PathBuf, all_valid: bool) {
             saw_invalid = true;
         }
     }
-    assert_eq!(!saw_invalid, all_valid, "unexpected JSONL validity: {path:?}");
+    assert_eq!(
+        !saw_invalid, all_valid,
+        "unexpected JSONL validity: {path:?}"
+    );
 }

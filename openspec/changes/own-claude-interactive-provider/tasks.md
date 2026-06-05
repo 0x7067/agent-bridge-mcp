@@ -6,7 +6,7 @@
 - [x] 1.4 Enumerate current Claude StopFailure input error strings and setup prompt signatures from docs, source behavior, and live/fake fixtures before mapping implementation.
 - [x] 1.5 Evaluate Rust PTY crate options against macOS/Linux support, Tokio integration, process cleanup, and maintenance risk; document the selected dependency or adapter approach before adding it.
 - [x] 1.6 Add deterministic fake interactive-Claude fixtures for terminal probes, prompt entry, Stop-hook payloads, StopFailure payloads, transcript files, malformed transcript, first-run prompts, timeout, and child cleanup. This is blocked on the PTY adapter choice in 1.5.
-- [ ] 1.7 Add the PTY adapter dependency and a focused spike test using fake interactive Claude to verify split read/write, terminal probe bytes, resize, child session/process-group cleanup, and macOS/Linux behavior before production runner wiring.
+- [x] 1.7 Add the PTY adapter dependency and a focused spike test using fake interactive Claude to verify split read/write, terminal probe bytes, resize, child session/process-group cleanup, and macOS/Linux behavior before production runner wiring.
 - [x] 1.8 Record the protocol v2 schema, runner-result integration contract, hook relay contract, startup sequencing, and login-shell bootstrap decision from Gate 3 review.
 
 ## 2. Owned Runner Implementation
