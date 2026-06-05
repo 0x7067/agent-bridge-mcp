@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"fake-session"}
+{"type":"user","session_id":"fake-session","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}

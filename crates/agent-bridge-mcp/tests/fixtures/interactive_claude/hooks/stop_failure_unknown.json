@@ -1,0 +1,1 @@
+{"session_id":"fake-session","transcript_path":"/tmp/agent-bridge-fake-claude/unknown.jsonl","cwd":"/repo","hook_event_name":"StopFailure","error":"future_new_error","error_details":"future schema value","last_assistant_message":"API Error: future error"}

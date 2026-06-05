@@ -1,0 +1,1 @@
+{"session_id":"fake-session","transcript_path":"/tmp/agent-bridge-fake-claude/auth.jsonl","cwd":"/repo","hook_event_name":"StopFailure","error":"authentication_failed","error_details":"OAuth refresh token is no longer valid","last_assistant_message":"Session expired. Please run /login to sign in again."}

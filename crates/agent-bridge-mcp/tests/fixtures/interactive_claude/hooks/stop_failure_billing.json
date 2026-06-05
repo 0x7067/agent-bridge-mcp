@@ -1,0 +1,1 @@
+{"session_id":"fake-session","transcript_path":"/tmp/agent-bridge-fake-claude/billing.jsonl","cwd":"/repo","hook_event_name":"StopFailure","error":"billing_error","error_details":"subscription or credit access unavailable","last_assistant_message":"Your account does not have access to Claude. Please login again or contact your administrator."}
