@@ -2,7 +2,7 @@
 
 - [x] 1.1 Read and summarize the current Claude Code CLI, hooks, settings, and upstream `claude-p` docs into implementation notes inside the change.
 - [x] 1.2 Inspect upstream `claude-p` source for PTY startup, terminal probe responses, hook command protocol, transcript parsing, timeout handling, and cleanup behavior; record findings in `upstream-claude-p-notes.md`.
-- [ ] 1.3 Verify interactive Claude flags for mode mapping, including `--permission-mode`, `--allowedTools`, `--disallowedTools`, `--settings`, `--model`, and `--effort`; record the matrix before implementation.
+- [x] 1.3 Verify interactive Claude flags for mode mapping, including `--permission-mode`, `--allowedTools`, `--disallowedTools`, `--settings`, `--model`, and `--effort`; record the matrix before implementation.
 - [ ] 1.4 Enumerate current Claude StopFailure input error strings and setup prompt signatures from docs, source behavior, and live/fake fixtures before mapping implementation.
 - [ ] 1.5 Evaluate Rust PTY crate options against macOS/Linux support, Tokio integration, process cleanup, and maintenance risk; document the selected dependency or adapter approach before adding it.
 - [ ] 1.6 Add deterministic fake interactive-Claude fixtures for terminal probes, prompt entry, Stop-hook payloads, StopFailure payloads, transcript files, malformed transcript, first-run prompts, timeout, and child cleanup. This is blocked on the PTY adapter choice in 1.5.
