@@ -23,7 +23,7 @@
 
 ## 3. Provider and Host-Runner Integration
 
-- [ ] 3.1 Implement host-runner protocol v2 per `protocol-v2.md`, including rejected legacy shapes, response schema validation, and protocol mismatch handling.
+- [x] 3.1 Implement host-runner protocol v2 per `protocol-v2.md`, including rejected legacy shapes, response schema validation, and protocol mismatch handling.
 - [ ] 3.2 Replace Claude provider command selection so normal tasks and smoke checks use the owned interactive runner launch strategy.
 - [ ] 3.3 Remove native `claude -p` and upstream `claude-p` fallback selection from Claude provider execution and diagnostics.
 - [ ] 3.4 Update Claude binary resolution and environment allowlists so the official interactive `claude` binary is explicit and `CLAUDE_P_BIN` is ignored legacy configuration.

@@ -1,5 +1,6 @@
 use crate::domain::{MAX_TIMEOUT_SECONDS, MIN_TIMEOUT_SECONDS, TaskMode};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::env;
 use std::fs;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
@@ -12,9 +13,10 @@ use tokio::process::Command;
 use tokio::sync::oneshot;
 use tokio::time::{Duration, timeout};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_STREAM_BYTES: usize = 1024 * 1024;
+const MAX_PTY_OUTPUT_EXCERPT: usize = 64 * 1024;
 const CHILD_SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,9 +39,10 @@ pub struct HostRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "requestType", rename_all = "snake_case")]
 pub enum HostRequestKind {
     Ping,
+    #[serde(rename = "claude_interactive")]
     RunClaude {
         cwd: String,
         #[serde(rename = "timeoutSeconds")]
@@ -50,6 +53,18 @@ pub enum HostRequestKind {
         model: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
+        #[serde(
+            rename = "bareProfile",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        bare_profile: Option<bool>,
+        #[serde(
+            rename = "smokeToken",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        smoke_token: Option<String>,
     },
 }
 
@@ -64,7 +79,7 @@ pub struct HostResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "responseType", rename_all = "snake_case")]
 pub enum HostResult {
     Pong {
         #[serde(rename = "protocolVersion")]
@@ -73,21 +88,46 @@ pub enum HostResult {
         workspace_policy_id: String,
         ready: bool,
     },
+    #[serde(rename = "claude_interactive_result")]
     Run {
+        status: String,
         #[serde(rename = "exitCode")]
         exit_code: Option<i32>,
         signal: Option<String>,
+        #[serde(rename = "durationMs")]
+        duration_ms: u64,
+        #[serde(rename = "failureCategory")]
+        failure_category: Option<String>,
+        #[serde(rename = "ptyOutputExcerpt")]
+        pty_output_excerpt: String,
+        #[serde(rename = "ptyOutputTruncated")]
+        pty_output_truncated: bool,
+        #[serde(rename = "redactionsApplied")]
+        redactions_applied: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<ClaudeInteractiveSuccess>,
+        stop: Option<Value>,
+        #[serde(rename = "stopFailure")]
+        stop_failure: Option<Value>,
+        transcript: Value,
+        // Temporary compatibility fields while tasks 3.2-3.5 migrate task and
+        // readiness consumers to the structured v2 result.
         stdout: String,
         stderr: String,
         #[serde(rename = "stdoutTruncated")]
         stdout_truncated: bool,
         #[serde(rename = "stderrTruncated")]
         stderr_truncated: bool,
-        #[serde(rename = "failureCategory")]
-        failure_category: Option<String>,
-        #[serde(rename = "durationMs")]
-        duration_ms: u64,
     },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClaudeInteractiveSuccess {
+    #[serde(rename = "finalText")]
+    pub final_text: String,
+    pub source: String,
+    #[serde(rename = "sessionId")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -151,6 +191,8 @@ pub async fn run_claude(
             prompt: command.prompt.clone(),
             model: command.model.clone(),
             effort: command.effort.clone(),
+            bare_profile: None,
+            smoke_token: None,
         },
     };
     send_request(socket_path, &host_request).await
@@ -218,7 +260,38 @@ async fn handle_connection(
             return Ok(());
         }
     };
-    let request: HostRequest = match serde_json::from_slice(&line) {
+    let raw_request: Value = match serde_json::from_slice(&line) {
+        Ok(request) => request,
+        Err(_) => {
+            write_response(
+                &mut stream,
+                &error_response("invalid_request", "invalid request"),
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+    if raw_request
+        .get("version")
+        .and_then(Value::as_u64)
+        .is_some_and(|version| version as u32 != PROTOCOL_VERSION)
+    {
+        write_response(
+            &mut stream,
+            &error_response("protocol_mismatch", "unsupported protocol version"),
+        )
+        .await?;
+        return Ok(());
+    }
+    if contains_forbidden_execution_descriptor(&raw_request) {
+        write_response(
+            &mut stream,
+            &error_response("protocol_rejected", "protocol rejected"),
+        )
+        .await?;
+        return Ok(());
+    }
+    let request: HostRequest = match serde_json::from_value(raw_request) {
         Ok(request) => request,
         Err(_) => {
             write_response(
@@ -287,6 +360,8 @@ async fn handle_request(
             prompt,
             model,
             effort,
+            bare_profile: _,
+            smoke_token: _,
         } => {
             let Ok(cwd) = validate_cwd(&cwd, roots) else {
                 return error_response(
@@ -319,14 +394,41 @@ async fn handle_request(
                     version: PROTOCOL_VERSION,
                     ok: true,
                     result: Some(HostResult::Run {
+                        status: if result.exit_code == Some(0) && result.failure_category.is_none()
+                        {
+                            "success".to_string()
+                        } else {
+                            "failure".to_string()
+                        },
                         exit_code: result.exit_code,
                         signal: result.signal,
+                        duration_ms: result.duration_ms,
+                        failure_category: result.failure_category.clone(),
+                        pty_output_excerpt: pty_output_excerpt(&result.stdout, &result.stderr),
+                        pty_output_truncated: result.stdout_truncated
+                            || result.stderr_truncated
+                            || result.stdout.len() + result.stderr.len() > MAX_PTY_OUTPUT_EXCERPT,
+                        redactions_applied: vec!["prompt".to_string(), "secrets".to_string()],
+                        result: if result.exit_code == Some(0) && result.failure_category.is_none()
+                        {
+                            Some(ClaudeInteractiveSuccess {
+                                final_text: result.stdout.clone(),
+                                source: "transcript".to_string(),
+                                session_id: None,
+                            })
+                        } else {
+                            None
+                        },
+                        stop: None,
+                        stop_failure: None,
+                        transcript: json!({
+                            "parseStatus": "legacy_pending",
+                            "fallbackUsed": false
+                        }),
                         stdout: result.stdout,
                         stderr: result.stderr,
                         stdout_truncated: result.stdout_truncated,
                         stderr_truncated: result.stderr_truncated,
-                        failure_category: result.failure_category,
-                        duration_ms: result.duration_ms,
                     }),
                     error: None,
                 },
@@ -334,6 +436,15 @@ async fn handle_request(
             }
         }
     }
+}
+
+fn contains_forbidden_execution_descriptor(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    ["command", "shell", "script", "argv", "executablePath"]
+        .iter()
+        .any(|field| object.contains_key(*field))
 }
 
 #[derive(Debug)]
@@ -603,6 +714,23 @@ fn error_response(code: &str, message: &str) -> HostResponse {
     }
 }
 
+fn pty_output_excerpt(stdout: &str, stderr: &str) -> String {
+    let mut excerpt = String::new();
+    if !stdout.is_empty() {
+        excerpt.push_str(stdout);
+    }
+    if !stderr.is_empty() {
+        if !excerpt.is_empty() {
+            excerpt.push('\n');
+        }
+        excerpt.push_str(stderr);
+    }
+    if excerpt.len() > MAX_PTY_OUTPUT_EXCERPT {
+        excerpt.truncate(MAX_PTY_OUTPUT_EXCERPT);
+    }
+    excerpt
+}
+
 fn sanitize_message(message: &str) -> String {
     let allowed = [
         "unsupported protocol version",
@@ -613,6 +741,7 @@ fn sanitize_message(message: &str) -> String {
         "request too large",
         "invalid request",
         "failed to spawn Claude provider",
+        "protocol rejected",
     ];
     if allowed.contains(&message) {
         message.to_string()
@@ -921,6 +1050,8 @@ mod tests {
             prompt: "hello".to_string(),
             model: None,
             effort: effort.map(ToString::to_string),
+            bare_profile: None,
+            smoke_token: None,
         };
 
         let unsupported_protocol = handle_request(
@@ -993,14 +1124,76 @@ mod tests {
         let roots = vec![root.canonicalize().unwrap()];
         let policy = workspace_policy_id(&roots).unwrap();
         let raw = format!(
-            "{{\"version\":{PROTOCOL_VERSION},\"workspacePolicyId\":\"{}\",\"type\":\"cursor\",\"command\":\"/bin/sh -c secret\",\"argv\":[\"/bin/sh\"],\"executablePath\":\"/bin/sh\"}}\n",
+            "{{\"version\":{PROTOCOL_VERSION},\"workspacePolicyId\":\"{}\",\"requestType\":\"cursor\",\"command\":\"/bin/sh -c secret\",\"argv\":[\"/bin/sh\"],\"executablePath\":\"/bin/sh\"}}\n",
             policy
         );
 
         let response = exchange_raw(raw.as_bytes(), roots, policy).await;
 
         assert!(!response.ok);
-        assert_eq!(response.error.unwrap().code, "invalid_request");
+        assert_eq!(response.error.unwrap().code, "protocol_rejected");
+    }
+
+    #[tokio::test]
+    async fn host_protocol_serializes_v2_request_and_result_schema() {
+        let root = unique_temp("protocol-v2");
+        let roots = vec![root.canonicalize().unwrap()];
+        let policy = workspace_policy_id(&roots).unwrap();
+        let request = host_request(
+            policy.clone(),
+            HostRequestKind::RunClaude {
+                cwd: root.display().to_string(),
+                timeout_seconds: MIN_TIMEOUT_SECONDS,
+                mode: TaskMode::Research,
+                prompt: "hello".to_string(),
+                model: Some("sonnet".to_string()),
+                effort: Some("high".to_string()),
+                bare_profile: Some(true),
+                smoke_token: Some("AGENT_BRIDGE_PROVIDER_SMOKE_OK".to_string()),
+            },
+        );
+
+        let request_json = serde_json::to_value(&request).unwrap();
+        assert_eq!(request_json["version"], PROTOCOL_VERSION);
+        assert_eq!(request_json["requestType"], "claude_interactive");
+        assert!(request_json.get("type").is_none());
+        assert_eq!(request_json["bareProfile"], true);
+        assert_eq!(request_json["smokeToken"], "AGENT_BRIDGE_PROVIDER_SMOKE_OK");
+
+        let response = HostResponse {
+            version: PROTOCOL_VERSION,
+            ok: true,
+            result: Some(HostResult::Run {
+                status: "success".to_string(),
+                exit_code: Some(0),
+                signal: None,
+                duration_ms: 42,
+                failure_category: None,
+                pty_output_excerpt: "done".to_string(),
+                pty_output_truncated: false,
+                redactions_applied: vec!["prompt".to_string()],
+                result: Some(ClaudeInteractiveSuccess {
+                    final_text: "done".to_string(),
+                    source: "transcript".to_string(),
+                    session_id: Some("session".to_string()),
+                }),
+                stop: None,
+                stop_failure: None,
+                transcript: json!({"parseStatus": "ok"}),
+                stdout: String::new(),
+                stderr: String::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+            }),
+            error: None,
+        };
+        let response_json = serde_json::to_value(&response).unwrap();
+        let run = &response_json["result"];
+        assert_eq!(run["responseType"], "claude_interactive_result");
+        assert_eq!(run["status"], "success");
+        assert_eq!(run["result"]["finalText"], "done");
+        assert_eq!(run["ptyOutputExcerpt"], "done");
+        assert_eq!(run["redactionsApplied"], json!(["prompt"]));
     }
 
     #[test]
