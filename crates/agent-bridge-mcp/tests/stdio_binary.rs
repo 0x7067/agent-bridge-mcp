@@ -86,9 +86,8 @@ impl McpClient {
         if let Some(legacy_allowed_root) = legacy_allowed_root {
             command.env("AGENT_BRIDGE_ALLOWED_ROOT", legacy_allowed_root);
         }
-        if native_claude {
-            command.env("CLAUDE_BIN", &env.fake_provider);
-        } else {
+        command.env("CLAUDE_BIN", &env.fake_provider);
+        if !native_claude {
             command.env("CLAUDE_P_BIN", &env.fake_provider);
         }
         for (key, value) in extra_env {
@@ -972,7 +971,7 @@ fn stdio_providers_preview_and_safety_checks() {
         checks["providers"]["codex"]["version"],
         "fake-provider 1.0.0"
     );
-    assert_eq!(checks["providers"]["claude"]["startupVerified"], true);
+    assert_eq!(checks["providers"]["claude"]["startupVerified"], false);
 
     let preview = client.tool(
         "agent_preview",
@@ -1025,13 +1024,24 @@ fn stdio_providers_preview_and_safety_checks() {
             "effort": "high"
         }),
     );
-    assert_eq!(claude["command"], "/bin/zsh");
+    assert_eq!(
+        claude["command"],
+        "agent-bridge-claude-host-runner-required"
+    );
+    assert_eq!(claude["launchStrategy"], "host_runner_required");
     assert!(
         claude["envKeys"]
             .as_array()
             .unwrap()
             .iter()
             .all(|key| key != "ANTHROPIC_BASE_URL")
+    );
+    assert!(
+        claude["envKeys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|key| key != "CLAUDE_P_BIN")
     );
     assert!(
         claude["envKeys"]
@@ -1340,7 +1350,7 @@ fn stdio_agent_transcript_handles_provider_output_fixtures() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
-    for provider in ["claude", "cursor"] {
+    for provider in ["cursor"] {
         let task = client.tool(
             "agent_spawn",
             json!({
@@ -2102,7 +2112,8 @@ fn stdio_providers_check_all_provider_smoke_is_batched_not_sequential() {
         sorted_provider_keys(&checks),
         vec!["claude", "codex", "cursor", "kimi"]
     );
-    for provider in ["claude", "cursor", "kimi", "codex"] {
+    assert_eq!(checks["providers"]["claude"]["startupVerified"], false);
+    for provider in ["cursor", "kimi", "codex"] {
         assert_eq!(checks["providers"][provider]["startupVerified"], true);
     }
     assert!(
@@ -2647,7 +2658,7 @@ fn stdio_agent_list_defaults_to_native_presentation_and_filters() {
 }
 
 #[test]
-fn stdio_claude_task_prompt_is_passed_on_stdin_not_argv() {
+fn stdio_claude_task_requires_host_runner_without_direct_prompt_launch() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
     let prompt = "--leading-flag\nquoted \"value\" $(touch should-not-run) secret-token";
@@ -2663,22 +2674,17 @@ fn stdio_claude_task_prompt_is_passed_on_stdin_not_argv() {
     );
     let task_id = spawned["taskId"].as_str().unwrap();
     let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
-    assert_eq!(waited["status"], "succeeded");
+    assert_eq!(waited["status"], "failed");
+    assert_eq!(waited["errorType"], "provider_start_error");
 
-    let argv = std::fs::read_to_string(env.log_dir.join("argv.txt")).unwrap();
-    let stdin = std::fs::read_to_string(env.log_dir.join("stdin.txt")).unwrap();
-    assert!(
-        !argv.contains(prompt),
-        "rendered Claude prompt leaked into argv: {argv}"
-    );
-    assert!(
-        stdin.contains(prompt),
-        "rendered Claude prompt was not delivered on stdin: {stdin}"
-    );
+    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    assert_eq!(result["errorType"], "provider_start_error");
+    assert!(!env.log_dir.join("argv.txt").exists());
+    assert!(!env.log_dir.join("stdin.txt").exists());
 }
 
 #[test]
-fn stdio_claude_prompt_survives_stdin_consuming_zsh_startup_files() {
+fn stdio_claude_no_host_runner_ignores_zsh_startup_files() {
     let env = fixture_env();
     let home = temp_dir("agent-bridge-home");
     std::fs::write(home.join(".zshenv"), "cat >/dev/null || true\n").unwrap();
@@ -2699,20 +2705,15 @@ fn stdio_claude_prompt_survives_stdin_consuming_zsh_startup_files() {
     let task_id = spawned["taskId"].as_str().unwrap();
 
     let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
-    assert_eq!(waited["status"], "succeeded");
+    assert_eq!(waited["status"], "failed");
+    assert_eq!(waited["errorType"], "provider_start_error");
 
     let result = client.tool("agent_result", json!({"taskId": task_id}));
-    assert!(
-        result["stdout"]
-            .as_str()
-            .unwrap()
-            .contains("terminal probe noise"),
-        "provider did not receive prompt on stdin: {result}"
-    );
+    assert_eq!(result["errorType"], "provider_start_error");
 }
 
 #[test]
-fn stdio_native_claude_bin_selection_uses_native_print_args() {
+fn stdio_claude_preview_requires_owned_host_runner() {
     let env = fixture_env();
     let mut client = McpClient::start_with_native_claude(&env);
 
@@ -2726,14 +2727,13 @@ fn stdio_native_claude_bin_selection_uses_native_print_args() {
         }),
     );
     let args = preview["args"].as_array().unwrap();
-    assert_eq!(preview["command"], "/bin/zsh");
-    assert!(
-        args.iter()
-            .any(|arg| arg.as_str() == Some(env.fake_provider.to_str().unwrap()))
+    assert_eq!(
+        preview["command"],
+        "agent-bridge-claude-host-runner-required"
     );
-    assert!(args.iter().any(|arg| arg == "-p"));
-    assert!(!args.iter().any(|arg| arg == "--cwd"));
-    assert_eq!(preview["stdin"], "<prompt redacted>");
+    assert!(args.is_empty());
+    assert_eq!(preview["stdin"], Value::Null);
+    assert_eq!(preview["launchStrategy"], "host_runner_required");
 }
 
 #[test]
@@ -2748,7 +2748,7 @@ fn stdio_claude_smoke_timeout_returns_bounded_diagnostic() {
             "  echo fake-provider 1.0.0",
             "  exit 0",
             "fi",
-            "echo claude-p booting",
+            "echo owned claude runner booting",
             "echo waiting for stop hook >&2",
             "sleep 2 &",
             "child=$!",
@@ -2766,19 +2766,14 @@ fn stdio_claude_smoke_timeout_returns_bounded_diagnostic() {
     let claude = &checks["providers"]["claude"];
     assert_eq!(claude["available"], false);
     assert_eq!(claude["startupVerified"], false);
-    assert_eq!(claude["diagnostic"]["failureCategory"], "provider_timeout");
-    assert_eq!(claude["diagnostic"]["timeoutMs"], 500);
-    assert!(
-        claude["diagnostic"]["stdoutExcerpt"]
-            .as_str()
-            .unwrap()
-            .contains("claude-p booting")
+    assert_eq!(
+        claude["diagnostic"]["failureCategory"],
+        "provider_start_error"
     );
-    assert!(
-        claude["diagnostic"]["stderrExcerpt"]
-            .as_str()
-            .unwrap()
-            .contains("waiting for stop hook")
+    assert_eq!(claude["diagnostic"]["timeoutMs"], 500);
+    assert_eq!(
+        claude["diagnostic"]["launchStrategy"],
+        "host_runner_required"
     );
 }
 
@@ -2799,20 +2794,13 @@ fn stdio_claude_task_malformed_output_returns_diagnostic() {
     let task_id = spawned["taskId"].as_str().unwrap();
     let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
     assert_eq!(waited["status"], "failed");
-    assert_eq!(waited["errorType"], "provider_output_error");
+    assert_eq!(waited["errorType"], "provider_start_error");
 
     let result = client.tool("agent_result", json!({"taskId": task_id}));
-    assert_eq!(
-        result["diagnostic"]["failureCategory"],
-        "provider_output_error"
-    );
+    assert_eq!(result["errorType"], "provider_start_error");
     assert_eq!(result["reviewPacket"]["status"], "failed");
-    assert_eq!(result["reviewPacket"]["errorType"], "provider_output_error");
-    assert_eq!(result["reviewPacket"]["exitCode"], 0);
-    assert_eq!(
-        result["reviewPacket"]["diagnostic"]["failureCategory"],
-        "provider_output_error"
-    );
+    assert_eq!(result["reviewPacket"]["errorType"], "provider_start_error");
+    assert_eq!(result["reviewPacket"]["exitCode"], Value::Null);
     let actions = review_actions_text(&result);
     assert!(
         actions.contains("Inspect logs and diagnostic metadata before deciding whether to rerun.")
@@ -2820,18 +2808,6 @@ fn stdio_claude_task_malformed_output_returns_diagnostic() {
     assert!(actions.contains(
         "Decide whether to rerun with a narrower prompt, continue manually, or discard."
     ));
-    assert!(
-        result["diagnostic"]["stdoutExcerpt"]
-            .as_str()
-            .unwrap()
-            .contains("not-json-from-claude")
-    );
-    assert!(
-        result["diagnostic"]["stderrExcerpt"]
-            .as_str()
-            .unwrap()
-            .contains("terminal noise")
-    );
 }
 
 #[test]
@@ -2840,9 +2816,9 @@ fn stdio_claude_task_failure_modes_are_classified() {
     let mut client = McpClient::start(&env);
 
     let cases = [
-        ("non-zero-exit", "provider_exit_error", 5),
-        ("missing-result", "provider_output_error", 5),
-        ("claude-timeout", "timeout", 1),
+        ("non-zero-exit", "provider_start_error", 5),
+        ("missing-result", "provider_start_error", 5),
+        ("claude-timeout", "provider_start_error", 1),
     ];
     for (prompt, error_type, timeout_seconds) in cases {
         let spawned = client.tool(
@@ -2861,10 +2837,7 @@ fn stdio_claude_task_failure_modes_are_classified() {
         assert_eq!(waited["errorType"], error_type, "{prompt}");
 
         let result = client.tool("agent_result", json!({"taskId": task_id}));
-        assert!(
-            result["diagnostic"]["failureCategory"].is_string(),
-            "{prompt}"
-        );
+        assert_eq!(result["errorType"], "provider_start_error", "{prompt}");
     }
 }
 
@@ -2884,7 +2857,8 @@ fn stdio_claude_task_extracts_result_with_surrounding_noise() {
     );
     let task_id = spawned["taskId"].as_str().unwrap();
     let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
-    assert_eq!(waited["status"], "succeeded");
+    assert_eq!(waited["status"], "failed");
+    assert_eq!(waited["errorType"], "provider_start_error");
 }
 
 #[test]

@@ -164,7 +164,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::os::unix::fs::symlink;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use uuid::Uuid;
 
     const FIXTURE_DIR: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -236,13 +236,9 @@ mod tests {
     }
 
     fn temp_path(label: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
         std::env::temp_dir().join(format!(
-            "agent-bridge-transcript-{label}-{}-{nonce}",
-            std::process::id()
+            "agent-bridge-transcript-{label}-{}",
+            Uuid::new_v4()
         ))
     }
 }

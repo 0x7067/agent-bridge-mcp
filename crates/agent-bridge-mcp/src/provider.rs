@@ -473,7 +473,6 @@ pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
             "SSL_CERT_FILE",
             "CLAUDE_CONFIG_DIR",
             "CLAUDE_BIN",
-            "CLAUDE_P_BIN",
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
             "ANTHROPIC_OAUTH_TOKEN",
@@ -494,7 +493,6 @@ pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
             "LC_ALL",
             "CLAUDE_CONFIG_DIR",
             "CLAUDE_BIN",
-            "CLAUDE_P_BIN",
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
             "ANTHROPIC_OAUTH_TOKEN",
@@ -529,52 +527,9 @@ pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
 }
 
 fn build_claude_command(task: &ProviderTask<'_>, rendered_prompt: String) -> ProviderCommand {
-    let native_claude = env::var("CLAUDE_BIN").ok();
-    let claude_p = env::var("CLAUDE_P_BIN").ok();
-    let (command_kind, mut inner_args) =
-        if let Some(native_claude) = native_claude.filter(|_| claude_p.is_none()) {
-            let args = [
-                vec![
-                    native_claude,
-                    "-p".to_string(),
-                    "--output-format".to_string(),
-                    "json".to_string(),
-                ],
-                claude_mode_flags(task.mode),
-                claude_profile_flags(task.profile),
-                optional_arg("--model", task.model),
-                optional_arg("--effort", task.effort),
-            ]
-            .concat();
-            ("native-claude".to_string(), args)
-        } else {
-            let args = [
-                vec![
-                    claude_p.unwrap_or_else(|| "claude-p".to_string()),
-                    "--cwd".to_string(),
-                    task.cwd.to_string(),
-                    "--timeout".to_string(),
-                    task.timeout_seconds.to_string(),
-                    "--output-format".to_string(),
-                    "json".to_string(),
-                ],
-                claude_mode_flags(task.mode),
-                claude_profile_flags(task.profile),
-                optional_arg("--model", task.model),
-                optional_arg("--effort", task.effort),
-            ]
-            .concat();
-            ("claude-p".to_string(), args)
-        };
-    let mut args = vec![
-        "-flc".to_string(),
-        "source ~/.zshenv </dev/null 2>/dev/null || true; source ~/.zprofile </dev/null 2>/dev/null || true; source ~/.zshrc </dev/null 2>/dev/null || true; exec \"$@\"".to_string(),
-        "agent-bridge-provider".to_string(),
-    ];
-    args.append(&mut inner_args);
     ProviderCommand {
         provider: task.provider,
-        command_kind: Some(command_kind),
+        command_kind: Some("owned-interactive-claude".to_string()),
         claude_host: Some(ClaudeHostCommand {
             cwd: task.cwd.to_string(),
             timeout_seconds: task.timeout_seconds,
@@ -583,9 +538,9 @@ fn build_claude_command(task: &ProviderTask<'_>, rendered_prompt: String) -> Pro
             model: task.model.map(str::to_string),
             effort: task.effort.map(str::to_string),
         }),
-        command: "/bin/zsh".to_string(),
-        args,
-        stdin: Some(rendered_prompt.clone()),
+        command: "agent-bridge-claude-host-runner-required".to_string(),
+        args: Vec::new(),
+        stdin: None,
         redactions: vec![rendered_prompt, task.prompt.to_string()],
         cwd: task.cwd.to_string(),
         timeout_seconds: task.timeout_seconds,
@@ -598,23 +553,14 @@ fn build_claude_command(task: &ProviderTask<'_>, rendered_prompt: String) -> Pro
 
 fn provider_command_kind(provider: ProviderKind) -> Option<String> {
     match provider {
-        ProviderKind::Claude => {
-            if env::var("CLAUDE_BIN").is_ok() && env::var("CLAUDE_P_BIN").is_err() {
-                Some("native-claude".to_string())
-            } else {
-                Some("claude-p".to_string())
-            }
-        }
+        ProviderKind::Claude => Some("owned-interactive-claude".to_string()),
         _ => None,
     }
 }
 
 fn resolve_command(provider: ProviderKind) -> String {
     match provider {
-        ProviderKind::Claude => env::var("CLAUDE_P_BIN")
-            .ok()
-            .or_else(|| env::var("CLAUDE_BIN").ok())
-            .unwrap_or_else(|| "claude-p".to_string()),
+        ProviderKind::Claude => env_or("CLAUDE_BIN", "claude"),
         ProviderKind::Cursor => env_or("CURSOR_AGENT_BIN", "cursor-agent"),
         ProviderKind::Kimi => env_or("PI_BIN", "pi"),
         ProviderKind::Codex => env_or("CODEX_BIN", "codex"),
@@ -728,7 +674,7 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
             "appliedReductions": ["compact_prompt", "custom_system_prompt"],
             "unsupportedReductions": [],
             "bestEffortReductions": ["setting_sources", "disable_hooks", "disable_skills", "context_files"],
-            "note": "claude-p injects a Stop hook; bare is best-effort for hook removal"
+            "note": "owned interactive Claude injects runner-owned lifecycle hooks; bare is best-effort for hook reduction"
         }),
         ProviderKind::Cursor => json!({
             "profile": "bare",
@@ -749,28 +695,6 @@ fn mode_description(mode: TaskMode) -> &'static str {
             "Make the requested code changes, keep scope tight, and report verification evidence."
         }
         TaskMode::Command => "Run the requested bounded command-oriented task and report evidence.",
-    }
-}
-
-fn claude_mode_flags(mode: TaskMode) -> Vec<String> {
-    match mode {
-        TaskMode::Research | TaskMode::Review => vec![
-            "--permission-mode".to_string(),
-            "dontAsk".to_string(),
-            "--allowedTools".to_string(),
-            "Read,Grep,Glob".to_string(),
-            "--disallowedTools".to_string(),
-            "Bash,Edit,Write".to_string(),
-        ],
-        TaskMode::Command => vec![
-            "--permission-mode".to_string(),
-            "default".to_string(),
-            "--allowedTools".to_string(),
-            "Read,Grep,Glob,Bash".to_string(),
-            "--disallowedTools".to_string(),
-            "Edit,Write".to_string(),
-        ],
-        TaskMode::Implement => vec!["--permission-mode".to_string(), "default".to_string()],
     }
 }
 

@@ -1,3 +1,6 @@
+use crate::claude_interactive::runner::{
+    ClaudeInteractiveRunRequest, ClaudeInteractiveRunResult, run_interactive,
+};
 use crate::domain::{MAX_TIMEOUT_SECONDS, MIN_TIMEOUT_SECONDS, TaskMode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -6,7 +9,6 @@ use std::fs;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::Command;
@@ -16,7 +18,6 @@ use tokio::time::{Duration, timeout};
 pub const PROTOCOL_VERSION: u32 = 2;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_STREAM_BYTES: usize = 1024 * 1024;
-const MAX_PTY_OUTPUT_EXCERPT: usize = 64 * 1024;
 const CHILD_SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,7 +216,7 @@ async fn send_request(socket_path: &Path, request: &HostRequest) -> Result<HostR
 pub async fn run_server(socket_path: PathBuf) -> Result<(), String> {
     let roots = configured_workspace_roots()?;
     let workspace_policy_id = workspace_policy_id(&roots)?;
-    resolve_claude_p()?;
+    resolve_claude_bin()?;
     validate_socket_path(&socket_path, &roots).await?;
     let listener = UnixListener::bind(&socket_path).map_err(|error| error.to_string())?;
     fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))
@@ -390,48 +391,52 @@ async fn handle_request(
             )
             .await
             {
-                Ok(result) => HostResponse {
-                    version: PROTOCOL_VERSION,
-                    ok: true,
-                    result: Some(HostResult::Run {
-                        status: if result.exit_code == Some(0) && result.failure_category.is_none()
-                        {
-                            "success".to_string()
-                        } else {
-                            "failure".to_string()
-                        },
-                        exit_code: result.exit_code,
-                        signal: result.signal,
-                        duration_ms: result.duration_ms,
-                        failure_category: result.failure_category.clone(),
-                        pty_output_excerpt: pty_output_excerpt(&result.stdout, &result.stderr),
-                        pty_output_truncated: result.stdout_truncated
-                            || result.stderr_truncated
-                            || result.stdout.len() + result.stderr.len() > MAX_PTY_OUTPUT_EXCERPT,
-                        redactions_applied: vec!["prompt".to_string(), "secrets".to_string()],
-                        result: if result.exit_code == Some(0) && result.failure_category.is_none()
-                        {
-                            Some(ClaudeInteractiveSuccess {
-                                final_text: result.stdout.clone(),
-                                source: "transcript".to_string(),
-                                session_id: None,
-                            })
-                        } else {
-                            None
-                        },
-                        stop: None,
-                        stop_failure: None,
-                        transcript: json!({
-                            "parseStatus": "legacy_pending",
-                            "fallbackUsed": false
+                Ok(result) => {
+                    let success = result.failure_category.is_none() && result.final_text.is_some();
+                    let stdout = compatibility_stdout(&result);
+                    let stderr = if success {
+                        String::new()
+                    } else {
+                        result.pty_output_excerpt.clone()
+                    };
+                    let final_text_source = result
+                        .final_text_source
+                        .clone()
+                        .unwrap_or_else(|| "transcript".to_string());
+                    let session_id = result.session_id.clone();
+                    let final_text = result.final_text.clone();
+                    HostResponse {
+                        version: PROTOCOL_VERSION,
+                        ok: true,
+                        result: Some(HostResult::Run {
+                            status: if success {
+                                "success".to_string()
+                            } else {
+                                "failure".to_string()
+                            },
+                            exit_code: result.exit_code,
+                            signal: result.signal,
+                            duration_ms: result.duration_ms,
+                            failure_category: result.failure_category.clone(),
+                            pty_output_excerpt: result.pty_output_excerpt,
+                            pty_output_truncated: result.pty_output_truncated,
+                            redactions_applied: vec!["prompt".to_string(), "secrets".to_string()],
+                            result: final_text.map(|final_text| ClaudeInteractiveSuccess {
+                                final_text,
+                                source: final_text_source,
+                                session_id,
+                            }),
+                            stop: result.stop,
+                            stop_failure: result.stop_failure,
+                            transcript: result.transcript,
+                            stdout,
+                            stderr,
+                            stdout_truncated: false,
+                            stderr_truncated: result.pty_output_truncated,
                         }),
-                        stdout: result.stdout,
-                        stderr: result.stderr,
-                        stdout_truncated: result.stdout_truncated,
-                        stderr_truncated: result.stderr_truncated,
-                    }),
-                    error: None,
-                },
+                        error: None,
+                    }
+                }
                 Err(error) => error_response("spawn_failed", &error),
             }
         }
@@ -447,16 +452,16 @@ fn contains_forbidden_execution_descriptor(value: &Value) -> bool {
         .any(|field| object.contains_key(*field))
 }
 
-#[derive(Debug)]
-struct ChildResult {
-    exit_code: Option<i32>,
-    signal: Option<String>,
-    stdout: String,
-    stderr: String,
-    stdout_truncated: bool,
-    stderr_truncated: bool,
-    failure_category: Option<String>,
-    duration_ms: u64,
+fn compatibility_stdout(result: &ClaudeInteractiveRunResult) -> String {
+    let Some(final_text) = result.final_text.as_deref() else {
+        return String::new();
+    };
+    let value = json!({
+        "result": final_text,
+        "sessionId": result.session_id,
+        "source": result.final_text_source
+    });
+    format!("{value}\n")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -469,10 +474,10 @@ async fn run_claude_child(
     effort: Option<String>,
     active_pids: Arc<Mutex<Vec<u32>>>,
     disconnect: Option<oneshot::Receiver<()>>,
-) -> Result<ChildResult, String> {
-    let claude_p = resolve_claude_p()?;
+) -> Result<ClaudeInteractiveRunResult, String> {
+    let claude_bin = resolve_claude_bin()?;
     run_claude_child_with_executable(
-        claude_p,
+        claude_bin,
         cwd,
         timeout_seconds,
         mode,
@@ -487,7 +492,7 @@ async fn run_claude_child(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_claude_child_with_executable(
-    claude_p: String,
+    claude_bin: PathBuf,
     cwd: &Path,
     timeout_seconds: i64,
     mode: TaskMode,
@@ -496,152 +501,45 @@ async fn run_claude_child_with_executable(
     effort: Option<String>,
     active_pids: Arc<Mutex<Vec<u32>>>,
     disconnect: Option<oneshot::Receiver<()>>,
-) -> Result<ChildResult, String> {
-    let started = Instant::now();
-    let mut child = Command::new("/bin/zsh");
-    let mut inner_args = vec![
-        claude_p,
-        "--cwd".to_string(),
-        cwd.display().to_string(),
-        "--timeout".to_string(),
-        timeout_seconds.to_string(),
-        "--output-format".to_string(),
-        "json".to_string(),
-    ];
-    inner_args.extend(claude_mode_flags(mode));
-    if let Some(model) = model {
-        inner_args.extend(["--model".to_string(), model]);
-    }
-    if let Some(effort) = effort {
-        inner_args.extend(["--effort".to_string(), effort]);
-    }
-    child
-        .arg("-flc")
-        .arg("source ~/.zshenv </dev/null 2>/dev/null || true; source ~/.zprofile </dev/null 2>/dev/null || true; source ~/.zshrc </dev/null 2>/dev/null || true; exec \"$@\"")
-        .arg("agent-bridge-claude-host")
-        .args(inner_args)
-        .current_dir(cwd)
-        .envs(crate::provider::provider_env(crate::domain::ProviderKind::Claude))
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    configure_child_process_group(&mut child);
-    let mut child = child
-        .spawn()
-        .map_err(|_| "failed to spawn Claude provider".to_string())?;
-    let pid = child.id();
-    if let Some(pid) = pid
-        && let Ok(mut pids) = active_pids.lock()
-    {
-        pids.push(pid);
-    }
-    if let Some(mut stdin) = child.stdin.take() {
-        tokio::spawn(async move {
-            let _ = stdin.write_all(prompt.as_bytes()).await;
-        });
-    }
-    let stdout_task = child.stdout.take().map(read_stream_capped);
-    let stderr_task = child.stderr.take().map(read_stream_capped);
-    enum WaitOutcome {
-        Exited(std::io::Result<std::process::ExitStatus>),
-        Timeout,
-        ClientDisconnected,
-    }
-
-    let wait = tokio::select! {
-        result = child.wait() => WaitOutcome::Exited(result),
-        _ = tokio::time::sleep(Duration::from_secs(timeout_seconds as u64)) => WaitOutcome::Timeout,
-        _ = wait_for_disconnect(disconnect) => WaitOutcome::ClientDisconnected,
-    };
-    let (status, failure_category) = match wait {
-        WaitOutcome::Exited(Ok(status)) => {
-            let failure_category = if status.success() {
-                None
-            } else {
-                Some("provider_exit_error".to_string())
-            };
-            (Some(status), failure_category)
-        }
-        WaitOutcome::Exited(Err(_)) => (None, Some("provider_exit_error".to_string())),
-        WaitOutcome::Timeout => {
-            terminate_child_tree(pid, libc::SIGTERM);
-            let status = match timeout(CHILD_SHUTDOWN_GRACE, child.wait()).await {
-                Ok(result) => result.ok(),
-                Err(_) => {
-                    terminate_child_tree(pid, libc::SIGKILL);
-                    child.wait().await.ok()
-                }
-            };
-            (status, Some("provider_timeout".to_string()))
-        }
-        WaitOutcome::ClientDisconnected => {
-            terminate_child_tree(pid, libc::SIGTERM);
-            let status = match timeout(CHILD_SHUTDOWN_GRACE, child.wait()).await {
-                Ok(result) => result.ok(),
-                Err(_) => {
-                    terminate_child_tree(pid, libc::SIGKILL);
-                    child.wait().await.ok()
-                }
-            };
-            (status, Some("client_disconnected".to_string()))
-        }
-    };
-    if let Some(pid) = pid
-        && let Ok(mut pids) = active_pids.lock()
-    {
-        pids.retain(|active| *active != pid);
-    }
-    let (stdout, stdout_truncated) = match stdout_task {
-        Some(task) => task.await,
-        None => (Vec::new(), false),
-    };
-    let (stderr, stderr_truncated) = match stderr_task {
-        Some(task) => task.await,
-        None => (Vec::new(), false),
-    };
-    Ok(ChildResult {
-        exit_code: status.as_ref().and_then(|status| status.code()),
-        signal: signal_name(status.as_ref()),
-        stdout: String::from_utf8_lossy(&stdout).to_string(),
-        stderr: String::from_utf8_lossy(&stderr).to_string(),
-        stdout_truncated,
-        stderr_truncated,
-        failure_category,
-        duration_ms: started.elapsed().as_millis() as u64,
+) -> Result<ClaudeInteractiveRunResult, String> {
+    let _ = active_pids;
+    run_interactive(ClaudeInteractiveRunRequest {
+        claude_bin,
+        cwd: cwd.to_path_buf(),
+        timeout_seconds,
+        mode,
+        prompt,
+        model,
+        effort,
+        extra_env: Default::default(),
+        disconnect,
     })
+    .await
+    .map_err(|_| "failed to spawn Claude provider".to_string())
 }
 
-async fn wait_for_disconnect(disconnect: Option<oneshot::Receiver<()>>) {
-    match disconnect {
-        Some(receiver) => {
-            let _ = receiver.await;
-        }
-        None => std::future::pending::<()>().await,
-    }
-}
-
-fn resolve_claude_p() -> Result<String, String> {
-    if let Ok(path) = env::var("CLAUDE_P_BIN") {
+fn resolve_claude_bin() -> Result<PathBuf, String> {
+    if let Ok(path) = env::var("CLAUDE_BIN") {
         let candidate = PathBuf::from(&path);
         let metadata =
             fs::metadata(&candidate).map_err(|_| "failed to spawn Claude provider".to_string())?;
         if metadata.permissions().mode() & 0o111 != 0 {
-            return Ok(path);
+            return Ok(candidate);
         }
         return Err("failed to spawn Claude provider".to_string());
     }
     let Some(path) = env::var_os("PATH") else {
-        return Ok("claude-p".to_string());
+        return Ok(PathBuf::from("claude"));
     };
     for dir in env::split_paths(&path) {
-        let candidate = dir.join("claude-p");
+        let candidate = dir.join("claude");
         if let Ok(metadata) = fs::metadata(&candidate)
             && metadata.permissions().mode() & 0o111 != 0
         {
-            return Ok(candidate.display().to_string());
+            return Ok(candidate);
         }
     }
-    Ok("claude-p".to_string())
+    Ok(PathBuf::from("claude"))
 }
 
 async fn read_stream_capped(mut reader: impl tokio::io::AsyncRead + Unpin) -> (Vec<u8>, bool) {
@@ -712,23 +610,6 @@ fn error_response(code: &str, message: &str) -> HostResponse {
             message: sanitize_message(message),
         }),
     }
-}
-
-fn pty_output_excerpt(stdout: &str, stderr: &str) -> String {
-    let mut excerpt = String::new();
-    if !stdout.is_empty() {
-        excerpt.push_str(stdout);
-    }
-    if !stderr.is_empty() {
-        if !excerpt.is_empty() {
-            excerpt.push('\n');
-        }
-        excerpt.push_str(stderr);
-    }
-    if excerpt.len() > MAX_PTY_OUTPUT_EXCERPT {
-        excerpt.truncate(MAX_PTY_OUTPUT_EXCERPT);
-    }
-    excerpt
 }
 
 fn sanitize_message(message: &str) -> String {
@@ -820,28 +701,6 @@ fn canonicalize_roots(roots: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
 
 fn is_inside(candidate: &Path, root: &Path) -> bool {
     candidate == root || candidate.strip_prefix(root).is_ok()
-}
-
-fn claude_mode_flags(mode: TaskMode) -> Vec<String> {
-    match mode {
-        TaskMode::Research | TaskMode::Review => vec![
-            "--permission-mode".to_string(),
-            "dontAsk".to_string(),
-            "--allowedTools".to_string(),
-            "Read,Grep,Glob".to_string(),
-            "--disallowedTools".to_string(),
-            "Bash,Edit,Write".to_string(),
-        ],
-        TaskMode::Command => vec![
-            "--permission-mode".to_string(),
-            "default".to_string(),
-            "--allowedTools".to_string(),
-            "Read,Grep,Glob,Bash".to_string(),
-            "--disallowedTools".to_string(),
-            "Edit,Write".to_string(),
-        ],
-        TaskMode::Implement => vec!["--permission-mode".to_string(), "default".to_string()],
-    }
 }
 
 #[cfg(unix)]
@@ -1305,7 +1164,7 @@ mod tests {
     #[tokio::test]
     async fn client_disconnect_terminates_and_reaps_child() {
         let root = unique_temp("disconnect-child");
-        let fake_claude = root.join("claude-p");
+        let fake_claude = root.join("claude");
         write_executable(
             &fake_claude,
             "#!/bin/sh\ntrap 'exit 143' TERM\nwhile true; do sleep 1; done\n",
@@ -1314,7 +1173,7 @@ mod tests {
         let (disconnect_tx, disconnect_rx) = oneshot::channel();
 
         let child = run_claude_child_with_executable(
-            fake_claude.display().to_string(),
+            fake_claude,
             &root,
             30,
             TaskMode::Research,

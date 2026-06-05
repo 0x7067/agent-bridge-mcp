@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
 const LOGIN_SHELL: &str = "/bin/zsh";
@@ -47,8 +48,10 @@ pub struct ClaudeInteractiveRunRequest {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub extra_env: BTreeMap<String, String>,
+    pub disconnect: Option<oneshot::Receiver<()>>,
 }
 
+#[derive(Debug)]
 pub struct ClaudeInteractiveRunResult {
     pub exit_code: Option<i32>,
     pub signal: Option<String>,
@@ -108,6 +111,7 @@ pub async fn run_interactive(
     let mut stop_failure = None;
     let mut exit_status = None;
     let mut prompt_injected = false;
+    let mut disconnect = request.disconnect;
     let timeout_sleep = tokio::time::sleep(Duration::from_secs(request.timeout_seconds as u64));
     tokio::pin!(timeout_sleep);
 
@@ -116,6 +120,10 @@ pub async fn run_interactive(
             _ = &mut timeout_sleep => {
                 exit_status = Some(session.terminate_with_grace(Duration::from_secs(3)).await?);
                 break Some("runner_timeout".to_string());
+            }
+            _ = wait_for_disconnect(&mut disconnect) => {
+                exit_status = Some(session.terminate_with_grace(Duration::from_secs(3)).await?);
+                break Some("client_disconnected".to_string());
             }
             event = event_rx.recv() => {
                 match event {
@@ -246,6 +254,15 @@ pub async fn inject_prompt(writer: &mut (impl AsyncWrite + Unpin), prompt: &str)
     tokio::time::sleep(PROMPT_ENTER_DELAY).await;
     writer.write_all(b"\r").await?;
     writer.flush().await
+}
+
+async fn wait_for_disconnect(disconnect: &mut Option<oneshot::Receiver<()>>) {
+    match disconnect {
+        Some(receiver) => {
+            let _ = receiver.await;
+        }
+        None => std::future::pending::<()>().await,
+    }
 }
 
 fn read_relay_events(mut reader: File, tx: mpsc::Sender<HookRelayEvent>, stop: Arc<AtomicBool>) {
@@ -421,6 +438,7 @@ mod tests {
                 "FAKE_CLAUDE_SCENARIO".to_string(),
                 "success".to_string(),
             )]),
+            disconnect: None,
         })
         .await
         .unwrap();
@@ -450,6 +468,7 @@ mod tests {
                 "FAKE_CLAUDE_SCENARIO".to_string(),
                 "setup-login".to_string(),
             )]),
+            disconnect: None,
         })
         .await
         .unwrap();

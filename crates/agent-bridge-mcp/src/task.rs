@@ -901,11 +901,16 @@ async fn complete_host_response(
     response: crate::claude_host::HostResponse,
 ) -> TaskCompletion {
     let Some(crate::claude_host::HostResult::Run {
+        status,
         exit_code,
         signal,
         stdout,
         stderr,
         failure_category,
+        result,
+        transcript,
+        stop,
+        stop_failure,
         ..
     }) = response.result
     else {
@@ -931,10 +936,34 @@ async fn complete_host_response(
         "lifecycle",
         "lifecycle",
         "",
-        json!({"phase": "host_response", "profile": command.profile}),
+        json!({
+            "phase": "host_response",
+            "profile": command.profile,
+            "status": status,
+            "transcript": transcript,
+            "stop": stop,
+            "stopFailure": stop_failure
+        }),
         &redactions,
     )
     .await;
+    if let Some(success) = result.as_ref() {
+        append_transcript_event(
+            &transcript_path,
+            command.provider,
+            "host_runner",
+            "provider_result",
+            "",
+            json!({
+                "type": "result",
+                "result": success.final_text,
+                "source": success.source,
+                "sessionId": success.session_id
+            }),
+            &redactions,
+        )
+        .await;
+    }
     for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
         let (kind, parsed) = parse_transcript_line(line);
         append_transcript_event(
@@ -961,26 +990,7 @@ async fn complete_host_response(
         )
         .await;
     }
-    let success = exit_code == Some(0) && failure_category.is_none();
-    if success && !claude_output_is_parseable(&stdout_bytes) {
-        return TaskCompletion {
-            task_id,
-            status: TaskStatus::Failed,
-            exit_code,
-            signal: signal.clone(),
-            error: Some("claude provider output was not parseable".to_string()),
-            error_type: Some(ErrorType::ProviderOutputError),
-            diagnostic: Some(task_diagnostic(
-                &command,
-                "provider_output_error",
-                command.timeout_seconds * 1000,
-                exit_code,
-                signal_name_from_string(signal.as_deref()),
-                &stdout_bytes,
-                &stderr_bytes,
-            )),
-        };
-    }
+    let success = failure_category.is_none() && result.is_some();
     if success {
         TaskCompletion {
             task_id,
@@ -1309,7 +1319,7 @@ fn task_diagnostic(
         "provider": command_provider_hint(command).as_str(),
         "commandKind": command_kind(command),
         "commandPath": command_path(command),
-        "launchStrategy": if command.provider == ProviderKind::Claude && crate::claude_host::socket_path_from_env().is_some() { "host_runner" } else { "direct" },
+        "launchStrategy": launch_strategy(command.provider),
         "startupVerified": false,
         "timeoutMs": timeout_ms,
         "exitCode": exit_code,
@@ -1340,6 +1350,17 @@ fn command_kind(command: &ProviderCommand) -> String {
         .as_deref()
         .unwrap_or(command.provider.as_str())
         .to_string()
+}
+
+fn launch_strategy(provider: ProviderKind) -> &'static str {
+    if provider != ProviderKind::Claude {
+        return "direct";
+    }
+    if crate::claude_host::socket_path_from_env().is_some() {
+        "host_runner"
+    } else {
+        "host_runner_required"
+    }
 }
 
 fn command_path(command: &ProviderCommand) -> String {

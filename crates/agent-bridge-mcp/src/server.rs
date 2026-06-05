@@ -2085,10 +2085,8 @@ async fn smoke_one_provider(
                     value["checkedAt"] = json!(checked_at_iso());
                     value["smokeDurationMs"] = json!(output.duration_ms);
                     value["smokePromptStrategy"] = json!(strategy);
-                    if provider == ProviderKind::Claude
-                        && crate::claude_host::socket_path_from_env().is_some()
-                    {
-                        value["launchStrategy"] = json!("host_runner");
+                    if provider == ProviderKind::Claude {
+                        value["launchStrategy"] = json!(launch_strategy(provider));
                     }
                     set_readiness(&mut value, "ready", "version+smoke", true, true, None);
                     value
@@ -2101,10 +2099,8 @@ async fn smoke_one_provider(
                     value["checkedAt"] = json!(checked_at_iso());
                     value["smokeDurationMs"] = json!(output.duration_ms);
                     value["smokePromptStrategy"] = json!(strategy);
-                    if provider == ProviderKind::Claude
-                        && crate::claude_host::socket_path_from_env().is_some()
-                    {
-                        value["launchStrategy"] = json!("host_runner");
+                    if provider == ProviderKind::Claude {
+                        value["launchStrategy"] = json!(launch_strategy(provider));
                     }
                     value["error"] = json!(probe_error_text(&output));
                     value["diagnostic"] = provider_diagnostic(
@@ -2331,23 +2327,30 @@ fn host_probe_result(response: crate::claude_host::HostResponse, duration_ms: u6
         Some(crate::claude_host::HostResult::Run {
             exit_code,
             signal,
-            stdout,
-            stderr,
             failure_category,
+            result,
+            pty_output_excerpt,
             duration_ms,
             ..
-        }) => ProbeResult {
-            status: host_exit_status(exit_code, signal.as_deref()),
-            stdout: stdout.into_bytes(),
-            stderr: stderr.into_bytes(),
-            failure_category: failure_category.as_deref().map(|category| match category {
-                "provider_timeout" => "provider_timeout",
-                "provider_exit_error" => "provider_exit_error",
-                _ => "provider_output_error",
-            }),
-            error: failure_category,
-            duration_ms,
-        },
+        }) => {
+            let success_text = result
+                .as_ref()
+                .map(|result| result.final_text.clone())
+                .unwrap_or_default();
+            ProbeResult {
+                status: host_exit_status(exit_code, signal.as_deref()),
+                stdout: success_text.into_bytes(),
+                stderr: pty_output_excerpt.into_bytes(),
+                failure_category: failure_category.as_deref().map(|category| match category {
+                    "provider_timeout" => "provider_timeout",
+                    "provider_exit_error" => "provider_exit_error",
+                    "client_disconnected" => "provider_timeout",
+                    _ => "provider_output_error",
+                }),
+                error: failure_category,
+                duration_ms,
+            }
+        }
         _ => ProbeResult {
             status: None,
             stdout: Vec::new(),
@@ -2442,7 +2445,7 @@ fn provider_diagnostic(
         "provider": provider.as_str(),
         "commandKind": command_kind(provider, command),
         "commandPath": command_path(provider, command),
-        "launchStrategy": if provider == ProviderKind::Claude && crate::claude_host::socket_path_from_env().is_some() { "host_runner" } else { "direct" },
+        "launchStrategy": launch_strategy(provider),
         "startupVerified": startup_verified,
         "timeoutMs": timeout_ms,
         "elapsedMs": output.duration_ms,
@@ -2452,12 +2455,9 @@ fn provider_diagnostic(
         "stdoutExcerpt": excerpt(&output.stdout, &redactions),
         "stderrExcerpt": excerpt(&output.stderr, &redactions)
     });
-    if provider == ProviderKind::Claude
-        && command.command_kind.as_deref() == Some("claude-p")
-        && env::var("CLAUDE_BIN").is_ok()
-    {
+    if provider == ProviderKind::Claude && crate::claude_host::socket_path_from_env().is_none() {
         diagnostic["recommendation"] = json!(
-            "Set CLAUDE_BIN without CLAUDE_P_BIN to use native claude -p, then retry providers_check with smoke: true"
+            "Start the Agent Bridge Claude host runner and retry providers_check with smoke: true"
         );
     }
     diagnostic
@@ -2504,7 +2504,7 @@ fn command_kind(provider: ProviderKind, command: &provider::ProviderCommand) -> 
     command
         .command_kind
         .as_deref()
-        .unwrap_or("native-claude")
+        .unwrap_or("owned-interactive-claude")
         .to_string()
 }
 
@@ -2517,6 +2517,17 @@ fn command_path(provider: ProviderKind, command: &provider::ProviderCommand) -> 
             .unwrap_or_else(|| command.command.clone());
     }
     command.command.clone()
+}
+
+fn launch_strategy(provider: ProviderKind) -> &'static str {
+    if provider != ProviderKind::Claude {
+        return "direct";
+    }
+    if crate::claude_host::socket_path_from_env().is_some() {
+        "host_runner"
+    } else {
+        "host_runner_required"
+    }
 }
 
 fn excerpt(bytes: &[u8], redactions: &[String]) -> String {
@@ -2603,10 +2614,8 @@ fn task_preview(arguments: Value) -> Result<Value, String> {
         "promptStrategy": command.prompt_strategy,
         "profileDiagnostics": command.profile_diagnostics
     });
-    if input.provider == ProviderKind::Claude
-        && crate::claude_host::socket_path_from_env().is_some()
-    {
-        preview["launchStrategy"] = json!("host_runner");
+    if input.provider == ProviderKind::Claude {
+        preview["launchStrategy"] = json!(launch_strategy(input.provider));
     }
     Ok(preview)
 }
