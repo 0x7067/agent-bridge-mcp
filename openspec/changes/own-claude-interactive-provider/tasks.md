@@ -35,8 +35,8 @@
 
 - [x] 4.1 Update README setup and troubleshooting to remove print-mode fallback guidance and document the owned runner workflow, env migration, host-runner requirement, smoke duration expectations, and rollback shape.
 - [x] 4.2 Update guidance specs/docs that mention `claude-p`, native `claude -p`, or direct Claude launch strategy.
-- [ ] 4.3 Add or update tests for provider readiness, task preview redaction, host-runner safety, stdout isolation, transcript parsing, StopFailure handling, bare profile hooks, and no-fallback behavior.
-- [ ] 4.4 Run OpenSpec validation and the relevant Rust test suite.
+- [x] 4.3 Add or update tests for provider readiness, task preview redaction, host-runner safety, stdout isolation, transcript parsing, StopFailure handling, bare profile hooks, and no-fallback behavior.
+- [x] 4.4 Run OpenSpec validation and the relevant Rust test suite.
 - [x] 4.5 Re-submit the revised plan for Agent Bridge review before implementation tasks beyond research.
 - [ ] 4.6 Build the release binary, replace the installed Agent Bridge binary, and verify the installed MCP tool surface.
 - [ ] 4.7 Run an optional live Claude smoke check through the owned host runner when local Claude auth is available.
