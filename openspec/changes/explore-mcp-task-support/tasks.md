@@ -1,9 +1,9 @@
 ## 1. Compatibility Research
 
-- [ ] 1.1 Write a compatibility memo summarizing current MCP task surfaces, including 2025-11-25 experimental tasks and newer task-extension migration constraints.
-- [ ] 1.2 Verify which task-related capabilities, methods, and metadata current target hosts can tolerate or advertise over stdio.
-- [ ] 1.3 Decide the first supported task surface, task-listing behavior, and target-host capability behavior, or explicitly mark implementation blocked until host/protocol compatibility is clearer.
-- [ ] 1.4 Update `design.md` and specs if the compatibility memo changes the selected protocol strategy.
+- [x] 1.1 Write a compatibility memo summarizing current MCP task surfaces, including 2025-11-25 experimental tasks and newer task-extension migration constraints.
+- [x] 1.2 Verify which task-related capabilities, methods, and metadata current target hosts can tolerate or advertise over stdio.
+- [x] 1.3 Decide the first supported task surface, task-listing behavior, and target-host capability behavior, or explicitly mark implementation blocked until host/protocol compatibility is clearer.
+- [x] 1.4 Update `design.md` and specs if the compatibility memo changes the selected protocol strategy.
 
 ## 2. Protocol Modeling
 
@@ -27,14 +27,14 @@
 
 ## 5. Optional Notifications And Progress
 
-- [ ] 5.1 Decide whether status/progress notifications are in scope for the selected compatibility surface.
+- [x] 5.1 Decide whether status/progress notifications are in scope for the selected compatibility surface.
 - [ ] 5.2 If in scope, emit only negotiated task status/progress notifications and keep polling sufficient for correctness.
 - [ ] 5.3 Add tests proving notifications are optional and do not corrupt MCP stdout.
 
 ## 6. Guidance And Verification
 
-- [ ] 6.1 Update README and guidance resources to distinguish existing Agent Bridge task tools from protocol-level MCP task support.
-- [ ] 6.2 Run `cargo test`.
-- [ ] 6.3 Run `cargo fmt --check`.
-- [ ] 6.4 Run `cargo clippy --all-targets -- -D warnings`.
-- [ ] 6.5 Run `openspec validate explore-mcp-task-support --strict`.
+- [x] 6.1 Update README and guidance resources to distinguish existing Agent Bridge task tools from protocol-level MCP task support.
+- [x] 6.2 Run `cargo test`.
+- [x] 6.3 Run `cargo fmt --check`.
+- [x] 6.4 Run `cargo clippy --all-targets -- -D warnings`.
+- [x] 6.5 Run `openspec validate explore-mcp-task-support --strict`.

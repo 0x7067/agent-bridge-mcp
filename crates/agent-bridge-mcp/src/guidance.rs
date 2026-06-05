@@ -7,6 +7,8 @@ const PROVIDER_CAPABILITIES_URI: &str = "agent-bridge://guidance/provider-capabi
 const CLAUDE_HOST_LIFECYCLE_URI: &str = "agent-bridge://guidance/claude-host-lifecycle";
 const DOGFOOD_WORKFLOWS_URI: &str = "agent-bridge://guidance/dogfood-workflows";
 
+pub const INITIALIZATION_INSTRUCTIONS: &str = r#"Agent Bridge delegates review, research, command, and implementation work to provider agents. Provider output is evidence only: the caller still owns project verification before claiming work is done. Start with doctor when setup or provider readiness is uncertain; use smoke checks intentionally when launch readiness matters. Spawn bounded tasks, wait or inspect logs/transcripts, inspect task_result before cleanup, follow structuredContent and nextActions when present, and remove managed worktrees only after reviewing final state."#;
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PromptGetParams {
@@ -195,7 +197,7 @@ Suggested flow:
 2. Call providers_check if provider readiness needs focused follow-up.
 3. Call task_preview when command flags, cwd, environment, or isolation need inspection.
 4. Call task_spawn with mode "implement", a clear task prompt, cwd under an allowed workspace, and isolation "worktree" by default.
-5. Use task_list or task_status presentation metadata for native-client summaries, action availability, and active/recent task ordering.
+5. Use task_list or task_status presentation metadata for native-client summaries, action availability, ranked nextActions, and active/recent task ordering.
 6. Use task_wait, task_logs, task_transcript, and task_status to monitor the task without assuming it is finished.
 7. When final, call task_result and inspect the report, transcript evidence, logs, gitStatus, diff, changedFiles, exit metadata, and errorType.
 8. The main caller remains responsible for running relevant tests, lint, typecheck, build, or OpenSpec validation before claiming work complete.
@@ -264,15 +266,19 @@ Use Agent Bridge when a separate coding agent can provide useful research, revie
 
 Recommended flow:
 1. Call `doctor` first when setup, workspace, state, provider, or host-runner readiness is uncertain.
-2. Call `providers_check` to catch missing or misconfigured provider CLIs. Use smoke checks when debugging startup.
+2. Call `providers_check` to catch missing or misconfigured provider CLIs. Use smoke checks when debugging startup. `doctor.summary.status` covers setup health; `doctor.launchReadiness` covers startup verification and launchability.
 3. Call `task_preview` when cwd, flags, environment, prompt transport, or worktree isolation need inspection.
 4. Call `task_spawn` for the real delegated task.
-5. Use `task_list` and `task_status` `presentation` metadata for native-client rendering: active/recent ordering, display titles, status tone, result availability, and structured actions.
+5. Use `task_list` and `task_status` `presentation` metadata for native-client rendering: active/recent ordering, display titles, status tone, result availability, structured actions, and ranked `nextActions`.
 6. Render unavailable `reply` and `resume` actions as disabled controls with their reasons; provider tasks are not interactive or resumable in v1.
 7. Call `task_wait` with a bounded timeout. If it times out, call `task_logs` with line cursors and `task_transcript` with cursor/limit to inspect progress.
-8. Once final, call `task_result` for `reviewPacket`, transcript availability/result evidence, logs, git status, diff, changed files, exit metadata, diagnostics, and `errorType`.
+8. Once final, call `task_result` for `reviewPacket`, `nextActions`, transcript availability/result evidence, logs, git status, diff, changed files, exit metadata, diagnostics, and `errorType`.
 9. Treat provider output and native-feeling completion as evidence for the main caller, not as final verification.
-10. Call `task_remove` intentionally after any managed worktree has been inspected. `presentation.actions` may mark cleanup as `unsafe` for managed worktree tasks until result inspection is explicit.
+10. Call `task_remove` intentionally after any managed worktree has been inspected. `presentation.actions` and `nextActions` may mark cleanup as `unsafe` for managed worktree tasks until result inspection is explicit.
+
+Self-guided clients should read `initialize.instructions`, `structuredContent`, output schemas, and `nextActions` when available. Clients that ignore those fields can still follow this manual lifecycle.
+
+Protocol-level MCP Tasks are distinct from Agent Bridge `task_*` tools. Use the stable `task_*` lifecycle by default; protocol task support depends on negotiated host/client capabilities and may be unavailable.
 "#;
 
 const SAFETY_RESOURCE: &str = r#"# Agent Bridge Safety Guidance
@@ -340,7 +346,7 @@ Use `task_spawn` with mode `review` or `research`, `isolation: "none"`, a small 
 
 ## native task presentation
 
-Use `task_list` with default arguments to show active tasks first and recent final tasks second. Read each task's `presentation` object for display title, status tone, result availability, `verificationStatus: "not_verified"`, and structured actions. Use `presentation: false` with `scope: "all"` only when an operator intentionally needs raw full-history registry inspection.
+Use `task_list` with default arguments to show active tasks first and recent final tasks second. Read each task's `presentation` object for display title, status tone, result availability, `verificationStatus: "not_verified"`, structured actions, and ranked `nextActions`. Use `presentation: false` with `scope: "all"` only when an operator intentionally needs raw full-history registry inspection.
 
 ## isolated implementation
 

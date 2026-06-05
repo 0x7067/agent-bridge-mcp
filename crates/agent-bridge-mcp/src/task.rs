@@ -1790,7 +1790,8 @@ fn public_task(task: &TaskRecord) -> Value {
         "promptStrategy": task.prompt_strategy,
         "profileDiagnostics": task.profile_diagnostics,
         "transcriptDiagnostic": task.transcript_diagnostic,
-        "presentation": presentation(task)
+        "presentation": presentation(task),
+        "nextActions": next_actions(task)
     })
 }
 
@@ -1827,7 +1828,8 @@ fn presentation(task: &TaskRecord) -> Value {
             "reviewPacketAvailable": is_final(task.status)
         },
         "verificationStatus": "not_verified",
-        "actions": presentation_actions(task)
+        "actions": presentation_actions(task),
+        "nextActions": next_actions(task)
     })
 }
 
@@ -1944,6 +1946,132 @@ fn action(id: &str, tool: Option<&str>, state: &str, reason: Option<&str>) -> Va
     value
 }
 
+fn next_actions(task: &TaskRecord) -> Value {
+    let mut actions = Vec::new();
+    if !is_final(task.status) {
+        actions.push(next_action(
+            "wait",
+            Some("task_wait"),
+            json!({ "taskId": task.task_id, "timeoutMs": 30000 }),
+            "available",
+            "Wait briefly for the provider task to reach a final state before inspecting the result.",
+            "safe",
+        ));
+        actions.push(next_action(
+            "inspect_logs",
+            Some("task_logs"),
+            json!({ "taskId": task.task_id }),
+            "available",
+            "Inspect incremental stdout and stderr if the bounded wait times out or progress is unclear.",
+            "safe",
+        ));
+        actions.push(next_action(
+            "inspect_status",
+            Some("task_status"),
+            json!({ "taskId": task.task_id }),
+            "available",
+            "Confirm the task lifecycle state without assuming provider completion verifies the original request.",
+            "safe",
+        ));
+        actions.push(next_action(
+            "stop",
+            Some("task_stop"),
+            json!({ "taskId": task.task_id }),
+            "available",
+            "Stop only when the task is no longer useful; stopped tasks remain inspectable.",
+            "unsafe",
+        ));
+        return Value::Array(actions);
+    }
+
+    if task.result_inspected_at.is_none() {
+        actions.push(next_action(
+            "inspect_result",
+            Some("task_result"),
+            json!({ "taskId": task.task_id }),
+            "available",
+            "Inspect final logs, diagnostics, git state, transcript evidence, and review packet before cleanup or verification.",
+            "safe",
+        ));
+        if task.worktree_managed {
+            actions.push(next_action(
+                "cleanup",
+                Some("task_remove"),
+                json!({ "taskId": task.task_id }),
+                "unsafe",
+                "Managed worktree cleanup requires explicit final result inspection first.",
+                "unsafe",
+            ));
+        }
+        return Value::Array(actions);
+    }
+
+    if matches!(
+        task.status,
+        TaskStatus::Failed | TaskStatus::Stopped | TaskStatus::FailedStale
+    ) || task.error_type.is_some()
+    {
+        actions.push(next_action(
+            "inspect_logs",
+            Some("task_logs"),
+            json!({ "taskId": task.task_id }),
+            "available",
+            "Inspect logs and diagnostics before deciding whether to rerun, narrow the prompt, or continue manually.",
+            "safe",
+        ));
+        if task.transcript_available {
+            actions.push(next_action(
+                "inspect_transcript",
+                Some("task_transcript"),
+                json!({ "taskId": task.task_id }),
+                "available",
+                "Inspect transcript evidence when provider behavior or final-state classification is unclear.",
+                "safe",
+            ));
+        }
+    } else {
+        actions.push(next_action(
+            "verify_project",
+            None,
+            json!({}),
+            "available",
+            "Run the relevant project verification before claiming the original request is complete.",
+            "requires_verification",
+        ));
+    }
+
+    if task.worktree_managed {
+        actions.push(next_action(
+            "cleanup",
+            Some("task_remove"),
+            json!({ "taskId": task.task_id }),
+            "available",
+            "Remove the managed worktree only after inspecting the result and preserving any needed changes.",
+            "destructive",
+        ));
+    }
+
+    Value::Array(actions)
+}
+
+fn next_action(
+    id: &str,
+    tool: Option<&str>,
+    arguments: Value,
+    state: &str,
+    reason: &str,
+    safety: &str,
+) -> Value {
+    json!({
+        "id": id,
+        "tool": tool,
+        "arguments": arguments,
+        "state": state,
+        "reason": reason,
+        "safety": safety
+    })
+}
+
 fn review_packet(task: &TaskRecord, stdout_truncated: bool, stderr_truncated: bool) -> Value {
     let is_final = is_final(task.status);
     let git_status = task.git_status.clone().unwrap_or_default();
@@ -1979,6 +2107,7 @@ fn review_packet(task: &TaskRecord, stdout_truncated: bool, stderr_truncated: bo
         "transcriptDiagnostic": task.transcript_diagnostic,
         "stdoutTruncated": stdout_truncated,
         "stderrTruncated": stderr_truncated,
+        "nextActions": next_actions(task),
         "recommendedActions": recommended_actions(task, has_changes)
     })
 }
@@ -2379,6 +2508,10 @@ mod tests {
             .as_str()
     }
 
+    fn next_action(task: &Value, index: usize) -> &Value {
+        &task["presentation"]["nextActions"].as_array().unwrap()[index]
+    }
+
     #[test]
     fn transition_status_rejects_illegal_moves() {
         let mut task = sample_task(TaskStatus::Queued);
@@ -2422,6 +2555,8 @@ mod tests {
             assert_eq!(public["presentation"]["verificationStatus"], "not_verified");
             assert!(public["presentation"]["result"]["available"].is_boolean());
             assert!(public["presentation"]["actions"].is_array());
+            assert!(public["presentation"]["nextActions"].is_array());
+            assert!(public["nextActions"].is_array());
             assert!(public.get("stdout").is_none());
             assert!(public.get("gitDiff").is_none());
         }
@@ -2455,6 +2590,13 @@ mod tests {
             action_state(&running_public, "inspect_result"),
             "unavailable"
         );
+        assert_eq!(next_action(&running_public, 0)["id"], "wait");
+        assert_eq!(next_action(&running_public, 0)["tool"], "task_wait");
+        assert_eq!(
+            next_action(&running_public, 0)["arguments"]["taskId"],
+            running.task_id
+        );
+        assert_eq!(next_action(&running_public, 0)["safety"], "safe");
         assert_eq!(
             action_reason(&running_public, "inspect_result"),
             Some("task_not_final")
@@ -2485,6 +2627,9 @@ mod tests {
         worktree.worktree_path = Some("/tmp/worktree".to_string());
         let worktree_public = public_task(&worktree);
         assert_eq!(action_state(&worktree_public, "cleanup"), "unsafe");
+        assert_eq!(next_action(&worktree_public, 0)["id"], "inspect_result");
+        assert_eq!(next_action(&worktree_public, 1)["id"], "cleanup");
+        assert_eq!(next_action(&worktree_public, 1)["state"], "unsafe");
         assert_eq!(
             action_reason(&worktree_public, "cleanup"),
             Some("managed_worktree_cleanup_requires_result_inspection")
@@ -2496,14 +2641,20 @@ mod tests {
             action_state(&inspected_worktree_public, "cleanup"),
             "available"
         );
+        assert_eq!(
+            next_action(&inspected_worktree_public, 1)["safety"],
+            "destructive"
+        );
         assert_eq!(action_reason(&inspected_worktree_public, "cleanup"), None);
         assert!(inspected_worktree_public["presentation"]["result"]["inspectedAt"].is_string());
 
         let mut stale = sample_task(TaskStatus::FailedStale);
         stale.error_type = Some(ErrorType::Stale);
+        stale.result_inspected_at = Some(now_iso());
         let stale_public = public_task(&stale);
         assert_eq!(stale_public["presentation"]["phase"], "done");
         assert_eq!(stale_public["presentation"]["errorType"], "stale");
+        assert_eq!(next_action(&stale_public, 0)["id"], "inspect_logs");
         assert_eq!(action_state(&stale_public, "resume"), "unavailable");
     }
 

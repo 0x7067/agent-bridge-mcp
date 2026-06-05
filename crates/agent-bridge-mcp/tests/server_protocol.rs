@@ -21,6 +21,12 @@ async fn initialize_returns_public_server_info() {
         serde_json::json!({ "tools": {}, "prompts": {}, "resources": {} })
     );
     assert_eq!(result["serverInfo"]["name"], "agent-bridge-mcp");
+    let instructions = result["instructions"].as_str().unwrap();
+    assert!(instructions.contains("Provider output is evidence only"));
+    assert!(
+        instructions[..512.min(instructions.len())]
+            .contains("caller still owns project verification")
+    );
 }
 
 #[tokio::test]
@@ -313,6 +319,14 @@ async fn doctor_is_listed_with_strict_schema_and_rejects_unknown_arguments() {
         doctor["inputSchema"]["properties"]["providerTimeoutMs"]["additionalProperties"]["maximum"],
         90000
     );
+    assert_eq!(
+        doctor["outputSchema"]["properties"]["launchReadiness"]["type"],
+        "object"
+    );
+    assert_eq!(
+        doctor["outputSchema"]["properties"]["recommendations"]["type"],
+        "array"
+    );
 
     let response = handle_request(request(
         "tools/call",
@@ -377,6 +391,7 @@ async fn providers_list_returns_tool_json_payload() {
         serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
 
     assert_eq!(result["isError"], false);
+    assert_eq!(result["structuredContent"], payload);
     assert_eq!(
         payload["providers"]["codex"]["supportsWorktreeIsolation"],
         true
@@ -417,6 +432,10 @@ async fn task_list_schema_exposes_presentation_filters() {
 
     assert_eq!(task_list["inputSchema"]["additionalProperties"], false);
     assert_eq!(task_list["inputSchema"]["required"], serde_json::json!([]));
+    assert_eq!(
+        task_list["outputSchema"]["properties"]["tasks"]["type"],
+        "array"
+    );
     assert_eq!(properties["presentation"]["type"], "boolean");
     assert_eq!(
         properties["scope"]["enum"],
@@ -435,6 +454,17 @@ async fn task_list_schema_exposes_presentation_filters() {
         ])
     );
     assert_eq!(properties["limit"]["maximum"], 100);
+
+    for tool_name in ["task_status", "task_wait", "task_result"] {
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"] == tool_name)
+            .expect("tool should be listed");
+        assert_eq!(
+            tool["outputSchema"]["properties"]["nextActions"]["type"], "array",
+            "{tool_name}"
+        );
+    }
 }
 
 #[tokio::test]

@@ -82,6 +82,13 @@ Alternatives considered:
 
 ## Compatibility Memo Decisions
 
+See `compatibility-memo.md` for the current compatibility decision. The current
+decision is blocked for protocol-level implementation: Agent Bridge must not
+advertise task capabilities or implement `tasks/*` methods in this change.
+Existing Agent Bridge `task_*` tools remain the stable task lifecycle. A future
+implementation must target a negotiated `io.modelcontextprotocol/tasks`
+extension surface and add host fixtures for task-capable and non-task clients.
+
 The compatibility memo must decide these before any task capability is advertised:
 
 - Which task wire surface Agent Bridge targets: 2025-11-25 experimental tasks, a newer task extension, or a version-dispatched shim.

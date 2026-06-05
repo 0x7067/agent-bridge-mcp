@@ -30,7 +30,8 @@ pub async fn handle_request(request: JsonRpcRequest) -> Option<JsonRpcResponse> 
             json!({
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": { "tools": {}, "prompts": {}, "resources": {} },
-                "serverInfo": { "name": "agent-bridge-mcp", "version": "0.1.0" }
+                "serverInfo": { "name": "agent-bridge-mcp", "version": "0.1.0" },
+                "instructions": guidance::INITIALIZATION_INSTRUCTIONS
             }),
         ),
         "tools/list" => JsonRpcResponse::result(id, json!({ "tools": tool_definitions() })),
@@ -287,11 +288,13 @@ async fn doctor(arguments: Value) -> Result<Value, String> {
         .cloned()
         .unwrap_or_else(|| json!({}));
     let provider_status = providers_status(&providers);
+    let launch_readiness = doctor_launch_readiness(&providers, input.providers.as_deref());
     let recommendations = doctor_recommendations(
         workspace["status"].as_str().unwrap_or("ok"),
         state["status"].as_str().unwrap_or("ok"),
         provider_status,
         claude_host_runner["status"].as_str().unwrap_or("ok"),
+        &launch_readiness,
     );
     let summary_status = aggregate_status([
         workspace["status"].as_str().unwrap_or("ok"),
@@ -314,6 +317,7 @@ async fn doctor(arguments: Value) -> Result<Value, String> {
         "workspace": workspace,
         "state": state,
         "providers": providers,
+        "launchReadiness": launch_readiness,
         "claudeHostRunner": claude_host_runner,
         "recommendations": recommendations
     }))
@@ -576,38 +580,124 @@ fn doctor_recommendations(
     state_status: &str,
     provider_status: &str,
     host_status: &str,
+    launch_readiness: &Value,
 ) -> Value {
     let mut recommendations = Vec::new();
     if workspace_status == "error" {
         recommendations.push(json!({
+            "id": "configure_workspace",
             "severity": "error",
-            "message": "Set AGENT_BRIDGE_WORKSPACES or pass a cwd inside a configured workspace."
+            "message": "Set AGENT_BRIDGE_WORKSPACES or pass a cwd inside a configured workspace.",
+            "tool": "doctor",
+            "arguments": {}
         }));
     }
     if state_status == "error" {
         recommendations.push(json!({
+            "id": "fix_state_dir",
             "severity": "error",
-            "message": "Fix AGENT_BRIDGE_STATE_DIR so Agent Bridge can read and write task state."
+            "message": "Fix AGENT_BRIDGE_STATE_DIR so Agent Bridge can read and write task state.",
+            "tool": "doctor",
+            "arguments": {}
         }));
     } else if state_status == "warning" {
         recommendations.push(json!({
+            "id": "create_state_dir",
             "severity": "warning",
-            "message": "Create AGENT_BRIDGE_STATE_DIR before spawning delegated tasks."
+            "message": "Create AGENT_BRIDGE_STATE_DIR before spawning delegated tasks.",
+            "tool": "doctor",
+            "arguments": {}
         }));
     }
     if host_status == "error" {
         recommendations.push(json!({
+            "id": "restart_claude_host_runner",
             "severity": "warning",
-            "message": "Restart or reconfigure the Claude host runner with matching AGENT_BRIDGE_WORKSPACES, then rerun doctor."
+            "message": "Restart or reconfigure the Claude host runner with matching AGENT_BRIDGE_WORKSPACES, then rerun doctor.",
+            "tool": "doctor",
+            "arguments": {}
         }));
     }
     if provider_status == "warning" {
         recommendations.push(json!({
+            "id": "fix_unavailable_providers",
             "severity": "warning",
-            "message": "Install or configure unavailable providers, or pass providers to focus doctor output."
+            "message": "Install or configure unavailable providers, or pass providers to focus doctor output.",
+            "tool": "providers_check",
+            "arguments": {}
+        }));
+    }
+    let stale_providers: Vec<_> = launch_readiness["providers"]
+        .as_object()
+        .map(|providers| {
+            providers
+                .iter()
+                .filter(|(_, provider)| {
+                    provider["available"].as_bool() == Some(true)
+                        && provider["startupVerified"].as_bool() == Some(false)
+                })
+                .map(|(name, _)| name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    if !stale_providers.is_empty() {
+        recommendations.push(json!({
+            "id": "verify_provider_startup",
+            "severity": "info",
+            "message": "Selected providers are version-available but not startup-verified; run a bounded smoke check before first launch when startup readiness matters.",
+            "tool": "providers_check",
+            "arguments": {
+                "providers": stale_providers,
+                "smoke": true
+            }
         }));
     }
     Value::Array(recommendations)
+}
+
+fn doctor_launch_readiness(providers: &Value, selected: Option<&[ProviderKind]>) -> Value {
+    let mut provider_readiness = serde_json::Map::new();
+    let mut any_not_verified = false;
+    let mut all_launchable = true;
+    if let Some(providers) = providers.as_object() {
+        for (name, provider) in providers {
+            let available = provider["available"].as_bool().unwrap_or(false);
+            let startup_verified = provider["startupVerified"].as_bool().unwrap_or(false);
+            let launchable = provider["launchable"].as_bool().unwrap_or(false);
+            any_not_verified |= available && !startup_verified;
+            all_launchable &= launchable;
+            provider_readiness.insert(
+                name.clone(),
+                json!({
+                    "available": available,
+                    "startupVerified": startup_verified,
+                    "launchable": launchable,
+                    "readiness": provider.get("readiness").cloned().unwrap_or_else(|| json!({}))
+                }),
+            );
+        }
+    }
+    let selected_providers = selected
+        .map(|providers| {
+            providers
+                .iter()
+                .map(|provider| provider.as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    json!({
+        "status": if all_launchable {
+            "ready"
+        } else if any_not_verified {
+            "not_verified"
+        } else {
+            "not_launchable"
+        },
+        "startupVerified": !any_not_verified && all_launchable,
+        "launchable": all_launchable,
+        "selectedProviders": selected_providers,
+        "providers": provider_readiness
+    })
 }
 
 fn aggregate_status<'a>(statuses: impl IntoIterator<Item = &'a str>) -> &'static str {
@@ -1481,8 +1571,10 @@ fn is_inside(candidate: &Path, root: &Path) -> bool {
 }
 
 fn tool_json(value: Value) -> Value {
+    let text = serde_json::to_string_pretty(&value).unwrap();
     json!({
-        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&value).unwrap() }],
+        "content": [{ "type": "text", "text": text }],
+        "structuredContent": value,
         "isError": false
     })
 }
@@ -1570,7 +1662,7 @@ mod tests {
         );
         assert_eq!(workspace["status"], "error");
         assert_eq!(workspace["errorCode"], "workspace_policy_mismatch");
-        let recommendations = doctor_recommendations("ok", "ok", "ok", "error");
+        let recommendations = doctor_recommendations("ok", "ok", "ok", "error", &json!({}));
         assert!(
             recommendations
                 .as_array()

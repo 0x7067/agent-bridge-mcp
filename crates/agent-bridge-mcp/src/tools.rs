@@ -99,7 +99,8 @@ pub fn tool_definitions() -> Vec<Value> {
                     "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 90000}
                 },
                 "cwd": {"type": "string", "description": "Workspace directory to validate against configured workspace roots."}
-            }), Vec::<&str>::new())
+            }), Vec::<&str>::new()),
+            "outputSchema": output_schema_for("doctor")
         }),
         spawn_like_tool(
             "task_preview",
@@ -133,13 +134,15 @@ pub fn tool_definitions() -> Vec<Value> {
                 "cwd": {"type": "string"},
                 "titleContains": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100}
-            }), Vec::<&str>::new())
+            }), Vec::<&str>::new()),
+            "outputSchema": output_schema_for("task_list")
         }),
-        simple_task_id_tool("task_status", "Read one task's lifecycle state."),
+        task_id_tool_with_output("task_status", "Read one task's lifecycle state."),
         json!({
             "name": "task_wait",
             "description": "Wait for a task to reach a final state or timeout.",
-            "inputSchema": object_schema(json!({"taskId": {"type": "string"}, "timeoutMs": {"type": "number"}}), vec!["taskId"])
+            "inputSchema": object_schema(json!({"taskId": {"type": "string"}, "timeoutMs": {"type": "number"}}), vec!["taskId"]),
+            "outputSchema": output_schema_for("task_wait")
         }),
         json!({
             "name": "task_logs",
@@ -163,7 +166,8 @@ pub fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "task_result",
             "description": "Return final task metadata, logs, git status, diff, changed files, and exit metadata.",
-            "inputSchema": object_schema(json!({"taskId": {"type": "string"}, "maxBytes": {"type": "number"}}), vec!["taskId"])
+            "inputSchema": object_schema(json!({"taskId": {"type": "string"}, "maxBytes": {"type": "number"}}), vec!["taskId"]),
+            "outputSchema": output_schema_for("task_result")
         }),
         simple_task_id_tool("task_stop", "Terminate a running task."),
         simple_task_id_tool(
@@ -208,10 +212,93 @@ fn simple_task_id_tool(name: &str, description: &str) -> Value {
     })
 }
 
+fn task_id_tool_with_output(name: &str, description: &str) -> Value {
+    json!({
+        "name": name,
+        "description": description,
+        "inputSchema": object_schema(json!({"taskId": {"type": "string"}}), vec!["taskId"]),
+        "outputSchema": output_schema_for(name)
+    })
+}
+
 fn object_schema(properties: Value, required: Vec<&str>) -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
+        "required": required,
+        "properties": properties
+    })
+}
+
+fn output_schema_for(name: &str) -> Value {
+    match name {
+        "doctor" => output_object_schema(
+            json!({
+                "summary": {"type": "object"},
+                "server": {"type": "object"},
+                "workspace": {"type": "object"},
+                "state": {"type": "object"},
+                "providers": {"type": "object"},
+                "launchReadiness": {"type": "object"},
+                "claudeHostRunner": {"type": "object"},
+                "recommendations": {"type": "array"}
+            }),
+            vec![
+                "summary",
+                "server",
+                "workspace",
+                "state",
+                "providers",
+                "recommendations",
+            ],
+        ),
+        "task_list" => output_object_schema(
+            json!({
+                "tasks": {"type": "array"},
+                "presentation": {"type": "boolean"},
+                "scope": {"type": "string"},
+                "limit": {"type": ["integer", "null"]}
+            }),
+            vec!["tasks", "presentation", "scope"],
+        ),
+        "task_status" | "task_wait" => output_object_schema(
+            json!({
+                "taskId": {"type": "string"},
+                "status": {"type": "string"},
+                "isFinal": {"type": "boolean"},
+                "presentation": {"type": "object"},
+                "nextActions": {"type": "array"}
+            }),
+            vec!["taskId", "status", "isFinal", "presentation"],
+        ),
+        "task_result" => output_object_schema(
+            json!({
+                "taskId": {"type": "string"},
+                "status": {"type": "string"},
+                "isFinal": {"type": "boolean"},
+                "presentation": {"type": "object"},
+                "nextActions": {"type": "array"},
+                "reviewPacket": {"type": "object"},
+                "stdout": {"type": "string"},
+                "stderr": {"type": "string"},
+                "changedFiles": {"type": "array"}
+            }),
+            vec![
+                "taskId",
+                "status",
+                "isFinal",
+                "presentation",
+                "reviewPacket",
+            ],
+        ),
+        _ => output_object_schema(json!({}), Vec::<&str>::new()),
+    }
+}
+
+fn output_object_schema(properties: Value, required: Vec<&str>) -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": true,
         "required": required,
         "properties": properties
     })

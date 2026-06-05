@@ -42,7 +42,7 @@ Recommended caller workflow:
 4. Call `task_spawn` for the real task.
 5. Call `task_list` or `task_status` to read each task's `presentation` metadata
    for native-client display title, status tone, result availability, structured
-   lifecycle actions, and unavailable reply/resume controls.
+   lifecycle actions, ranked `nextActions`, and unavailable reply/resume controls.
 6. Call `task_wait` with a bounded `timeoutMs`; if it times out, use `task_logs`
    with line cursors and `task_transcript` with cursors to inspect progress
    without rereading the whole run.
@@ -64,11 +64,15 @@ For setup troubleshooting, `doctor` is the broad first check:
 ```
 
 Use `summary.status` to triage: `error` means fix workspace, state, or host-runner blockers first; `warning` usually means a provider or optional readiness concern needs follow-up; `ok` means the bridge setup checks did not find a setup problem. `doctor` does not verify delegated task output or project tests.
+Use `launchReadiness` separately: version-only provider checks can leave providers
+available but not startup-verified or launchable. When startup readiness matters,
+follow the structured recommendation to run `providers_check` with `smoke: true`
+for the selected providers.
 
 Real-world delegation workflow:
 
 - Treat provider output as evidence for the main Codex thread, not as final verification. Inspect the final report, logs, `gitStatus`, `diff`, `changedFiles`, and exit metadata before using the result.
-- Use the `presentation` object on `task_list`, `task_status`, and `task_result` for native-feeling UI summaries. `verificationStatus: "not_verified"` means provider completion is not project verification.
+- Use the `presentation` object on `task_list`, `task_status`, and `task_result` for native-feeling UI summaries. `presentation.nextActions`, top-level `nextActions`, and `reviewPacket.nextActions` provide ranked follow-up calls with arguments and safety classifications. `verificationStatus: "not_verified"` means provider completion is not project verification.
 - `task_list.presentation` is the list-mode selector; each returned task's `presentation` object is the display metadata. `{}` returns active/recent presentation summaries with the default bound. Use `presentation: false, scope: "all"` only for intentional raw registry inspection; if a client requests `presentation: true, scope: "all"` for historical summaries, pass an explicit `limit`.
 - Render `reply` and `resume` presentation actions as unavailable in v1. Provider tasks are batch lifecycle tasks, not interactive resumable conversations.
 - Provider capability `presentationActions` keys are camelCase capability names; per-task `presentation.actions[].id` values are snake_case lifecycle action ids. Treat them as related but separate surfaces.
@@ -103,13 +107,23 @@ discover how to use Agent Bridge safely:
   lifecycle, and dogfood workflows.
 - `resources/read` returns those resources as `text/markdown` from a hardcoded
   allowlist. It does not map resource URIs to local files.
+- `initialize` returns concise Agent Bridge workflow instructions. JSON-returning
+  tools include `structuredContent` and stable top-level `outputSchema` metadata
+  for core lifecycle outputs.
 
 Client behavior is host-dependent. Tool schemas are the most likely surface to
 be visible to the model automatically. Prompts are normally user-selected
 workflow templates. Resources may be shown in a picker, searched, or included
-automatically only if the host implements those heuristics. The server currently
-keeps protocol version `2024-11-05`, so it does not rely on newer
-`initialize.instructions` support.
+automatically only if the host implements those heuristics. Clients that ignore
+`initialize.instructions`, `structuredContent`, output schemas, or `nextActions`
+can still follow the manual lifecycle through `doctor`, `providers_check`,
+`task_spawn`, `task_wait`, `task_logs`, `task_transcript`, `task_result`, and
+`task_remove`.
+
+Protocol-level MCP Tasks are separate from Agent Bridge lifecycle tools. The
+stable Agent Bridge workflow uses `task_*` tools today. MCP task primitives are
+experimental/extension-gated and should be used only after negotiated host and
+client capability support is explicitly implemented and advertised.
 
 ## Providers
 

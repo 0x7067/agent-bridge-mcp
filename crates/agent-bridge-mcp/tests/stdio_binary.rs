@@ -136,6 +136,18 @@ impl McpClient {
         serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
     }
 
+    fn raw_tool_response(&mut self, name: &str, arguments: Value) -> Value {
+        let response = self.request(
+            "tools/call",
+            json!({
+                "name": name,
+                "arguments": arguments
+            }),
+        );
+        assert_ne!(response["result"]["isError"], true, "{response}");
+        response["result"].clone()
+    }
+
     fn tool_with_meta(&mut self, name: &str, arguments: Value, meta: Value) -> Value {
         let response = self.request(
             "tools/call",
@@ -383,6 +395,12 @@ fn stdio_protocol_and_tool_schema_smoke() {
         initialize["result"]["serverInfo"]["name"],
         "agent-bridge-mcp"
     );
+    let instructions = initialize["result"]["instructions"].as_str().unwrap();
+    assert!(instructions.contains("Provider output is evidence only"));
+    assert!(
+        instructions[..512.min(instructions.len())]
+            .contains("caller still owns project verification")
+    );
 
     let tools = client.request("tools/list", json!({}));
     let tools = tools["result"]["tools"].as_array().unwrap();
@@ -423,6 +441,10 @@ fn stdio_protocol_and_tool_schema_smoke() {
         json!(["claude", "cursor", "kimi", "codex"])
     );
     assert_eq!(
+        doctor["outputSchema"]["properties"]["launchReadiness"]["type"],
+        "object"
+    );
+    assert_eq!(
         task_preview["inputSchema"]["properties"]["provider"]["enum"],
         json!(["claude", "cursor", "kimi", "codex"])
     );
@@ -458,6 +480,22 @@ fn stdio_protocol_and_tool_schema_smoke() {
         task_list["inputSchema"]["properties"]["limit"]["maximum"],
         100
     );
+    assert_eq!(
+        task_list["outputSchema"]["properties"]["tasks"]["type"],
+        "array"
+    );
+    for tool_name in ["task_status", "task_wait", "task_result"] {
+        let tool = tools.iter().find(|tool| tool["name"] == tool_name).unwrap();
+        assert_eq!(
+            tool["outputSchema"]["properties"]["nextActions"]["type"],
+            "array"
+        );
+    }
+
+    let providers_response = client.raw_tool_response("providers_list", json!({}));
+    let providers_from_text: Value =
+        serde_json::from_str(providers_response["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(providers_response["structuredContent"], providers_from_text);
 
     let prompts = client.request("prompts/list", json!({}));
     let prompts = prompts["result"]["prompts"].as_array().unwrap();
@@ -1115,6 +1153,7 @@ fn stdio_doctor_default_report_shape_and_side_effects() {
         "workspace",
         "state",
         "providers",
+        "launchReadiness",
         "claudeHostRunner",
         "recommendations",
     ] {
@@ -1131,6 +1170,7 @@ fn stdio_doctor_default_report_shape_and_side_effects() {
     assert_eq!(doctor["server"]["protocolVersion"], "2024-11-05");
     assert_eq!(doctor["providers"]["claude"]["startupVerified"], false);
     assert_eq!(doctor["providers"]["codex"]["startupVerified"], false);
+    assert_eq!(doctor["launchReadiness"]["startupVerified"], false);
     assert_eq!(doctor["claudeHostRunner"]["status"], "not_configured");
     assert_eq!(doctor["claudeHostRunner"]["launchStrategy"], "direct");
     assert!(doctor["recommendations"].is_array());
@@ -1159,6 +1199,15 @@ fn stdio_doctor_redacts_secret_environment_values() {
     assert_eq!(
         server["environment"]["ANTHROPIC_API_KEY"]["value"],
         "<redacted>"
+    );
+    assert!(
+        doctor["recommendations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|recommendation| recommendation
+                .get("arguments")
+                .is_none_or(|arguments| arguments.is_object()))
     );
 
     let serialized = serde_json::to_string(&doctor).unwrap();
@@ -1287,6 +1336,20 @@ fn stdio_doctor_reuses_provider_readiness_controls() {
         "fake-provider 1.0.0"
     );
     assert_eq!(default["providers"]["codex"]["startupVerified"], false);
+    assert_eq!(default["summary"]["status"], "ok");
+    assert_eq!(default["launchReadiness"]["status"], "not_verified");
+    let smoke_recommendation = default["recommendations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|recommendation| recommendation["id"] == "verify_provider_startup")
+        .expect("doctor should recommend startup smoke for selected stale provider");
+    assert_eq!(smoke_recommendation["tool"], "providers_check");
+    assert_eq!(
+        smoke_recommendation["arguments"]["providers"],
+        json!(["codex"])
+    );
+    assert_eq!(smoke_recommendation["arguments"]["smoke"], true);
     assert!(
         default["providers"]["codex"]
             .get("smokeDurationMs")
@@ -1298,6 +1361,7 @@ fn stdio_doctor_reuses_provider_readiness_controls() {
         json!({"cwd": env.root, "providers": ["codex"], "smoke": true, "aggregateTimeoutMs": 5000, "providerTimeoutMs": {"codex": 5000}}),
     );
     assert_eq!(smoke["providers"]["codex"]["startupVerified"], true);
+    assert_eq!(smoke["launchReadiness"]["status"], "ready");
     assert!(smoke["providers"]["codex"]["smokeDurationMs"].is_number());
 }
 
@@ -2363,6 +2427,14 @@ fn stdio_managed_worktree_lifecycle() {
 
     let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
     assert_eq!(waited["status"], "succeeded");
+    assert_eq!(
+        waited["presentation"]["nextActions"][0]["id"],
+        "inspect_result"
+    );
+    assert_eq!(
+        waited["presentation"]["nextActions"][0]["arguments"]["taskId"],
+        task_id
+    );
     let cleanup_before_result = waited["presentation"]["actions"]
         .as_array()
         .unwrap()
@@ -2378,6 +2450,16 @@ fn stdio_managed_worktree_lifecycle() {
     let result = client.tool("task_result", json!({"taskId": task_id}));
     assert_eq!(result["gitStatus"], "");
     assert_eq!(result["changedFiles"], json!([]));
+    assert_eq!(result["nextActions"][0]["id"], "verify_project");
+    assert_eq!(result["presentation"]["nextActions"][1]["id"], "cleanup");
+    assert_eq!(
+        result["presentation"]["nextActions"][1]["safety"],
+        "destructive"
+    );
+    assert_eq!(
+        result["reviewPacket"]["nextActions"][1]["tool"],
+        "task_remove"
+    );
     assert!(result["presentation"]["result"]["inspectedAt"].is_string());
     let cleanup_after_result = result["presentation"]["actions"]
         .as_array()
