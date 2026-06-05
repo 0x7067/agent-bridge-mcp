@@ -1,7 +1,7 @@
 ## 1. Research and Characterization
 
 - [x] 1.1 Read and summarize the current Claude Code CLI, hooks, settings, and upstream `claude-p` docs into implementation notes inside the change.
-- [ ] 1.2 Inspect upstream `claude-p` source for PTY startup, terminal probe responses, hook command protocol, transcript parsing, timeout handling, and cleanup behavior; record findings in `upstream-claude-p-notes.md`.
+- [x] 1.2 Inspect upstream `claude-p` source for PTY startup, terminal probe responses, hook command protocol, transcript parsing, timeout handling, and cleanup behavior; record findings in `upstream-claude-p-notes.md`.
 - [ ] 1.3 Verify interactive Claude flags for mode mapping, including `--permission-mode`, `--allowedTools`, `--disallowedTools`, `--settings`, `--model`, and `--effort`; record the matrix before implementation.
 - [ ] 1.4 Enumerate current Claude StopFailure input error strings and setup prompt signatures from docs, source behavior, and live/fake fixtures before mapping implementation.
 - [ ] 1.5 Evaluate Rust PTY crate options against macOS/Linux support, Tokio integration, process cleanup, and maintenance risk; document the selected dependency or adapter approach before adding it.
