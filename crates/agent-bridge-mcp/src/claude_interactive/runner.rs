@@ -4,10 +4,13 @@ use crate::provider;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 const LOGIN_SHELL: &str = "/bin/zsh";
 const LOGIN_SHELL_BOOTSTRAP: &str = "exec \"$@\"";
 const LOGIN_SHELL_ARG0: &str = "agent-bridge-claude";
+const PROMPT_ENTER_DELAY: Duration = Duration::from_millis(100);
 
 pub struct ClaudeRunnerRequest {
     pub claude_bin: PathBuf,
@@ -21,6 +24,14 @@ pub struct ClaudeRunnerRequest {
 
 pub fn spawn_claude(request: ClaudeRunnerRequest) -> io::Result<PtySession> {
     spawn(build_pty_spawn(request))
+}
+
+pub async fn inject_prompt(writer: &mut (impl AsyncWrite + Unpin), prompt: &str) -> io::Result<()> {
+    writer.write_all(prompt.as_bytes()).await?;
+    writer.flush().await?;
+    tokio::time::sleep(PROMPT_ENTER_DELAY).await;
+    writer.write_all(b"\r").await?;
+    writer.flush().await
 }
 
 pub fn build_pty_spawn(request: ClaudeRunnerRequest) -> PtySpawn {
