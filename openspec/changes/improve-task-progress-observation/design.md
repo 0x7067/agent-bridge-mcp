@@ -22,11 +22,11 @@ MCP protocol-level task notifications are not portable across the target hosts y
 
 ## Decisions
 
-### Add `task_observe` rather than overloading `task_wait`
+### Add `agent_observe` rather than overloading `task_wait`
 
-`task_wait` answers one narrow question: "is this final yet?" A richer observation surface needs to answer "what changed since cursor N, what should I do next, and how long should I wait before escalating?" A dedicated `task_observe` tool keeps those semantics explicit.
+`task_wait` answers one narrow question: "is this final yet?" A richer observation surface needs to answer "what changed since cursor N, what should I do next, and how long should I wait before escalating?" A dedicated `agent_observe` tool keeps those semantics explicit and aligns with the preferred `agent_spawn` and `agents_list` surface.
 
-`task_observe` should accept:
+`agent_observe` should accept:
 - `taskId`
 - `cursor` for transcript/lifecycle event position
 - `timeoutMs` for bounded long polling
@@ -52,7 +52,7 @@ This keeps harnesses from hardcoding Cursor-specific delays while still making t
 
 ### Use adaptive next actions for running tasks
 
-Running task `nextActions` should prefer `task_observe` or `task_wait` with provider-aware arguments. For silent final-output providers, the primary action should be a longer bounded observe/wait rather than `task_stop`. Stop remains available but should be marked unsafe until the task is beyond the recommended observation budget or the caller has evidence that the task is no longer useful.
+Running task `nextActions` should prefer `agent_observe` or `task_wait` with provider-aware arguments. For silent final-output providers, the primary action should be a longer bounded observe/wait rather than `task_stop`. Stop remains available but should be marked unsafe until the task is beyond the recommended observation budget or the caller has evidence that the task is no longer useful.
 
 ### Treat notifications as future compatibility
 
@@ -69,7 +69,7 @@ If a future host supports MCP notifications or task extensions, Agent Bridge can
 
 1. Add provider output-cadence metadata with conservative defaults.
 2. Add progress metadata to public task summaries for running tasks.
-3. Add `task_observe` and protocol tests for no-output, first-output, final-output, and timeout cases.
+3. Add `agent_observe` and protocol tests for no-output, first-output, final-output, and timeout cases.
 4. Update presentation `nextActions` to prefer observe/wait before stop.
 5. Update guidance and README to describe provider-aware polling and silent Cursor behavior.
 6. Keep existing lifecycle tools unchanged for compatibility.

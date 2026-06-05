@@ -20,17 +20,17 @@ The system SHALL expose progress metadata for running provider tasks so callers 
 The system SHALL provide a bounded request/response observation surface for waiting on task lifecycle or transcript changes without requiring clients to poll in a tight loop.
 
 #### Scenario: Observe returns new events
-- **WHEN** a caller invokes task observation with a task id, cursor, limit, and timeout
+- **WHEN** a caller invokes `agent_observe` with a task id, cursor, limit, and timeout
 - **THEN** the response waits up to the requested timeout for new lifecycle or transcript events
 - **AND** returns the current task summary, events since the cursor, next cursor, progress metadata, and observe-call timeout status.
 
 #### Scenario: Observe times out without task failure
-- **WHEN** a caller invokes task observation and no new task events arrive before the observe timeout
+- **WHEN** a caller invokes `agent_observe` and no new task events arrive before the observe timeout
 - **THEN** the response reports the observe call as timed out
 - **AND** preserves the task's actual running status unless the provider task itself reached a final state.
 
 #### Scenario: Observe is bounded
-- **WHEN** a caller requests task observation with a very large timeout or limit
+- **WHEN** a caller invokes `agent_observe` with a very large timeout or limit
 - **THEN** the server clamps the request to documented maximums and never returns unbounded logs, diffs, or transcript payloads.
 
 ### Requirement: Progress recommendations avoid premature fallback

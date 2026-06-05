@@ -13,8 +13,8 @@
 
 ## 3. Observation Surface
 
-- [ ] 3.1 Add a bounded `task_observe` tool schema with `taskId`, `cursor`, `limit`, and `timeoutMs`.
-- [ ] 3.2 Implement `task_observe` as request/response long polling for new lifecycle or transcript events without server-pushed notifications.
+- [ ] 3.1 Add a bounded `agent_observe` tool schema with `taskId`, `cursor`, `limit`, and `timeoutMs`.
+- [ ] 3.2 Implement `agent_observe` as request/response long polling for new lifecycle or transcript events without server-pushed notifications.
 - [ ] 3.3 Clamp observe timeout and event limit to documented maximums.
 - [ ] 3.4 Return current task summary, events, `nextCursor`, observe-call `timedOut`, progress metadata, and next actions.
 - [ ] 3.5 Add stdio tests for observe returning new events, observe timeout without provider failure, finalization, and clamping.
@@ -22,7 +22,7 @@
 ## 4. Next Actions And Presentation
 
 - [ ] 4.1 Include progress metadata in running task presentation summaries.
-- [ ] 4.2 Rank `task_observe` or provider-aware `task_wait` ahead of `task_stop` while a task is within its recommended observation budget.
+- [ ] 4.2 Rank `agent_observe` or provider-aware `task_wait` ahead of `task_stop` while a task is within its recommended observation budget.
 - [ ] 4.3 Mark stop/fallback reasons more explicitly when a task exceeds its expected silence budget or nears configured timeout.
 - [ ] 4.4 Add tests for Cursor-style silent running tasks where stop is available but not primary.
 

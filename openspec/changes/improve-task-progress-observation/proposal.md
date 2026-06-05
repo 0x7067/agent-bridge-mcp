@@ -23,6 +23,6 @@ Agent Bridge providers can be alive and useful while producing no stdout until f
 
 ## Impact
 
-- Affected API: additive task progress fields, additive provider metadata, and possibly a new tool such as `task_observe` or additive parameters on `task_transcript`.
+- Affected API: additive task progress fields, additive provider metadata, and possibly a new tool such as `agent_observe` or additive parameters on `task_transcript`.
 - Affected code: task manager lifecycle records, transcript/log observation, presentation `nextActions`, provider capability metadata, guidance resources, stdio protocol tests.
 - Affected systems: MCP harnesses that delegate to Cursor/Claude/Kimi/Codex and decide when to wait, inspect, stop, or fall back.
