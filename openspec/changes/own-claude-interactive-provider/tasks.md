@@ -19,7 +19,7 @@
 - [x] 2.6 Parse Stop-hook payloads, validate transcript paths, read transcript JSONL with bounded retry, extract final assistant output, and map it into existing provider result/log surfaces.
 - [x] 2.7 Parse StopFailure hook payloads and map known Claude API/auth/billing/rate-limit failures to actionable provider diagnostics.
 - [x] 2.8 Detect first-run/login/setup prompts and fail fast with actionable diagnostics.
-- [ ] 2.9 Implement timeout, client-disconnect, shutdown, and PTY process-tree cleanup for child processes.
+- [x] 2.9 Implement timeout, client-disconnect, shutdown, and PTY process-tree cleanup for child processes.
 
 ## 3. Provider and Host-Runner Integration
 

@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::path::PathBuf;
+use std::process::ExitStatus;
+use std::time::Duration;
+use tokio::time::timeout;
 
 pub struct PtySpawn {
     pub program: PathBuf,
@@ -22,6 +25,24 @@ pub struct PtySession {
     pub child: tokio::process::Child,
     pub reader: pty_process::OwnedReadPty,
     pub writer: pty_process::OwnedWritePty,
+}
+
+impl PtySession {
+    #[cfg(unix)]
+    pub async fn terminate_with_grace(&mut self, grace: Duration) -> io::Result<ExitStatus> {
+        if let Some(pid) = self.pid {
+            terminate_process_group(pid, libc::SIGTERM);
+        }
+        match timeout(grace, self.child.wait()).await {
+            Ok(status) => status,
+            Err(_) => {
+                if let Some(pid) = self.pid {
+                    terminate_process_group(pid, libc::SIGKILL);
+                }
+                self.child.wait().await
+            }
+        }
+    }
 }
 
 pub fn spawn(spec: PtySpawn) -> io::Result<PtySession> {

@@ -1,6 +1,4 @@
-use agent_bridge_mcp::claude_interactive::pty::{
-    PtySession, PtySize, PtySpawn, spawn, terminate_process_group,
-};
+use agent_bridge_mcp::claude_interactive::pty::{PtySession, PtySize, PtySpawn, spawn};
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -124,13 +122,13 @@ async fn pty_adapter_can_terminate_child_process_group() -> io::Result<()> {
             cols: 100,
         }),
     })?;
-    let pid = session
-        .pid
-        .ok_or_else(|| io::Error::other("PTY child did not expose pid"))?;
+    assert!(
+        session.pid.is_some(),
+        "PTY child did not expose pid for process-group cleanup"
+    );
 
     tokio::time::sleep(Duration::from_millis(150)).await;
-    terminate_process_group(pid, libc::SIGTERM);
-    let _ = timeout(Duration::from_secs(3), session.child.wait()).await??;
+    let _ = session.terminate_with_grace(Duration::from_secs(3)).await?;
 
     let marker = wait_for_file(&cleanup_marker, Duration::from_secs(3)).await?;
     assert!(
