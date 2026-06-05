@@ -59,7 +59,7 @@ Alternatives considered:
 
 ### Decision: Filter active/recent task presentation before broad history
 
-The default client-facing presentation list should prioritize active tasks first, then recent final tasks sorted by `updatedAt` descending. It should default to a bounded limit of 25 summaries and support filters for status, provider, mode, workspace/cwd, title text, and limit. Full history can remain available intentionally through an explicit scope or the existing raw lifecycle inspection path.
+The default `task_list` response should be the client-facing presentation list: active tasks first, then recent final tasks sorted by `updatedAt` descending. It should default to a bounded limit of 25 summaries and support filters for status, provider, mode, workspace/cwd, title text, and limit. Full history can remain available intentionally through an explicit raw lifecycle inspection path.
 
 Rationale: The current registry can contain many historical tasks across workspaces. Native UI should not make users or models scan the entire registry to find the relevant agent.
 
@@ -73,7 +73,7 @@ Alternatives considered:
 - Presentation fields may drift from lifecycle fields -> derive them from existing task records and cover derivation with tests.
 - Client UX may imply provider output is verified -> keep review packet and guidance language explicit that provider output is evidence only.
 - Reply/resume controls may confuse users when unavailable -> return explicit unavailable reasons and provider capability metadata.
-- Filter/list additions may grow API surface -> add optional `task_list` arguments and keep existing no-argument behavior compatible where raw callers need it.
+- Filter/list additions change `task_list` defaults -> keep raw full-history inspection explicit with `presentation: false` and `scope: "all"`.
 - Runtime schema may lag source if an old binary is installed -> add tests against the production binary/tool schema and document upgrade expectations.
 
 ## Migration Plan
@@ -168,7 +168,7 @@ Action mapping:
 }
 ```
 
-Default presentation ordering is active tasks first, then final tasks by `updatedAt` descending. Default `limit` is 25; maximum accepted `limit` is 100. Removed tasks remain excluded from default presentation lists.
+Default `task_list` presentation ordering is active tasks first, then final tasks by `updatedAt` descending. Default `limit` is 25; maximum accepted `limit` is 100. Removed tasks remain excluded from default presentation lists. Raw full-history inspection is explicit with `presentation: false` and `scope: "all"`.
 
 ## Open Questions
 

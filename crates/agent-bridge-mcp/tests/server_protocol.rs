@@ -381,6 +381,60 @@ async fn providers_list_returns_tool_json_payload() {
         payload["providers"]["codex"]["supportsWorktreeIsolation"],
         true
     );
+    assert_eq!(
+        payload["providers"]["codex"]["launchProfiles"],
+        serde_json::json!(["bridge", "bare"])
+    );
+    assert_eq!(
+        payload["providers"]["codex"]["presentationActions"]["reply"],
+        "unsupported"
+    );
+    assert_eq!(
+        payload["providers"]["codex"]["presentationActions"]["inspectResult"],
+        "supported"
+    );
+    assert_eq!(payload["providers"]["codex"]["readiness"]["state"], "stale");
+    assert_eq!(
+        payload["providers"]["codex"]["readiness"]["launchable"],
+        false
+    );
+    assert_eq!(
+        payload["providers"]["codex"]["reducedConfiguration"]["configIsolation"],
+        "supported"
+    );
+}
+
+#[tokio::test]
+async fn task_list_schema_exposes_presentation_filters() {
+    let response = handle_request(request("tools/list", 15, serde_json::json!({}))).await;
+    let result = response.unwrap().result.unwrap();
+    let tools = result["tools"].as_array().unwrap();
+    let task_list = tools
+        .iter()
+        .find(|tool| tool["name"] == "task_list")
+        .expect("task_list tool should be listed");
+    let properties = &task_list["inputSchema"]["properties"];
+
+    assert_eq!(task_list["inputSchema"]["additionalProperties"], false);
+    assert_eq!(task_list["inputSchema"]["required"], serde_json::json!([]));
+    assert_eq!(properties["presentation"]["type"], "boolean");
+    assert_eq!(
+        properties["scope"]["enum"],
+        serde_json::json!(["active_recent", "all"])
+    );
+    assert_eq!(
+        properties["status"]["items"]["enum"],
+        serde_json::json!([
+            "queued",
+            "running",
+            "succeeded",
+            "failed",
+            "stopped",
+            "failed_stale",
+            "removed"
+        ])
+    );
+    assert_eq!(properties["limit"]["maximum"], 100);
 }
 
 #[tokio::test]

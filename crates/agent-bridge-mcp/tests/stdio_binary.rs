@@ -395,6 +395,10 @@ fn stdio_protocol_and_tool_schema_smoke() {
         .iter()
         .find(|tool| tool["name"] == "task_transcript")
         .unwrap();
+    let task_list = tools
+        .iter()
+        .find(|tool| tool["name"] == "task_list")
+        .unwrap();
     let doctor = tools.iter().find(|tool| tool["name"] == "doctor").unwrap();
     let providers_check = tools
         .iter()
@@ -441,6 +445,18 @@ fn stdio_protocol_and_tool_schema_smoke() {
     assert_eq!(
         task_transcript["inputSchema"]["properties"]["cursor"]["type"],
         "number"
+    );
+    assert_eq!(
+        task_list["inputSchema"]["properties"]["presentation"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        task_list["inputSchema"]["properties"]["scope"]["enum"],
+        json!(["active_recent", "all"])
+    );
+    assert_eq!(
+        task_list["inputSchema"]["properties"]["limit"]["maximum"],
+        100
     );
 
     let prompts = client.request("prompts/list", json!({}));
@@ -655,6 +671,22 @@ fn stdio_providers_preview_and_safety_checks() {
         "supported"
     );
     assert_eq!(
+        providers["providers"]["codex"]["presentationActions"]["inspectResult"],
+        "supported"
+    );
+    assert_eq!(
+        providers["providers"]["codex"]["presentationActions"]["reply"],
+        "unsupported"
+    );
+    assert_eq!(
+        providers["providers"]["codex"]["readiness"]["state"],
+        "stale"
+    );
+    assert_eq!(
+        providers["providers"]["codex"]["readiness"]["launchable"],
+        false
+    );
+    assert_eq!(
         providers["providers"]["cursor"]["reducedConfiguration"]["customSystemPrompt"],
         "unsupported"
     );
@@ -771,6 +803,56 @@ fn stdio_providers_preview_and_safety_checks() {
         }),
     );
     assert!(error.contains("prompt exceeds"));
+}
+
+#[test]
+fn stdio_provider_discovery_is_non_blocking_until_explicit_check() {
+    let env = fixture_env();
+    write_fake_provider(
+        &env,
+        &[
+            "#!/bin/sh",
+            "if [ -n \"$AGENT_BRIDGE_STATE_DIR\" ]; then",
+            "  mkdir -p \"$AGENT_BRIDGE_STATE_DIR/provider-log\"",
+            "  printf 'invoked\\n' >> \"$AGENT_BRIDGE_STATE_DIR/provider-log/discovery.txt\"",
+            "fi",
+            "if [ \"$1\" = \"--version\" ]; then",
+            "  echo fake-provider 1.0.0",
+            "  exit 0",
+            "fi",
+            "echo AGENT_BRIDGE_PROVIDER_SMOKE_OK",
+            "exit 0",
+            "",
+        ],
+    );
+    let mut client = McpClient::start(&env);
+
+    let providers = client.tool("providers_list", json!({}));
+
+    assert_eq!(
+        providers["providers"]["cursor"]["readiness"]["state"],
+        "stale"
+    );
+    assert_eq!(
+        providers["providers"]["cursor"]["readiness"]["launchable"],
+        false
+    );
+    assert!(!env.log_dir.join("discovery.txt").exists());
+
+    let checked = client.tool("providers_check", json!({"providers": ["cursor"]}));
+    assert_eq!(
+        checked["providers"]["cursor"]["readiness"]["state"],
+        "stale"
+    );
+    assert_eq!(checked["providers"]["cursor"]["launchable"], false);
+    assert!(env.log_dir.join("discovery.txt").exists());
+
+    let smoke = client.tool(
+        "providers_check",
+        json!({"providers": ["cursor"], "smoke": true, "providerTimeoutMs": {"cursor": 5000}}),
+    );
+    assert_eq!(smoke["providers"]["cursor"]["readiness"]["state"], "ready");
+    assert_eq!(smoke["providers"]["cursor"]["launchable"], true);
 }
 
 #[test]
@@ -1320,6 +1402,20 @@ fn stdio_providers_check_filters_and_validates_readiness_inputs() {
         "fake-provider 1.0.0"
     );
     assert!(filtered["providers"]["cursor"]["versionDurationMs"].is_number());
+    assert!(filtered["providers"]["cursor"]["checkedAt"].is_string());
+    assert_eq!(filtered["providers"]["cursor"]["launchable"], false);
+    assert_eq!(
+        filtered["providers"]["cursor"]["readiness"]["state"],
+        "stale"
+    );
+    assert_eq!(
+        filtered["providers"]["cursor"]["readiness"]["probe"],
+        "version"
+    );
+    assert_eq!(
+        filtered["providers"]["cursor"]["readiness"]["launchable"],
+        false
+    );
     assert!(
         filtered["providers"]["cursor"]
             .get("smokeDurationMs")
@@ -1399,6 +1495,12 @@ fn stdio_providers_check_uses_provider_budgets_and_concurrency() {
     assert_eq!(sorted_provider_keys(&checks), vec!["cursor", "kimi"]);
     assert_eq!(checks["providers"]["cursor"]["startupVerified"], true);
     assert_eq!(checks["providers"]["kimi"]["startupVerified"], true);
+    assert_eq!(checks["providers"]["cursor"]["launchable"], true);
+    assert_eq!(checks["providers"]["cursor"]["readiness"]["state"], "ready");
+    assert_eq!(
+        checks["providers"]["cursor"]["readiness"]["probe"],
+        "version+smoke"
+    );
     assert!(checks["providers"]["cursor"]["smokeDurationMs"].is_number());
     assert!(
         started.elapsed() < std::time::Duration::from_millis(3600),
@@ -1492,7 +1594,15 @@ fn stdio_providers_check_timeout_fallback_and_process_group_cleanup() {
     );
     let cursor = &checks["providers"]["cursor"];
     assert_eq!(cursor["startupVerified"], false);
+    assert_eq!(cursor["launchable"], false);
+    assert_eq!(cursor["readiness"]["state"], "failed");
+    assert_eq!(cursor["readiness"]["launchable"], false);
+    assert!(cursor["readiness"]["checkedAt"].is_string());
     assert_eq!(cursor["diagnostic"]["failureCategory"], "provider_timeout");
+    assert_eq!(
+        cursor["readiness"]["diagnostic"]["failureCategory"],
+        "provider_timeout"
+    );
     assert_eq!(cursor["diagnostic"]["timeoutMs"], 800);
 
     let child_pid = std::fs::read_to_string(&child_pid_path)
@@ -1783,6 +1893,98 @@ fn stdio_task_lifecycle_stop_timeout_and_logs() {
     let timed_wait = client.tool("task_wait", json!({"taskId": timed_id, "timeoutMs": 3000}));
     assert_eq!(timed_wait["status"], "failed");
     assert_eq!(timed_wait["errorType"], "timeout");
+}
+
+#[test]
+fn stdio_task_list_defaults_to_native_presentation_and_filters() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let completed = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "cursor",
+            "mode": "review",
+            "title": "Native UX review",
+            "prompt": "emit-logs",
+            "cwd": env.root,
+            "timeoutSeconds": 5
+        }),
+    );
+    let completed_id = completed["taskId"].as_str().unwrap().to_string();
+    let waited = client.tool(
+        "task_wait",
+        json!({"taskId": completed_id, "timeoutMs": 5000}),
+    );
+    assert_eq!(waited["status"], "succeeded");
+
+    let active = client.tool(
+        "task_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "review",
+            "title": "Active native UX task",
+            "prompt": "sleep-long",
+            "cwd": env.root,
+            "timeoutSeconds": 20
+        }),
+    );
+    let active_id = active["taskId"].as_str().unwrap().to_string();
+
+    let listed = client.tool("task_list", json!({}));
+    assert_eq!(listed["presentation"], true);
+    assert_eq!(listed["scope"], "active_recent");
+    assert_eq!(listed["limit"], 25);
+    let tasks = listed["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 2);
+    assert_eq!(tasks[0]["taskId"], active_id);
+    assert_eq!(tasks[0]["presentation"]["phase"], "active");
+    assert_eq!(tasks[0]["presentation"]["actions"][0]["id"], "wait");
+    assert_eq!(tasks[0]["presentation"]["actions"][0]["tool"], "task_wait");
+    assert_eq!(tasks[0]["presentation"]["actions"][0]["state"], "available");
+    assert_eq!(tasks[0]["presentation"]["actions"][7]["id"], "reply");
+    assert_eq!(
+        tasks[0]["presentation"]["actions"][7]["state"],
+        "unavailable"
+    );
+    assert_eq!(
+        tasks[0]["presentation"]["actions"][7]["reason"],
+        "provider_task_not_interactive"
+    );
+    assert_eq!(tasks[1]["taskId"], completed_id);
+    assert_eq!(tasks[1]["presentation"]["displayTitle"], "Native UX review");
+    assert_eq!(tasks[1]["presentation"]["result"]["available"], true);
+    assert_eq!(
+        tasks[1]["presentation"]["verificationStatus"],
+        "not_verified"
+    );
+    assert!(tasks[1].get("stdout").is_none());
+    assert!(tasks[1].get("gitDiff").is_none());
+
+    let filtered = client.tool(
+        "task_list",
+        json!({
+            "provider": ["cursor"],
+            "mode": ["review"],
+            "cwd": env.root,
+            "titleContains": "ux",
+            "limit": 1
+        }),
+    );
+    assert_eq!(filtered["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(filtered["tasks"][0]["taskId"], completed_id);
+
+    let raw = client.tool("task_list", json!({"presentation": false, "scope": "all"}));
+    assert_eq!(raw["presentation"], false);
+    assert_eq!(raw["scope"], "all");
+    assert_eq!(raw["limit"], Value::Null);
+    assert_eq!(raw["tasks"].as_array().unwrap().len(), 2);
+
+    let error = client.tool_error("task_list", json!({"limit": 101}));
+    assert!(error.contains("limit must be between 1 and 100"));
+
+    let stopped = client.tool("task_stop", json!({"taskId": active_id}));
+    assert_eq!(stopped["status"], "stopped");
 }
 
 #[test]
@@ -2161,10 +2363,30 @@ fn stdio_managed_worktree_lifecycle() {
 
     let waited = client.tool("task_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
     assert_eq!(waited["status"], "succeeded");
+    let cleanup_before_result = waited["presentation"]["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["id"] == "cleanup")
+        .unwrap();
+    assert_eq!(cleanup_before_result["state"], "unsafe");
+    assert_eq!(
+        cleanup_before_result["reason"],
+        "managed_worktree_cleanup_requires_result_inspection"
+    );
 
     let result = client.tool("task_result", json!({"taskId": task_id}));
     assert_eq!(result["gitStatus"], "");
     assert_eq!(result["changedFiles"], json!([]));
+    assert!(result["presentation"]["result"]["inspectedAt"].is_string());
+    let cleanup_after_result = result["presentation"]["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["id"] == "cleanup")
+        .unwrap();
+    assert_eq!(cleanup_after_result["state"], "available");
+    assert!(cleanup_after_result.get("reason").is_none());
 
     let removed = client.tool("task_remove", json!({"taskId": task_id}));
     assert_eq!(removed["status"], "removed");

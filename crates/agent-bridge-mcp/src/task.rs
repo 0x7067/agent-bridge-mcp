@@ -7,6 +7,7 @@ use crate::tools::TaskPreviewInput;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -89,8 +90,9 @@ impl TaskManagerHandle {
             .await
     }
 
-    pub async fn list(&self) -> Result<Value, String> {
-        self.request(ActorCommand::List).await
+    pub async fn list(&self, arguments: Value) -> Result<Value, String> {
+        self.request(|reply| ActorCommand::List(arguments, reply))
+            .await
     }
 
     pub async fn status(&self, task_id: String) -> Result<Value, String> {
@@ -167,7 +169,7 @@ impl TaskManagerHandle {
 
     pub async fn result(&self, task_id: String, max_bytes: Option<i64>) -> Result<Value, String> {
         let task: TaskRecord = self
-            .request(|reply| ActorCommand::Get(task_id.clone(), reply))
+            .request(|reply| ActorCommand::InspectResult(task_id.clone(), reply))
             .await?;
         let logs = self.logs(task_id, max_bytes, None, None).await?;
         let mut public = public_task(&task);
@@ -234,9 +236,10 @@ impl TaskManagerHandle {
 
 enum ActorCommand {
     Spawn(Value, oneshot::Sender<Result<Value, String>>),
-    List(oneshot::Sender<Result<Value, String>>),
+    List(Value, oneshot::Sender<Result<Value, String>>),
     Status(String, oneshot::Sender<Result<Value, String>>),
     Get(String, oneshot::Sender<Result<TaskRecord, String>>),
+    InspectResult(String, oneshot::Sender<Result<TaskRecord, String>>),
     Stop(String, oneshot::Sender<Result<Value, String>>),
     Remove(String, oneshot::Sender<Result<Value, String>>),
     Shutdown(oneshot::Sender<Result<(), String>>),
@@ -258,15 +261,9 @@ impl TaskActor {
                     let result = self.spawn(arguments).await;
                     let _ = reply.send(result);
                 }
-                ActorCommand::List(reply) => {
-                    let tasks: Vec<Value> = self
-                        .registry
-                        .tasks
-                        .values()
-                        .filter(|task| task.status != TaskStatus::Removed)
-                        .map(public_task)
-                        .collect();
-                    let _ = reply.send(Ok(json!({ "tasks": tasks })));
+                ActorCommand::List(arguments, reply) => {
+                    let result = list_tasks(&self.registry, arguments);
+                    let _ = reply.send(result);
                 }
                 ActorCommand::Status(task_id, reply) => {
                     let result = self.require_task(&task_id).map(public_task);
@@ -274,6 +271,10 @@ impl TaskActor {
                 }
                 ActorCommand::Get(task_id, reply) => {
                     let result = self.require_task(&task_id).cloned();
+                    let _ = reply.send(result);
+                }
+                ActorCommand::InspectResult(task_id, reply) => {
+                    let result = self.inspect_result(&task_id).await;
                     let _ = reply.send(result);
                 }
                 ActorCommand::Stop(task_id, reply) => {
@@ -369,6 +370,7 @@ impl TaskActor {
             git_status: None,
             git_diff: None,
             changed_files: None,
+            result_inspected_at: None,
             transcript_available: false,
             final_result_detected: false,
             partial_result_detected: false,
@@ -429,6 +431,20 @@ impl TaskActor {
             }
         }
         Ok(public)
+    }
+
+    async fn inspect_result(&mut self, task_id: &str) -> Result<TaskRecord, String> {
+        let mut changed = false;
+        let task = self.require_task_mut(task_id)?;
+        if is_final(task.status) && task.result_inspected_at.is_none() {
+            task.result_inspected_at = Some(now_iso());
+            changed = true;
+        }
+        let task = task.clone();
+        if changed {
+            self.save().await?;
+        }
+        Ok(task)
     }
 
     async fn remove(&mut self, task_id: &str) -> Result<Value, String> {
@@ -565,6 +581,26 @@ struct Registry {
     tasks: BTreeMap<String, TaskRecord>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TaskListScope {
+    ActiveRecent,
+    All,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TaskListInput {
+    presentation: Option<bool>,
+    scope: Option<TaskListScope>,
+    status: Option<Vec<TaskStatus>>,
+    provider: Option<Vec<ProviderKind>>,
+    mode: Option<Vec<crate::domain::TaskMode>>,
+    cwd: Option<String>,
+    title_contains: Option<String>,
+    limit: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskRecord {
@@ -619,6 +655,8 @@ pub struct TaskRecord {
     pub git_diff: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changed_files: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_inspected_at: Option<String>,
     #[serde(default)]
     pub transcript_available: bool,
     #[serde(default)]
@@ -1623,6 +1661,106 @@ fn validate_spawn_arguments(arguments: Value) -> Result<TaskPreviewInput, String
     Ok(input)
 }
 
+fn list_tasks(registry: &Registry, arguments: Value) -> Result<Value, String> {
+    let arguments = if arguments.is_null() {
+        json!({})
+    } else {
+        arguments
+    };
+    let input: TaskListInput =
+        serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+    if input.limit.is_some_and(|limit| !(1..=100).contains(&limit)) {
+        return Err("limit must be between 1 and 100".to_string());
+    }
+
+    let explicit_scope = input.scope;
+    let presentation = input.presentation.unwrap_or(true);
+    let scope = explicit_scope.unwrap_or(if presentation {
+        TaskListScope::ActiveRecent
+    } else {
+        TaskListScope::All
+    });
+    let limit = input
+        .limit
+        .or_else(|| (presentation && scope == TaskListScope::ActiveRecent).then_some(25));
+    let mut tasks: Vec<&TaskRecord> = registry
+        .tasks
+        .values()
+        .filter(|task| task.status != TaskStatus::Removed)
+        .filter(|task| task_matches_list_filters(task, &input))
+        .collect();
+
+    if presentation || scope == TaskListScope::ActiveRecent {
+        tasks.sort_by(compare_for_presentation_list);
+    }
+    if let Some(limit) = limit {
+        tasks.truncate(limit);
+    }
+
+    Ok(json!({
+        "tasks": tasks.into_iter().map(public_task).collect::<Vec<_>>(),
+        "presentation": presentation,
+        "scope": match scope {
+            TaskListScope::ActiveRecent => "active_recent",
+            TaskListScope::All => "all",
+        },
+        "limit": limit
+    }))
+}
+
+fn task_matches_list_filters(task: &TaskRecord, input: &TaskListInput) -> bool {
+    if let Some(statuses) = input.status.as_ref()
+        && !statuses.contains(&task.status)
+    {
+        return false;
+    }
+    if let Some(providers) = input.provider.as_ref()
+        && !providers.contains(&task.provider)
+    {
+        return false;
+    }
+    if let Some(modes) = input.mode.as_ref()
+        && !modes.contains(&task.mode)
+    {
+        return false;
+    }
+    if let Some(cwd) = input.cwd.as_deref()
+        && !task_matches_cwd(task, cwd)
+    {
+        return false;
+    }
+    if let Some(title) = input.title_contains.as_deref() {
+        let needle = title.to_ascii_lowercase();
+        let haystack = display_title(task).to_ascii_lowercase();
+        if !haystack.contains(&needle) {
+            return false;
+        }
+    }
+    true
+}
+
+fn task_matches_cwd(task: &TaskRecord, cwd: &str) -> bool {
+    if task.cwd == cwd || task.original_cwd.as_deref() == Some(cwd) {
+        return true;
+    }
+    let Ok(canonical) = Path::new(cwd).canonicalize() else {
+        return false;
+    };
+    let canonical = canonical.display().to_string();
+    task.cwd == canonical || task.original_cwd.as_deref() == Some(canonical.as_str())
+}
+
+fn compare_for_presentation_list(left: &&TaskRecord, right: &&TaskRecord) -> Ordering {
+    match (is_final(left.status), is_final(right.status)) {
+        (false, true) => Ordering::Less,
+        (true, false) => Ordering::Greater,
+        _ => right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| left.task_id.cmp(&right.task_id)),
+    }
+}
+
 fn public_task(task: &TaskRecord) -> Value {
     let is_final = is_final(task.status);
     let phase = match task.status {
@@ -1651,8 +1789,159 @@ fn public_task(task: &TaskRecord) -> Value {
         "profile": task.profile,
         "promptStrategy": task.prompt_strategy,
         "profileDiagnostics": task.profile_diagnostics,
-        "transcriptDiagnostic": task.transcript_diagnostic
+        "transcriptDiagnostic": task.transcript_diagnostic,
+        "presentation": presentation(task)
     })
+}
+
+fn presentation(task: &TaskRecord) -> Value {
+    let changed_files = task.changed_files.clone().unwrap_or_default();
+    let git_status = task.git_status.clone().unwrap_or_default();
+    let has_changes = !changed_files.is_empty() || !git_status.trim().is_empty();
+    json!({
+        "displayTitle": display_title(task),
+        "subtitle": format!("{} {}", task.provider.as_str(), task.mode.as_str()),
+        "phase": match task.status {
+            TaskStatus::Queued => "pending",
+            TaskStatus::Running => "active",
+            _ => "done",
+        },
+        "statusTone": status_tone(task.status),
+        "workspace": task.cwd,
+        "timestamps": {
+            "createdAt": task.created_at,
+            "updatedAt": task.updated_at,
+            "startedAt": task.started_at,
+            "completedAt": task.completed_at,
+        },
+        "durationMs": duration_ms(task),
+        "errorType": task.error_type,
+        "result": {
+            "available": is_final(task.status),
+            "hasChanges": has_changes,
+            "changedFileCount": changed_files.len(),
+            "inspectedAt": task.result_inspected_at,
+            "transcriptAvailable": task.transcript_available,
+            "finalResultDetected": task.final_result_detected,
+            "partialResultDetected": task.partial_result_detected,
+            "reviewPacketAvailable": is_final(task.status)
+        },
+        "verificationStatus": "not_verified",
+        "actions": presentation_actions(task)
+    })
+}
+
+fn display_title(task: &TaskRecord) -> String {
+    task.title
+        .clone()
+        .unwrap_or_else(|| format!("{} {} task", task.provider.as_str(), task.mode.as_str()))
+}
+
+fn status_tone(status: TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Queued => "pending",
+        TaskStatus::Running => "running",
+        TaskStatus::Succeeded => "success",
+        TaskStatus::Failed => "error",
+        TaskStatus::Stopped => "stopped",
+        TaskStatus::FailedStale => "stale",
+        TaskStatus::Removed => "removed",
+    }
+}
+
+fn presentation_actions(task: &TaskRecord) -> Value {
+    let mut actions = vec![
+        action(
+            "wait",
+            Some("task_wait"),
+            action_state(!is_final(task.status)),
+            None,
+        ),
+        action("inspect_status", Some("task_status"), "available", None),
+        action("inspect_logs", Some("task_logs"), "available", None),
+        action(
+            "inspect_transcript",
+            Some("task_transcript"),
+            action_state(task.transcript_available),
+            unavailable_reason(!task.transcript_available, "transcript_unavailable"),
+        ),
+        action(
+            "inspect_result",
+            Some("task_result"),
+            action_state(is_final(task.status)),
+            unavailable_reason(!is_final(task.status), "task_not_final"),
+        ),
+        action(
+            "stop",
+            Some("task_stop"),
+            action_state(matches!(
+                task.status,
+                TaskStatus::Queued | TaskStatus::Running
+            )),
+            unavailable_reason(
+                !matches!(task.status, TaskStatus::Queued | TaskStatus::Running),
+                "task_not_running",
+            ),
+        ),
+    ];
+
+    let cleanup_state = if !is_final(task.status) {
+        "unavailable"
+    } else if task.worktree_managed && task.result_inspected_at.is_none() {
+        "unsafe"
+    } else {
+        "available"
+    };
+    let cleanup_reason = if !is_final(task.status) {
+        Some("task_not_final")
+    } else if task.worktree_managed && task.result_inspected_at.is_none() {
+        Some("managed_worktree_cleanup_requires_result_inspection")
+    } else {
+        None
+    };
+    actions.push(action(
+        "cleanup",
+        Some("task_remove"),
+        cleanup_state,
+        cleanup_reason,
+    ));
+    actions.push(action(
+        "reply",
+        None,
+        "unavailable",
+        Some("provider_task_not_interactive"),
+    ));
+    actions.push(action(
+        "resume",
+        None,
+        "unavailable",
+        Some("provider_task_not_resumable"),
+    ));
+    Value::Array(actions)
+}
+
+fn action_state(available: bool) -> &'static str {
+    if available {
+        "available"
+    } else {
+        "unavailable"
+    }
+}
+
+fn unavailable_reason(unavailable: bool, reason: &'static str) -> Option<&'static str> {
+    unavailable.then_some(reason)
+}
+
+fn action(id: &str, tool: Option<&str>, state: &str, reason: Option<&str>) -> Value {
+    let mut value = json!({
+        "id": id,
+        "tool": tool,
+        "state": state
+    });
+    if let Some(reason) = reason {
+        value["reason"] = Value::String(reason.to_string());
+    }
+    value
 }
 
 fn review_packet(task: &TaskRecord, stdout_truncated: bool, stderr_truncated: bool) -> Value {
@@ -2061,11 +2350,33 @@ mod tests {
             git_status: None,
             git_diff: None,
             changed_files: None,
+            result_inspected_at: None,
             transcript_available: false,
             final_result_detected: false,
             partial_result_detected: false,
             transcript_diagnostic: None,
         }
+    }
+
+    fn action_state<'a>(task: &'a Value, id: &str) -> &'a str {
+        task["presentation"]["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|action| action["id"] == id)
+            .unwrap_or_else(|| panic!("missing action: {id}"))["state"]
+            .as_str()
+            .unwrap()
+    }
+
+    fn action_reason<'a>(task: &'a Value, id: &str) -> Option<&'a str> {
+        task["presentation"]["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|action| action["id"] == id)
+            .unwrap_or_else(|| panic!("missing action: {id}"))["reason"]
+            .as_str()
     }
 
     #[test]
@@ -2075,6 +2386,209 @@ mod tests {
         transition_status(&mut task, TaskStatus::Succeeded).unwrap();
 
         assert!(transition_status(&mut task, TaskStatus::Running).is_err());
+    }
+
+    #[test]
+    fn public_task_includes_presentation_for_all_lifecycle_states() {
+        for (status, phase, tone) in [
+            (TaskStatus::Queued, "pending", "pending"),
+            (TaskStatus::Running, "active", "running"),
+            (TaskStatus::Succeeded, "done", "success"),
+            (TaskStatus::Failed, "done", "error"),
+            (TaskStatus::Stopped, "done", "stopped"),
+            (TaskStatus::FailedStale, "done", "stale"),
+        ] {
+            let mut task = sample_task(status);
+            task.title = Some("Presentation audit".to_string());
+            task.transcript_available = true;
+            task.final_result_detected = status == TaskStatus::Succeeded;
+            task.partial_result_detected = status == TaskStatus::Failed;
+            task.changed_files = Some(vec!["README.md".to_string()]);
+            if status == TaskStatus::FailedStale {
+                task.error_type = Some(ErrorType::Stale);
+            }
+
+            let public = public_task(&task);
+
+            assert_eq!(public["presentation"]["displayTitle"], "Presentation audit");
+            assert_eq!(public["presentation"]["subtitle"], "codex review");
+            assert_eq!(public["presentation"]["phase"], phase);
+            assert_eq!(public["presentation"]["statusTone"], tone);
+            assert_eq!(public["presentation"]["result"]["changedFileCount"], 1);
+            assert_eq!(
+                public["presentation"]["result"]["transcriptAvailable"],
+                true
+            );
+            assert_eq!(public["presentation"]["verificationStatus"], "not_verified");
+            assert!(public["presentation"]["result"]["available"].is_boolean());
+            assert!(public["presentation"]["actions"].is_array());
+            assert!(public.get("stdout").is_none());
+            assert!(public.get("gitDiff").is_none());
+        }
+    }
+
+    #[test]
+    fn presentation_uses_safe_display_title_fallback() {
+        let task = sample_task(TaskStatus::Running);
+        let public = public_task(&task);
+
+        assert_eq!(public["presentation"]["displayTitle"], "codex review task");
+    }
+
+    #[test]
+    fn presentation_actions_reflect_running_final_and_worktree_states() {
+        let mut running = sample_task(TaskStatus::Running);
+        running.transcript_available = true;
+        let running_public = public_task(&running);
+        assert_eq!(action_state(&running_public, "wait"), "available");
+        assert_eq!(action_state(&running_public, "stop"), "available");
+        assert_eq!(
+            running_public["presentation"]["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|action| action["id"] == "wait")
+                .unwrap()["tool"],
+            "task_wait"
+        );
+        assert_eq!(
+            action_state(&running_public, "inspect_result"),
+            "unavailable"
+        );
+        assert_eq!(
+            action_reason(&running_public, "inspect_result"),
+            Some("task_not_final")
+        );
+        assert_eq!(action_state(&running_public, "reply"), "unavailable");
+        assert_eq!(
+            action_reason(&running_public, "reply"),
+            Some("provider_task_not_interactive")
+        );
+
+        let mut final_task = sample_task(TaskStatus::Succeeded);
+        final_task.transcript_available = false;
+        let final_public = public_task(&final_task);
+        assert_eq!(action_state(&final_public, "wait"), "unavailable");
+        assert_eq!(action_state(&final_public, "inspect_result"), "available");
+        assert_eq!(action_state(&final_public, "cleanup"), "available");
+        assert_eq!(
+            action_state(&final_public, "inspect_transcript"),
+            "unavailable"
+        );
+        assert_eq!(
+            action_reason(&final_public, "inspect_transcript"),
+            Some("transcript_unavailable")
+        );
+
+        let mut worktree = sample_task(TaskStatus::Succeeded);
+        worktree.worktree_managed = true;
+        worktree.worktree_path = Some("/tmp/worktree".to_string());
+        let worktree_public = public_task(&worktree);
+        assert_eq!(action_state(&worktree_public, "cleanup"), "unsafe");
+        assert_eq!(
+            action_reason(&worktree_public, "cleanup"),
+            Some("managed_worktree_cleanup_requires_result_inspection")
+        );
+
+        worktree.result_inspected_at = Some(now_iso());
+        let inspected_worktree_public = public_task(&worktree);
+        assert_eq!(
+            action_state(&inspected_worktree_public, "cleanup"),
+            "available"
+        );
+        assert_eq!(action_reason(&inspected_worktree_public, "cleanup"), None);
+        assert!(inspected_worktree_public["presentation"]["result"]["inspectedAt"].is_string());
+
+        let mut stale = sample_task(TaskStatus::FailedStale);
+        stale.error_type = Some(ErrorType::Stale);
+        let stale_public = public_task(&stale);
+        assert_eq!(stale_public["presentation"]["phase"], "done");
+        assert_eq!(stale_public["presentation"]["errorType"], "stale");
+        assert_eq!(action_state(&stale_public, "resume"), "unavailable");
+    }
+
+    #[test]
+    fn list_tasks_defaults_to_bounded_active_recent_presentation() {
+        let mut registry = Registry {
+            tasks: BTreeMap::new(),
+        };
+        let mut old_final = sample_task(TaskStatus::Succeeded);
+        old_final.task_id = "task_old".to_string();
+        old_final.title = Some("Old final".to_string());
+        old_final.updated_at = "2026-06-01T00:00:00.000Z".to_string();
+        let mut running = sample_task(TaskStatus::Running);
+        running.task_id = "task_running".to_string();
+        running.title = Some("Running".to_string());
+        running.updated_at = "2026-06-01T00:00:01.000Z".to_string();
+        let mut recent_final = sample_task(TaskStatus::Succeeded);
+        recent_final.task_id = "task_recent".to_string();
+        recent_final.title = Some("Recent final".to_string());
+        recent_final.updated_at = "2026-06-02T00:00:00.000Z".to_string();
+        let mut removed = sample_task(TaskStatus::Removed);
+        removed.task_id = "task_removed".to_string();
+
+        for task in [old_final, running, recent_final, removed] {
+            registry.tasks.insert(task.task_id.clone(), task);
+        }
+
+        let listed = list_tasks(&registry, json!({})).unwrap();
+        let tasks = listed["tasks"].as_array().unwrap();
+
+        assert_eq!(listed["presentation"], true);
+        assert_eq!(listed["scope"], "active_recent");
+        assert_eq!(listed["limit"], 25);
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(tasks[0]["taskId"], "task_running");
+        assert_eq!(tasks[1]["taskId"], "task_recent");
+        assert_eq!(tasks[2]["taskId"], "task_old");
+        assert!(tasks.iter().all(|task| task.get("presentation").is_some()));
+    }
+
+    #[test]
+    fn list_tasks_filters_and_rejects_invalid_limits() {
+        let mut registry = Registry {
+            tasks: BTreeMap::new(),
+        };
+        let mut cursor_review = sample_task(TaskStatus::Succeeded);
+        cursor_review.task_id = "task_cursor".to_string();
+        cursor_review.provider = ProviderKind::Cursor;
+        cursor_review.title = Some("Native UX review".to_string());
+        cursor_review.cwd = "/repo".to_string();
+        let mut codex_command = sample_task(TaskStatus::Running);
+        codex_command.task_id = "task_codex".to_string();
+        codex_command.mode = crate::domain::TaskMode::Command;
+        codex_command.title = Some("Other task".to_string());
+        codex_command.cwd = "/other".to_string();
+        registry
+            .tasks
+            .insert(cursor_review.task_id.clone(), cursor_review);
+        registry
+            .tasks
+            .insert(codex_command.task_id.clone(), codex_command);
+
+        let filtered = list_tasks(
+            &registry,
+            json!({
+                "provider": ["cursor"],
+                "mode": ["review"],
+                "cwd": "/repo",
+                "titleContains": "ux",
+                "limit": 1
+            }),
+        )
+        .unwrap();
+        let tasks = filtered["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["taskId"], "task_cursor");
+
+        let raw = list_tasks(&registry, json!({"presentation": false, "scope": "all"})).unwrap();
+        assert_eq!(raw["presentation"], false);
+        assert_eq!(raw["scope"], "all");
+        assert_eq!(raw["limit"], Value::Null);
+        assert_eq!(raw["tasks"].as_array().unwrap().len(), 2);
+
+        let error = list_tasks(&registry, json!({"limit": 101})).unwrap_err();
+        assert!(error.contains("limit"));
     }
 
     #[tokio::test]

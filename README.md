@@ -19,7 +19,7 @@ This repo lives at:
 - `doctor`: return a structured setup report for server, workspace, state, providers, Claude host-runner, and recommendations.
 - `task_preview`: preview the command, args, and environment that would be used for a task without spawning it.
 - `task_spawn`: start a background task and return a `taskId`.
-- `task_list`: list tracked tasks.
+- `task_list`: list tracked tasks; defaults to native-client presentation summaries for active/recent tasks.
 - `task_status`: inspect one task lifecycle state.
 - `task_wait`: wait for a task to reach a final state or return after a timeout.
 - `task_logs`: read capped stdout/stderr slices; supports line cursors for incremental reads.
@@ -40,13 +40,16 @@ Recommended caller workflow:
 2. Call `providers_check` to catch missing or misconfigured CLIs before delegation. Use `smoke: true` when debugging provider startup, not just binary presence.
 3. Call `task_preview` when debugging provider flags or cwd/env behavior.
 4. Call `task_spawn` for the real task.
-5. Call `task_wait` with a bounded `timeoutMs`; if it times out, use `task_logs`
+5. Call `task_list` or `task_status` to read each task's `presentation` metadata
+   for native-client display title, status tone, result availability, structured
+   lifecycle actions, and unavailable reply/resume controls.
+6. Call `task_wait` with a bounded `timeoutMs`; if it times out, use `task_logs`
    with line cursors and `task_transcript` with cursors to inspect progress
    without rereading the whole run.
-6. Once the task is final, call `task_result` once for logs, git status, diff,
+7. Once the task is final, call `task_result` once for logs, git status, diff,
    changed files, exit metadata, structured `errorType`, and the derived
    `reviewPacket` inspection summary.
-7. Call `task_remove` intentionally after any managed worktree has been inspected.
+8. Call `task_remove` intentionally after any managed worktree has been inspected.
 
 For setup troubleshooting, `doctor` is the broad first check:
 
@@ -65,6 +68,9 @@ Use `summary.status` to triage: `error` means fix workspace, state, or host-runn
 Real-world delegation workflow:
 
 - Treat provider output as evidence for the main Codex thread, not as final verification. Inspect the final report, logs, `gitStatus`, `diff`, `changedFiles`, and exit metadata before using the result.
+- Use the `presentation` object on `task_list`, `task_status`, and `task_result` for native-feeling UI summaries. `verificationStatus: "not_verified"` means provider completion is not project verification.
+- Render `reply` and `resume` presentation actions as unavailable in v1. Provider tasks are batch lifecycle tasks, not interactive resumable conversations.
+- Treat `providers_list.readiness` as non-blocking discovery. It starts as `state: "stale"` and `launchable: false`; run `providers_check` with `smoke: true` to mark a provider `ready` and launchable.
 - Use `task_transcript` when analyzing provider behavior, comparing providers, or checking whether a final or partial provider result was detected.
 - Use profile `bridge` for normal Agent Bridge task guidance. Use profile `bare` for paired experiments with compact bridge-owned prompts and provider-specific reduced configuration; inspect `profileDiagnostics` because reductions vary by provider.
 - Keep the main thread responsible for project gates. Run the relevant tests, lint, typecheck, build, or OpenSpec validation before claiming the requested work is complete.
@@ -399,6 +405,10 @@ paid model usage.
 - Read-only review: spawn `review` or `research` with `isolation: "none"`, a
   small prompt, and bounded waits. Inspect `task_result.reviewPacket`, logs,
   diagnostics, git status, diff, changed files, and exit metadata.
+- Native task presentation: call `task_list` with default arguments to show
+  active tasks first and recent final tasks second. Use
+  `presentation: false` with `scope: "all"` only when intentionally inspecting
+  the full raw task registry.
 - Isolated implementation: spawn `implement` with `isolation: "worktree"`.
   Inspect the managed worktree, `reviewPacket`, `gitStatus`, `gitDiff`, and
   `changedFiles`; run verification in the main caller; call `task_remove` only
@@ -452,6 +462,9 @@ Without `smoke`, `providers_check` reports `probe: "version"` and `startupVerifi
 With `smoke: true`, it reports `probe: "version+smoke"` and only sets
 `startupVerified: true` after a short noninteractive provider task exits
 successfully.
+Provider discovery is intentionally non-blocking: `providers_list` reports static
+capabilities and a stale/non-launchable readiness snapshot until `providers_check`
+refreshes it. Version-only checks do not imply a provider can launch tasks.
 
 Preview a task before spawning:
 
@@ -495,6 +508,42 @@ Spawn a Claude implementation task:
     "cwd": "/Users/pedro/Development/agent-bridge-mcp",
     "timeoutSeconds": 600,
     "isolation": "worktree"
+  }
+}
+```
+
+List active/recent tasks for native-client presentation:
+
+```json
+{
+  "name": "task_list",
+  "arguments": {}
+}
+```
+
+Filter presentation summaries:
+
+```json
+{
+  "name": "task_list",
+  "arguments": {
+    "provider": ["cursor"],
+    "mode": ["review"],
+    "cwd": "/Users/pedro/Development/agent-bridge-mcp",
+    "titleContains": "parser",
+    "limit": 10
+  }
+}
+```
+
+Inspect the full raw task registry intentionally:
+
+```json
+{
+  "name": "task_list",
+  "arguments": {
+    "presentation": false,
+    "scope": "all"
   }
 }
 ```

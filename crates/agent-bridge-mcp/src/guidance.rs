@@ -195,10 +195,11 @@ Suggested flow:
 2. Call providers_check if provider readiness needs focused follow-up.
 3. Call task_preview when command flags, cwd, environment, or isolation need inspection.
 4. Call task_spawn with mode "implement", a clear task prompt, cwd under an allowed workspace, and isolation "worktree" by default.
-5. Use task_wait, task_logs, task_transcript, and task_status to monitor the task without assuming it is finished.
-6. When final, call task_result and inspect the report, transcript evidence, logs, gitStatus, diff, changedFiles, exit metadata, and errorType.
-7. The main caller remains responsible for running relevant tests, lint, typecheck, build, or OpenSpec validation before claiming work complete.
-8. Call task_remove only after the managed worktree has been inspected and cleanup is intentional."#;
+5. Use task_list or task_status presentation metadata for native-client summaries, action availability, and active/recent task ordering.
+6. Use task_wait, task_logs, task_transcript, and task_status to monitor the task without assuming it is finished.
+7. When final, call task_result and inspect the report, transcript evidence, logs, gitStatus, diff, changedFiles, exit metadata, and errorType.
+8. The main caller remains responsible for running relevant tests, lint, typecheck, build, or OpenSpec validation before claiming work complete.
+9. Call task_remove only after the managed worktree has been inspected and cleanup is intentional."#;
 
 const INSPECT_RESULT_PROMPT: &str = r#"Inspect an Agent Bridge task result.
 
@@ -266,10 +267,12 @@ Recommended flow:
 2. Call `providers_check` to catch missing or misconfigured provider CLIs. Use smoke checks when debugging startup.
 3. Call `task_preview` when cwd, flags, environment, prompt transport, or worktree isolation need inspection.
 4. Call `task_spawn` for the real delegated task.
-5. Call `task_wait` with a bounded timeout. If it times out, call `task_logs` with line cursors and `task_transcript` with cursor/limit to inspect progress.
-6. Once final, call `task_result` for `reviewPacket`, transcript availability/result evidence, logs, git status, diff, changed files, exit metadata, diagnostics, and `errorType`.
-7. Treat provider output as evidence for the main caller, not as final verification.
-8. Call `task_remove` intentionally after any managed worktree has been inspected.
+5. Use `task_list` and `task_status` `presentation` metadata for native-client rendering: active/recent ordering, display titles, status tone, result availability, and structured actions.
+6. Render unavailable `reply` and `resume` actions as disabled controls with their reasons; provider tasks are not interactive or resumable in v1.
+7. Call `task_wait` with a bounded timeout. If it times out, call `task_logs` with line cursors and `task_transcript` with cursor/limit to inspect progress.
+8. Once final, call `task_result` for `reviewPacket`, transcript availability/result evidence, logs, git status, diff, changed files, exit metadata, diagnostics, and `errorType`.
+9. Treat provider output and native-feeling completion as evidence for the main caller, not as final verification.
+10. Call `task_remove` intentionally after any managed worktree has been inspected. `presentation.actions` may mark cleanup as `unsafe` for managed worktree tasks until result inspection is explicit.
 "#;
 
 const SAFETY_RESOURCE: &str = r#"# Agent Bridge Safety Guidance
@@ -301,6 +304,12 @@ Supported modes:
 - `command`: bounded command-oriented work.
 
 Use `providers_list` for the authoritative runtime provider summary, including launch profiles and reduced-configuration metadata. Use `providers_check` for availability and startup checks. Do not loosen Codex sandbox permissions as a reflex or repeat an unchanged request after denial diagnostics.
+
+Native-client presentation:
+- `providers_list` reports `supportsReply`, `supportsResume`, and `presentationActions` so clients can render supported and unsupported controls without trial-and-error task calls.
+- `providers_list` includes a non-blocking `readiness` snapshot. Static discovery starts as `state: "stale"` and `launchable: false`; use `providers_check` to refresh readiness.
+- Version-only checks keep `launchable: false` unless a task-path smoke probe succeeds. Smoke-verified providers report `readiness.state: "ready"` and `launchable: true`.
+- `reply` and `resume` are unsupported for provider tasks in v1. Clients should render them as unavailable actions with explanatory reasons, not as failed tool calls.
 "#;
 
 const CLAUDE_HOST_LIFECYCLE_RESOURCE: &str = r#"# Claude Host Runner Lifecycle
@@ -328,6 +337,10 @@ These workflows are reproducible local operator checks. They intentionally keep 
 ## read-only review
 
 Use `task_spawn` with mode `review` or `research`, `isolation: "none"`, a small prompt, and a bounded timeout. Use `task_wait`, then inspect `task_result.reviewPacket`, `task_transcript`, stdout, stderr, diagnostics, git status, diff, changed files, and exit metadata.
+
+## native task presentation
+
+Use `task_list` with default arguments to show active tasks first and recent final tasks second. Read each task's `presentation` object for display title, status tone, result availability, `verificationStatus: "not_verified"`, and structured actions. Use `presentation: false` with `scope: "all"` only when an operator intentionally needs raw full-history registry inspection.
 
 ## isolated implementation
 

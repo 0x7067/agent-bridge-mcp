@@ -118,7 +118,22 @@ pub fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "task_list",
             "description": "List tracked provider tasks.",
-            "inputSchema": object_schema(json!({}), Vec::<&str>::new())
+            "inputSchema": object_schema(json!({
+                "presentation": {
+                    "type": "boolean",
+                    "description": "Optimize the list for native-client task presentation. Defaults to true with active/recent ordering and a bounded limit."
+                },
+                "scope": {"type": "string", "enum": ["active_recent", "all"]},
+                "status": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["queued", "running", "succeeded", "failed", "stopped", "failed_stale", "removed"]}
+                },
+                "provider": {"type": "array", "items": {"type": "string", "enum": provider_enum}},
+                "mode": {"type": "array", "items": {"type": "string", "enum": mode_enum}},
+                "cwd": {"type": "string"},
+                "titleContains": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100}
+            }), Vec::<&str>::new())
         }),
         simple_task_id_tool("task_status", "Read one task's lifecycle state."),
         json!({

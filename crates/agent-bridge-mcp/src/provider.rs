@@ -47,6 +47,8 @@ pub fn capabilities() -> Value {
             "supportsWorktreeIsolation": true,
             "effort": ["low", "medium", "high", "xhigh", "max"],
             "launchProfiles": ["bridge", "bare"],
+            "presentationActions": presentation_actions(),
+            "readiness": default_readiness(),
             "reducedConfiguration": reduced_configuration(ProviderKind::Claude)
         },
         "cursor": {
@@ -55,6 +57,8 @@ pub fn capabilities() -> Value {
             "supportsResume": false,
             "supportsWorktreeIsolation": true,
             "launchProfiles": ["bridge", "bare"],
+            "presentationActions": presentation_actions(),
+            "readiness": default_readiness(),
             "reducedConfiguration": reduced_configuration(ProviderKind::Cursor)
         },
         "kimi": {
@@ -64,6 +68,8 @@ pub fn capabilities() -> Value {
             "supportsWorktreeIsolation": true,
             "thinking": ["off", "minimal", "low", "medium", "high", "xhigh"],
             "launchProfiles": ["bridge", "bare"],
+            "presentationActions": presentation_actions(),
+            "readiness": default_readiness(),
             "reducedConfiguration": reduced_configuration(ProviderKind::Kimi)
         },
         "codex": {
@@ -73,8 +79,33 @@ pub fn capabilities() -> Value {
             "supportsWorktreeIsolation": true,
             "thinking": ["low", "medium", "high", "xhigh"],
             "launchProfiles": ["bridge", "bare"],
+            "presentationActions": presentation_actions(),
+            "readiness": default_readiness(),
             "reducedConfiguration": reduced_configuration(ProviderKind::Codex)
         }
+    })
+}
+
+fn presentation_actions() -> Value {
+    json!({
+        "wait": "supported",
+        "inspectStatus": "supported",
+        "inspectLogs": "supported",
+        "inspectTranscript": "supported",
+        "inspectResult": "supported",
+        "stop": "supported",
+        "cleanup": "supported",
+        "reply": "unsupported",
+        "resume": "unsupported"
+    })
+}
+
+fn default_readiness() -> Value {
+    json!({
+        "state": "stale",
+        "startupVerified": false,
+        "launchable": false,
+        "probe": "not_checked"
     })
 }
 
