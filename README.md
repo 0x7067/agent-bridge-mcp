@@ -132,7 +132,15 @@ can still follow the manual lifecycle through `doctor`, `providers_check`,
 Protocol-level MCP Tasks are separate from Agent Bridge lifecycle tools. The
 stable Agent Bridge workflow uses `task_*` tools today. MCP task primitives are
 experimental/extension-gated and should be used only after negotiated host and
-client capability support is explicitly implemented and advertised.
+client capability support is explicitly implemented and advertised. `doctor`
+includes `taskExtensionReadiness` as passive diagnostic evidence about task-like
+client metadata observed during `initialize` or request `_meta`; it always reports
+`serverAdvertisesTasks: false` in this release. Even when a client is classified
+as `extension_capable`, protocol-level `tasks/*`, `CreateTaskResult`, protocol
+task listing, cancellation, and notifications remain unavailable. The existing
+compatibility memo at
+`openspec/changes/explore-mcp-task-support/compatibility-memo.md` remains the
+design reference for future protocol task support.
 
 ## Providers
 

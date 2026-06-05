@@ -125,6 +125,10 @@ impl McpClient {
         response
     }
 
+    fn initialize(&mut self, params: Value) -> Value {
+        self.request("initialize", params)
+    }
+
     fn tool(&mut self, name: &str, arguments: Value) -> Value {
         let response = self.request(
             "tools/call",
@@ -595,6 +599,200 @@ fn stdio_protocol_and_tool_schema_smoke() {
 
     let missing = client.request("missing/method", json!({}));
     assert_eq!(missing["error"]["code"], -32601);
+}
+
+#[test]
+fn stdio_task_extension_readiness_reports_unavailable_without_metadata() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let initialize = client.initialize(json!({}));
+    assert_eq!(
+        initialize["result"]["capabilities"],
+        json!({ "tools": {}, "prompts": {}, "resources": {} })
+    );
+    assert!(initialize["result"]["capabilities"].get("tasks").is_none());
+    assert!(!env.log_dir.join("stdin.txt").exists());
+
+    let doctor = client.tool("doctor", json!({"cwd": env.root}));
+    assert_eq!(
+        doctor["taskExtensionReadiness"]["classification"],
+        "unavailable"
+    );
+    assert_eq!(
+        doctor["taskExtensionReadiness"]["serverAdvertisesTasks"],
+        false
+    );
+    assert_eq!(doctor["taskExtensionReadiness"]["source"], "initialize");
+    assert_eq!(doctor["summary"]["status"], "ok");
+    assert_eq!(client.tool("task_list", json!({}))["tasks"], json!([]));
+}
+
+#[test]
+fn stdio_task_extension_readiness_reports_current_extension_metadata() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    client.initialize(json!({
+        "capabilities": {
+            "experimental": {
+                "io.modelcontextprotocol/tasks": {
+                    "version": "2026-03-26"
+                }
+            }
+        }
+    }));
+
+    let doctor = client.tool("doctor", json!({"cwd": env.root}));
+    assert_eq!(
+        doctor["taskExtensionReadiness"]["classification"],
+        "extension_capable"
+    );
+    assert_eq!(
+        doctor["taskExtensionReadiness"]["observedExtensionIdentifiers"],
+        json!(["io.modelcontextprotocol/tasks"])
+    );
+    assert_eq!(
+        doctor["taskExtensionReadiness"]["serverAdvertisesTasks"],
+        false
+    );
+    assert!(
+        doctor["taskExtensionReadiness"]["recommendedNextStep"]
+            .as_str()
+            .unwrap()
+            .contains("task_*")
+    );
+    assert_eq!(doctor["summary"]["status"], "ok");
+    assert_eq!(client.tool("task_list", json!({}))["tasks"], json!([]));
+}
+
+#[test]
+fn stdio_task_extension_readiness_reports_legacy_unknown_and_conflict_metadata() {
+    let env = fixture_env();
+
+    let mut legacy = McpClient::start(&env);
+    legacy.initialize(json!({
+        "capabilities": {
+            "tasks": {
+                "list": true,
+                "cancel": true
+            }
+        }
+    }));
+    let legacy_doctor = legacy.tool("doctor", json!({"cwd": env.root}));
+    assert_eq!(
+        legacy_doctor["taskExtensionReadiness"]["classification"],
+        "legacy_only"
+    );
+    assert!(
+        legacy_doctor["taskExtensionReadiness"]["legacyIndicators"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|indicator| indicator.as_str().unwrap().contains("capabilities.tasks"))
+    );
+
+    let mut unknown = McpClient::start(&env);
+    unknown.initialize(json!({
+        "capabilities": {
+            "experimental": {
+                "taskQueue": true
+            }
+        }
+    }));
+    let unknown_doctor = unknown.tool("doctor", json!({"cwd": env.root}));
+    assert_eq!(
+        unknown_doctor["taskExtensionReadiness"]["classification"],
+        "unknown"
+    );
+    assert!(
+        serde_json::to_string(&unknown_doctor)
+            .unwrap()
+            .contains("taskQueue")
+    );
+
+    let mut conflict = McpClient::start(&env);
+    conflict.initialize(json!({
+        "capabilities": {
+            "tasks": {"list": true},
+            "experimental": {
+                "io.modelcontextprotocol/tasks": {"version": "2026-03-26"}
+            }
+        }
+    }));
+    let conflict_doctor = conflict.tool("doctor", json!({"cwd": env.root}));
+    assert_eq!(
+        conflict_doctor["taskExtensionReadiness"]["classification"],
+        "extension_capable"
+    );
+}
+
+#[test]
+fn stdio_task_extension_readiness_reads_request_meta_without_raw_metadata_leak() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    client.initialize(json!({}));
+    let tools = client.request(
+        "tools/list",
+        json!({
+            "_meta": {
+                "capabilities": {
+                    "experimental": {
+                        "io.modelcontextprotocol/tasks": {
+                            "version": "2026-03-26",
+                            "rawSecret": "task-extension-secret"
+                        }
+                    }
+                }
+            }
+        }),
+    );
+    assert!(tools["result"]["tools"].is_array());
+    assert!(!env.log_dir.join("stdin.txt").exists());
+
+    let doctor = client.tool("doctor", json!({"cwd": env.root}));
+    assert_eq!(
+        doctor["taskExtensionReadiness"]["classification"],
+        "extension_capable"
+    );
+    assert_eq!(doctor["taskExtensionReadiness"]["source"], "request_meta");
+    let serialized = serde_json::to_string(&doctor).unwrap();
+    assert!(!serialized.contains("task-extension-secret"));
+    assert!(!env.state_dir.join("registry.json").exists());
+}
+
+#[test]
+fn stdio_protocol_task_methods_remain_unsupported() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+    client.initialize(json!({
+        "capabilities": {
+            "experimental": {
+                "io.modelcontextprotocol/tasks": {"version": "2026-03-26"}
+            }
+        }
+    }));
+
+    for method in [
+        "tasks/get",
+        "tasks/list",
+        "tasks/cancel",
+        "tasks/update",
+        "tasks/result",
+    ] {
+        let response = client.request(method, json!({}));
+        assert_eq!(response["error"]["code"], -32601, "{method}: {response}");
+    }
+
+    let tools = client.request("tools/list", json!({}));
+    assert!(
+        tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|tool| !tool["name"].as_str().unwrap().starts_with("tasks/"))
+    );
 }
 
 #[test]

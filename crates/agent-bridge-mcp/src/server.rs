@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, timeout};
@@ -21,9 +22,13 @@ const MAX_AGGREGATE_TIMEOUT_MS: i64 = 120_000;
 const MAX_PROVIDER_TIMEOUT_MS: i64 = 90_000;
 const CHILD_SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 const MAX_CLIENT_CONFIG_BYTES: u64 = 1024 * 1024;
+const TASKS_EXTENSION_ID: &str = "io.modelcontextprotocol/tasks";
+
+static TASK_EXTENSION_READINESS: OnceLock<Mutex<TaskExtensionReadiness>> = OnceLock::new();
 
 pub async fn handle_request(request: JsonRpcRequest) -> Option<JsonRpcResponse> {
     request.id.as_ref()?;
+    observe_task_extension_metadata(&request);
     let id = request.id.clone().unwrap_or(JsonRpcId::Null);
     let response = match request.method.as_str() {
         "initialize" => JsonRpcResponse::result(
@@ -283,6 +288,7 @@ async fn doctor(arguments: Value) -> Result<Value, String> {
     let workspace = doctor_workspace(input.cwd.as_deref());
     let state = doctor_state();
     let clients = doctor_clients();
+    let task_extension_readiness = doctor_task_extension_readiness();
     let claude_host_runner = doctor_claude_host_runner().await;
     let provider_report = providers_check(doctor_provider_arguments(&input)).await?;
     let providers = provider_report
@@ -320,11 +326,259 @@ async fn doctor(arguments: Value) -> Result<Value, String> {
         "workspace": workspace,
         "state": state,
         "clients": clients,
+        "taskExtensionReadiness": task_extension_readiness,
         "providers": providers,
         "launchReadiness": launch_readiness,
         "claudeHostRunner": claude_host_runner,
         "recommendations": recommendations
     }))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum TaskExtensionClassification {
+    Unavailable,
+    Unknown,
+    LegacyOnly,
+    ExtensionCapable,
+    Unsupported,
+}
+
+impl TaskExtensionClassification {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::Unknown => "unknown",
+            Self::LegacyOnly => "legacy_only",
+            Self::ExtensionCapable => "extension_capable",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TaskExtensionReadiness {
+    classification: TaskExtensionClassification,
+    source: &'static str,
+    observed_extension_identifiers: Vec<String>,
+    legacy_indicators: Vec<String>,
+    unknown_indicators: Vec<String>,
+    checked_at: String,
+}
+
+impl Default for TaskExtensionReadiness {
+    fn default() -> Self {
+        Self {
+            classification: TaskExtensionClassification::Unavailable,
+            source: "none",
+            observed_extension_identifiers: Vec::new(),
+            legacy_indicators: Vec::new(),
+            unknown_indicators: Vec::new(),
+            checked_at: checked_at_iso(),
+        }
+    }
+}
+
+impl TaskExtensionReadiness {
+    fn recommended_next_step(&self) -> &'static str {
+        match self.classification {
+            TaskExtensionClassification::ExtensionCapable => {
+                "Use Agent Bridge task_* tools; protocol task support is not advertised yet. Extension metadata can inform future implementation work."
+            }
+            TaskExtensionClassification::LegacyOnly => {
+                "Use Agent Bridge task_* tools; legacy task metadata does not unblock current extension-based task support."
+            }
+            TaskExtensionClassification::Unknown => {
+                "Use Agent Bridge task_* tools; inspect unknown task-like metadata before designing protocol task support."
+            }
+            TaskExtensionClassification::Unsupported => {
+                "Use Agent Bridge task_* tools; requested protocol task behavior is not implemented or advertised."
+            }
+            TaskExtensionClassification::Unavailable => {
+                "Use Agent Bridge task_* tools; no MCP task-extension metadata has been observed."
+            }
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "classification": self.classification.as_str(),
+            "serverAdvertisesTasks": false,
+            "source": self.source,
+            "observedExtensionIdentifiers": self.observed_extension_identifiers,
+            "legacyIndicators": self.legacy_indicators,
+            "unknownIndicators": self.unknown_indicators,
+            "recommendedNextStep": self.recommended_next_step(),
+            "checkedAt": self.checked_at
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct TaskExtensionProbe {
+    observed_extension_identifiers: Vec<String>,
+    legacy_indicators: Vec<String>,
+    unknown_indicators: Vec<String>,
+    unsupported_indicators: Vec<String>,
+}
+
+impl TaskExtensionProbe {
+    fn classification(&self) -> TaskExtensionClassification {
+        if !self.unsupported_indicators.is_empty() {
+            TaskExtensionClassification::Unsupported
+        } else if !self.observed_extension_identifiers.is_empty() {
+            TaskExtensionClassification::ExtensionCapable
+        } else if !self.legacy_indicators.is_empty() {
+            TaskExtensionClassification::LegacyOnly
+        } else if !self.unknown_indicators.is_empty() {
+            TaskExtensionClassification::Unknown
+        } else {
+            TaskExtensionClassification::Unavailable
+        }
+    }
+
+    fn into_readiness(mut self, source: &'static str) -> TaskExtensionReadiness {
+        sort_dedup_bound(&mut self.observed_extension_identifiers);
+        sort_dedup_bound(&mut self.legacy_indicators);
+        sort_dedup_bound(&mut self.unknown_indicators);
+        sort_dedup_bound(&mut self.unsupported_indicators);
+        let classification = self.classification();
+        let mut unknown_indicators = self.unknown_indicators;
+        unknown_indicators.extend(self.unsupported_indicators);
+        sort_dedup_bound(&mut unknown_indicators);
+        TaskExtensionReadiness {
+            classification,
+            source,
+            observed_extension_identifiers: self.observed_extension_identifiers,
+            legacy_indicators: self.legacy_indicators,
+            unknown_indicators,
+            checked_at: checked_at_iso(),
+        }
+    }
+}
+
+fn task_extension_readiness_store() -> &'static Mutex<TaskExtensionReadiness> {
+    TASK_EXTENSION_READINESS.get_or_init(|| Mutex::new(TaskExtensionReadiness::default()))
+}
+
+fn observe_task_extension_metadata(request: &JsonRpcRequest) {
+    let Some((metadata, source)) = task_extension_metadata_source(request) else {
+        return;
+    };
+    let readiness = classify_task_extension_metadata(metadata, source);
+    *task_extension_readiness_store().lock().unwrap() = readiness;
+}
+
+fn task_extension_metadata_source(request: &JsonRpcRequest) -> Option<(&Value, &'static str)> {
+    match request.method.as_str() {
+        "initialize" => request.params.as_ref().map(|params| (params, "initialize")),
+        "tools/call" => request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("_meta"))
+            .map(|meta| (meta, "request_meta")),
+        _ => request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("_meta"))
+            .map(|meta| (meta, "request_meta")),
+    }
+}
+
+fn classify_task_extension_metadata(
+    metadata: &Value,
+    source: &'static str,
+) -> TaskExtensionReadiness {
+    let mut probe = TaskExtensionProbe::default();
+    collect_task_extension_indicators(metadata, "", &mut probe);
+    probe.into_readiness(source)
+}
+
+fn collect_task_extension_indicators(value: &Value, path: &str, probe: &mut TaskExtensionProbe) {
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object {
+                let child_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                inspect_task_metadata_key(key, &child_path, value, probe);
+                collect_task_extension_indicators(value, &child_path, probe);
+            }
+        }
+        Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                let child_path = if path.is_empty() {
+                    format!("[{index}]")
+                } else {
+                    format!("{path}[{index}]")
+                };
+                if let Some(identifier) = value
+                    .get("id")
+                    .or_else(|| value.get("name"))
+                    .and_then(Value::as_str)
+                {
+                    inspect_task_metadata_identifier(identifier, &child_path, probe);
+                }
+                collect_task_extension_indicators(value, &child_path, probe);
+            }
+        }
+        Value::String(value) => inspect_task_metadata_identifier(value, path, probe),
+        _ => {}
+    }
+}
+
+fn inspect_task_metadata_key(key: &str, path: &str, value: &Value, probe: &mut TaskExtensionProbe) {
+    if key == TASKS_EXTENSION_ID {
+        probe
+            .observed_extension_identifiers
+            .push(TASKS_EXTENSION_ID.to_string());
+        return;
+    }
+    if key == "tasks" && path.contains("capabilities") {
+        probe.legacy_indicators.push(bound_indicator(path));
+        return;
+    }
+    let lower = key.to_ascii_lowercase();
+    if lower.contains("unsupported") && lower.contains("task") {
+        probe.unsupported_indicators.push(bound_indicator(path));
+    } else if (lower.contains("require") || lower.contains("request")) && lower.contains("task") {
+        if value.as_bool() == Some(true) {
+            probe.unsupported_indicators.push(bound_indicator(path));
+        }
+    } else if lower.contains("task") {
+        probe.unknown_indicators.push(bound_indicator(path));
+    }
+}
+
+fn inspect_task_metadata_identifier(identifier: &str, path: &str, probe: &mut TaskExtensionProbe) {
+    if identifier == TASKS_EXTENSION_ID {
+        probe
+            .observed_extension_identifiers
+            .push(TASKS_EXTENSION_ID.to_string());
+        return;
+    }
+    let lower = identifier.to_ascii_lowercase();
+    if lower.contains("2025-11-25") && lower.contains("task") {
+        probe.legacy_indicators.push(bound_indicator(path));
+    } else if lower.contains("task") {
+        probe.unknown_indicators.push(bound_indicator(path));
+    }
+}
+
+fn bound_indicator(value: &str) -> String {
+    const MAX_INDICATOR_CHARS: usize = 120;
+    value.chars().take(MAX_INDICATOR_CHARS).collect()
+}
+
+fn sort_dedup_bound(values: &mut Vec<String>) {
+    values.sort();
+    values.dedup();
+    values.truncate(16);
+}
+
+fn doctor_task_extension_readiness() -> Value {
+    task_extension_readiness_store().lock().unwrap().to_json()
 }
 
 fn doctor_provider_arguments(input: &DoctorInput) -> Value {
