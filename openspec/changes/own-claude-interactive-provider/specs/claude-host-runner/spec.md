@@ -5,7 +5,7 @@ The system SHALL provide an opt-in host runner that executes owned interactive C
 
 #### Scenario: Host runner accepts a valid structured Claude request
 - **WHEN** the MCP server sends a structured Claude request whose protocol version, request type, workspace policy id, cwd, timeout, mode, model, effort, and prompt payload pass host-runner validation
-- **THEN** the host runner executes the owned interactive Claude runner using the official `claude` CLI, returns captured stdout, stderr, transcript diagnostics, truncation flags, exit status or signal, elapsed time, and failure category metadata.
+- **THEN** the host runner executes the owned interactive Claude runner using the official `claude` CLI and returns the protocol v2 structured result with bounded PTY excerpt diagnostics, transcript diagnostics, truncation flags, exit status or signal, elapsed time, and failure category metadata.
 
 #### Scenario: Host runner accepts protocol v2 request schema
 - **WHEN** the MCP server sends a request with `version: 2`, `requestType: "claude_interactive"`, a valid workspace policy id, cwd, mode, prompt, and timeout

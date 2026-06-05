@@ -35,3 +35,26 @@ Actions taken in this revision:
 
 Implementation beyond research remains gated on a follow-up Agent Bridge review
 of this revised plan.
+
+## 2026-06-05 Cursor Re-Review
+
+Reviewer: Agent Bridge Cursor, mode `review`
+
+Task id: `task_9f8b43cf02d24cf383e5a3bf8082078f`
+
+Verdict: `READY_WITH_P1`.
+
+Review summary:
+
+- The prior P0 blockers are closed enough to proceed with task 1.7.
+- Implementation tasks remain gated on task 1.7 proving the selected PTY adapter
+  behavior.
+- The remaining risks are non-blocking and should be tracked during
+  implementation: runtime validation of `pty-process`, nested diagnostic schema
+  detail, transcript JSONL record selection, startup constant tuning, hook helper
+  artifact shape, dual Stop/StopFailure precedence, and minor wording drift.
+
+Action taken from the review:
+
+- Corrected the remaining host-runner spec wording that still referred to
+  captured stdout/stderr as the owned-runner result shape.
