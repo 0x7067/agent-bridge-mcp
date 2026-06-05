@@ -95,7 +95,7 @@ The implementation should evaluate established Rust PTY crates against these cri
 
 `providers_check(smoke: true)` for Claude must exercise the owned interactive runner path. Version-only checks may verify that the official `claude` binary is discoverable, but they must not mark Claude launchable. If the owned runner cannot start, inject the prompt, observe Stop-hook completion, or parse a transcript result, Claude readiness is failed with bounded diagnostics.
 
-Binary resolution for the official interactive Claude executable is implementation-defined but must be explicit before runtime integration. The preferred policy is `CLAUDE_BIN` repurposed as the interactive `claude` executable override, then `PATH` lookup for `claude`. `CLAUDE_P_BIN` must be treated as ignored legacy configuration and should produce a diagnostic when present. The implementation should not introduce `npx claude` fallback unless source verification shows it is stable and non-surprising.
+Binary resolution for the official interactive Claude executable is implementation-defined but must be explicit before runtime integration. The preferred policy is `CLAUDE_BIN` as the interactive `claude` executable override, then `PATH` lookup for `claude`. The implementation should not introduce `npx claude` fallback unless source verification shows it is stable and non-surprising.
 
 ### Decision 7: Keep Claude mode and permission mapping explicit
 
@@ -105,7 +105,7 @@ The owned-runner smoke prompt is the existing non-mutating token prompt: `Reply 
 
 ### Decision 8: Update docs and previews to remove print-mode fallback guidance
 
-README, provider capability metadata, task previews, and troubleshooting guidance should describe the owned interactive runner. Existing references that tell users to set `CLAUDE_BIN` for native `claude -p` fallback or `CLAUDE_P_BIN` for upstream `claude-p` should be removed or reframed as legacy migration notes only.
+README, provider capability metadata, task previews, and troubleshooting guidance should describe the owned interactive runner. Existing references that tell users to configure native print-mode fallback or upstream wrapper fallback should be removed.
 
 ## Risks / Trade-offs
 

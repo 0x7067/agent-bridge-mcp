@@ -28,38 +28,29 @@ struct FixtureEnv {
 
 impl McpClient {
     fn start(env: &FixtureEnv) -> Self {
-        Self::start_with_claude_env(env, false)
-    }
-
-    fn start_with_native_claude(env: &FixtureEnv) -> Self {
-        Self::start_with_claude_env(env, true)
-    }
-
-    fn start_with_claude_env(env: &FixtureEnv, native_claude: bool) -> Self {
         let workspaces = std::env::join_paths([env.root.as_os_str()]).unwrap();
-        Self::start_with_options(env, native_claude, Some(workspaces), None, BTreeMap::new())
+        Self::start_with_options(env, Some(workspaces), None, BTreeMap::new())
     }
 
     fn start_with_workspace_value(env: &FixtureEnv, workspaces: OsString) -> Self {
-        Self::start_with_options(env, false, Some(workspaces), None, BTreeMap::new())
+        Self::start_with_options(env, Some(workspaces), None, BTreeMap::new())
     }
 
     fn start_with_legacy_allowed_root_only(env: &FixtureEnv) -> Self {
-        Self::start_with_options(env, false, None, Some(env.root.clone()), BTreeMap::new())
+        Self::start_with_options(env, None, Some(env.root.clone()), BTreeMap::new())
     }
 
     fn start_without_workspace(env: &FixtureEnv) -> Self {
-        Self::start_with_options(env, false, None, None, BTreeMap::new())
+        Self::start_with_options(env, None, None, BTreeMap::new())
     }
 
     fn start_with_extra_env(env: &FixtureEnv, extra_env: BTreeMap<String, OsString>) -> Self {
         let workspaces = std::env::join_paths([env.root.as_os_str()]).unwrap();
-        Self::start_with_options(env, false, Some(workspaces), None, extra_env)
+        Self::start_with_options(env, Some(workspaces), None, extra_env)
     }
 
     fn start_with_options(
         env: &FixtureEnv,
-        native_claude: bool,
         workspaces: Option<OsString>,
         legacy_allowed_root: Option<PathBuf>,
         extra_env: BTreeMap<String, OsString>,
@@ -87,9 +78,6 @@ impl McpClient {
             command.env("AGENT_BRIDGE_ALLOWED_ROOT", legacy_allowed_root);
         }
         command.env("CLAUDE_BIN", &env.fake_provider);
-        if !native_claude {
-            command.env("CLAUDE_P_BIN", &env.fake_provider);
-        }
         for (key, value) in extra_env {
             command.env(key, value);
         }
@@ -1041,13 +1029,6 @@ fn stdio_providers_preview_and_safety_checks() {
             .as_array()
             .unwrap()
             .iter()
-            .all(|key| key != "CLAUDE_P_BIN")
-    );
-    assert!(
-        claude["envKeys"]
-            .as_array()
-            .unwrap()
-            .iter()
             .any(|key| key == "ANTHROPIC_API_KEY")
     );
     assert!(
@@ -1432,7 +1413,10 @@ fn stdio_doctor_default_report_shape_and_side_effects() {
     assert_eq!(doctor["providers"]["codex"]["startupVerified"], false);
     assert_eq!(doctor["launchReadiness"]["startupVerified"], false);
     assert_eq!(doctor["claudeHostRunner"]["status"], "not_configured");
-    assert_eq!(doctor["claudeHostRunner"]["launchStrategy"], "direct");
+    assert_eq!(
+        doctor["claudeHostRunner"]["launchStrategy"],
+        "host_runner_required"
+    );
     assert!(doctor["recommendations"].is_array());
 
     assert_eq!(client.tool("agent_list", json!({}))["agents"], json!([]));
@@ -1982,6 +1966,18 @@ fn stdio_providers_check_filters_and_validates_readiness_inputs() {
             .get("smokeDurationMs")
             .is_none()
     );
+
+    let claude_version = client.tool(
+        "providers_check",
+        json!({"smoke": false, "providers": ["claude"]}),
+    );
+    let claude = &claude_version["providers"]["claude"];
+    assert_eq!(claude["version"], "fake-provider 1.0.0");
+    assert_eq!(claude["startupVerified"], false);
+    assert_eq!(claude["launchable"], false);
+    assert_eq!(claude["readiness"]["state"], "stale");
+    assert_eq!(claude["readiness"]["probe"], "version");
+    assert_eq!(claude["readiness"]["launchable"], false);
 
     let unknown_provider = client.tool_error("providers_check", json!({"providers": ["openai"]}));
     assert!(unknown_provider.contains("claude"));
@@ -2715,7 +2711,7 @@ fn stdio_claude_no_host_runner_ignores_zsh_startup_files() {
 #[test]
 fn stdio_claude_preview_requires_owned_host_runner() {
     let env = fixture_env();
-    let mut client = McpClient::start_with_native_claude(&env);
+    let mut client = McpClient::start(&env);
 
     let preview = client.tool(
         "agent_preview",

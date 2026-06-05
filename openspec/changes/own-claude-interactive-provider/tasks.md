@@ -26,15 +26,15 @@
 - [x] 3.1 Implement host-runner protocol v2 per `protocol-v2.md`, including rejected legacy shapes, response schema validation, and protocol mismatch handling.
 - [x] 3.2 Replace Claude provider command selection so normal tasks and smoke checks use the owned interactive runner launch strategy.
 - [x] 3.3 Remove native `claude -p` and upstream `claude-p` fallback selection from Claude provider execution and diagnostics.
-- [x] 3.4 Update Claude binary resolution and environment allowlists so the official interactive `claude` binary is explicit and `CLAUDE_P_BIN` is ignored legacy configuration.
+- [x] 3.4 Update Claude binary resolution and environment allowlists so the official interactive `claude` binary is the only Claude binary configuration surface.
 - [x] 3.5 Replace print-mode stdout JSON success parsing and smoke-token detection with structured v2 owned-runner Stop/transcript result parsing per `runner-result-contract.md`.
-- [ ] 3.6 Update provider metadata, previews, readiness diagnostics, doctor output, bare profile diagnostics, and launch strategy reporting to describe the owned interactive runner.
-- [ ] 3.7 Ensure version-only checks never mark Claude launchable; only owned-runner host-runner smoke success can do that.
+- [x] 3.6 Update provider metadata, previews, readiness diagnostics, doctor output, bare profile diagnostics, and launch strategy reporting to describe the owned interactive runner.
+- [x] 3.7 Ensure version-only checks never mark Claude launchable; only owned-runner host-runner smoke success can do that.
 
 ## 4. Docs, Validation, and Release Plumbing
 
-- [ ] 4.1 Update README setup and troubleshooting to remove print-mode fallback guidance and document the owned runner workflow, env migration, host-runner requirement, smoke duration expectations, and rollback shape.
-- [ ] 4.2 Update guidance specs/docs that mention `claude-p`, native `claude -p`, or direct Claude launch strategy.
+- [x] 4.1 Update README setup and troubleshooting to remove print-mode fallback guidance and document the owned runner workflow, env migration, host-runner requirement, smoke duration expectations, and rollback shape.
+- [x] 4.2 Update guidance specs/docs that mention `claude-p`, native `claude -p`, or direct Claude launch strategy.
 - [ ] 4.3 Add or update tests for provider readiness, task preview redaction, host-runner safety, stdout isolation, transcript parsing, StopFailure handling, bare profile hooks, and no-fallback behavior.
 - [ ] 4.4 Run OpenSpec validation and the relevant Rust test suite.
 - [x] 4.5 Re-submit the revised plan for Agent Bridge review before implementation tasks beyond research.

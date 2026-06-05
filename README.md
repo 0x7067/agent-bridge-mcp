@@ -156,7 +156,7 @@ design reference for future protocol task support.
 
 First-class providers:
 
-- `claude`: local Claude Code through `claude-p` by default; set `CLAUDE_BIN` to use native `claude -p` instead when `CLAUDE_P_BIN` is not set.
+- `claude`: local Claude Code through the Agent Bridge-owned interactive PTY host runner.
 - `cursor`: local Cursor Agent through `cursor-agent -p`.
 - `kimi`: local Pi/Kimi through `pi -p`.
 - `codex`: local Codex through `codex exec`.
@@ -185,8 +185,8 @@ best-effort reductions.
 
 - Rust-built `agent-bridge-mcp` binary for the MCP runtime.
 - `git` on `PATH`.
-- `claude-p` on `PATH`, or set `CLAUDE_P_BIN` to an explicit wrapper path.
-- Optional: set `AGENT_BRIDGE_CLAUDE_HOST_SOCKET` to route Claude provider calls through the bridge's Claude host runner. This is required when Claude Code auth is stored in macOS Keychain and the MCP server runs inside a sandbox that cannot access Keychain.
+- Official interactive `claude` on `PATH`, or set `CLAUDE_BIN` to its path.
+- Set `AGENT_BRIDGE_CLAUDE_HOST_SOCKET` to route Claude provider calls through the bridge's Claude host runner. Claude tasks and smoke checks intentionally do not fall back to native print mode or external compatibility wrappers.
 - `cursor-agent` on `PATH`, or set `CURSOR_AGENT_BIN`.
 - `pi` on `PATH`, or set `PI_BIN`.
 - `codex` on `PATH`, or set `CODEX_BIN`.
@@ -243,9 +243,8 @@ supported targets.
 - Prompts are capped at 100 KiB UTF-8.
 - Task stdout/stderr, git status, and git diff are capped at 1 MiB each.
 - Provider processes use ignored stdin unless a provider requires stdin prompt transport. Most providers receive a restricted environment allowlist.
-- Claude provider runs through `/bin/zsh -flc` and manually sources `~/.zshenv`, `~/.zprofile`, and `~/.zshrc` with stdin redirected from `/dev/null` before executing `claude-p` or native `claude`, so MCP behavior matches the terminal path without letting startup files consume provider prompts. The shell script is constant; provider paths and cwd values are passed through `exec "$@"`, and prompt text is written to child stdin.
-- Claude provider receives a focused CLI environment allowlist so Claude Code and `claude-p` can find auth/config without inheriting unrelated host secrets. The bridge strips injected `ANTHROPIC_BASE_URL` values that can point Claude at Codex-local proxy endpoints. `claude-p` is the default.
-- When `AGENT_BRIDGE_CLAUDE_HOST_SOCKET` is configured, Claude provider smoke checks and tasks use a local Unix-socket host runner. The runner reconstructs the `claude-p` command from structured request fields and executes it outside Codex's sandbox so macOS Keychain-backed Claude Code auth remains available.
+- Claude provider tasks and smoke checks use a local Unix-socket host runner. The runner starts the official interactive `claude` CLI in a PTY, injects prompts through PTY input, installs temporary runner-owned Stop/StopFailure hooks, reads Claude transcript JSONL, and returns a bounded protocol v2 result. Prompt text is not placed in process argv.
+- Claude provider receives a focused CLI environment allowlist so Claude Code can find auth/config without inheriting unrelated host secrets. The bridge strips injected `ANTHROPIC_BASE_URL` values that can point Claude at Codex-local proxy endpoints.
 - Codex provider passes `--config shell_environment_policy.inherit="all"` to `codex exec` so delegated Codex shell commands see the same tool `PATH` as the provider process.
 - Active task state is persisted under `AGENT_BRIDGE_STATE_DIR`, defaulting to:
 
@@ -354,15 +353,15 @@ smoke prompts should be small, read-only, and explicit about not editing files.
 
 ## Claude Troubleshooting
 
-`providers_check` without `smoke` proves only that the selected Claude binary answers `--version`; it reports `startupVerified: false`. Use `providers_check` with `smoke: true` when Claude hangs, exits without a result, emits terminal noise, or appears healthy but cannot complete tasks.
+`providers_check` without `smoke` proves only that the selected official Claude binary answers `--version`; it reports `startupVerified: false` and `launchable: false`. Use `providers_check` with `smoke: true` after starting the host runner when Claude hangs, exits without a result, emits terminal noise, or appears healthy but cannot complete tasks.
 
-Claude smoke checks and failed Claude task results include additive `diagnostic` fields with a stable `failureCategory`, selected `commandKind`, selected `commandPath`, timeout, exit metadata, and capped stdout/stderr excerpts. Excerpts are capped and redact prompt content and known sensitive prompt tokens.
+Claude smoke checks and failed Claude task results include additive `diagnostic` fields with a stable `failureCategory`, selected `commandKind`, selected `commandPath`, timeout, exit metadata, launch strategy, and capped PTY/stdout/stderr excerpts. Excerpts are capped and redact prompt content and known sensitive prompt tokens.
 
 Selection rules:
 
-- Set `CLAUDE_P_BIN` to force a specific `claude-p` wrapper.
-- Set `AGENT_BRIDGE_CLAUDE_HOST_SOCKET` to force Claude smoke checks and tasks through the host runner.
-- If Claude Code is logged in through macOS Keychain, use the host runner; sandboxed MCP child processes may not be able to read that login state.
+- Set `CLAUDE_BIN` only when the official interactive `claude` binary is not on `PATH`.
+- Set `AGENT_BRIDGE_CLAUDE_HOST_SOCKET`; Claude smoke checks and tasks require the host runner.
+- If Claude Code is logged in through macOS Keychain, run the host runner outside sandboxed MCP processes so it can read that login state.
 - If the host runner returns `workspace_policy_mismatch`, restart the host runner after changing `AGENT_BRIDGE_WORKSPACES` or Codex workspace settings.
 
 Start the host runner outside the Codex sandbox:
@@ -390,7 +389,7 @@ AGENT_BRIDGE_STATE_DIR = "/Users/pedro/.agent-bridge-mcp/state"
 AGENT_BRIDGE_CLAUDE_HOST_SOCKET = "/Users/pedro/.agent-bridge-mcp/run/claude-host.sock"
 ```
 
-After reloading MCP configuration, `agent_preview` for Claude includes `launchStrategy: "host_runner"` and Claude smoke diagnostics include the same launch strategy.
+After reloading MCP configuration, `agent_preview` for Claude includes `launchStrategy: "host_runner"` when the socket is configured, or `launchStrategy: "host_runner_required"` when it is missing. Claude smoke diagnostics include the same launch strategy.
 
 Host-runner lifecycle checklist:
 
@@ -400,7 +399,7 @@ Host-runner lifecycle checklist:
 4. Stop the runner with SIGTERM or SIGINT so it stops accepting new connections and terminates active Claude children.
 5. If the runner reports `host_runner_unavailable`, inspect or restart the runner; the bridge intentionally does not silently fall back to sandboxed Claude execution.
 
-`claude-p` is an external compatibility wrapper around interactive Claude Code. Its README describes PTY startup handling, Stop hook result capture, `--input-file`, stdin prompt input, and caveats that Claude Code terminal or hook behavior changes can break the wrapper: <https://github.com/smithersai/claude-p#readme>. Native Claude Code CLI reference for `claude -p`, `--output-format`, and stdin input formats is available at <https://code.claude.com/docs/en/cli-reference>.
+Native Claude Code CLI reference is available at <https://code.claude.com/docs/en/cli-reference>.
 
 ## Isolation
 

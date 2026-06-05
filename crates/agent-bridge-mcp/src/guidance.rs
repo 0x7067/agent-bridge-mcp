@@ -303,7 +303,7 @@ const SAFETY_RESOURCE: &str = r#"# Agent Bridge Safety Guidance
 const PROVIDER_CAPABILITIES_RESOURCE: &str = r#"# Agent Bridge Provider Capabilities
 
 First-class providers:
-- `claude`: local Claude Code through `claude-p` by default, or native `claude -p` when configured.
+- `claude`: local Claude Code through the Agent Bridge-owned interactive PTY host runner. `CLAUDE_BIN` may point at the official interactive `claude` binary.
 - `cursor`: local Cursor Agent through `cursor-agent -p`.
 - `kimi`: local Pi/Kimi through `pi -p`.
 - `codex`: local Codex through `codex exec`. Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms should be investigated with `agent_wait`, `agent_logs`, `agent_status`, final `agent_result`, `agent_preview`, cwd, workspace policy, prompt scope, and isolation strategy before retrying.

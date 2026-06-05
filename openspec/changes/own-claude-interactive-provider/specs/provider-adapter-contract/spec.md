@@ -20,11 +20,7 @@ The system SHALL resolve Claude provider task execution and smoke probes to the 
 #### Scenario: Claude binary override
 - **WHEN** the provider adapter resolves the official interactive Claude binary
 - **THEN** it uses `CLAUDE_BIN` as the official interactive `claude` executable override if configured and otherwise searches `PATH` for `claude`.
-- **AND** it does not use `CLAUDE_P_BIN` for task execution, smoke checks, or version checks.
-
-#### Scenario: Legacy claude-p environment
-- **WHEN** `CLAUDE_P_BIN` is present in the environment
-- **THEN** provider diagnostics identify it as ignored legacy configuration for the owned Claude provider.
+- **AND** no upstream wrapper binary environment override is supported.
 
 ### Requirement: Claude adapter reports removed fallback policy
 The system SHALL make removed Claude fallback behavior explicit in capability metadata and diagnostics.

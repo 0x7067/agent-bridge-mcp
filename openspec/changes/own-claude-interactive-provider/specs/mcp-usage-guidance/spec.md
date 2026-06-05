@@ -11,4 +11,3 @@ The system SHALL update server-discoverable guidance so Claude setup and trouble
 #### Scenario: Provider capability guidance
 - **WHEN** a client reads provider capability guidance
 - **THEN** Claude is described as using the owned interactive PTY/hook/transcript runner.
-- **AND** `CLAUDE_P_BIN` is described only as legacy ignored configuration if mentioned at all.

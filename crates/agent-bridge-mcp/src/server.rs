@@ -711,7 +711,6 @@ fn doctor_environment() -> Value {
         "CURSOR_AGENT_BIN",
         "PI_BIN",
         "CLAUDE_BIN",
-        "CLAUDE_P_BIN",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN",
@@ -1533,7 +1532,7 @@ async fn doctor_claude_host_runner() -> Value {
         return json!({
             "status": "not_configured",
             "configured": false,
-            "launchStrategy": "direct"
+            "launchStrategy": "host_runner_required"
         });
     };
     let started = Instant::now();
@@ -1971,7 +1970,7 @@ fn provider_smoke_timeout_ms(provider: ProviderKind, input: &ProvidersCheckInput
 fn default_provider_smoke_timeout_ms(provider: ProviderKind) -> u64 {
     match provider {
         ProviderKind::Codex => 20_000,
-        ProviderKind::Claude => 30_000,
+        ProviderKind::Claude => 60_000,
         ProviderKind::Kimi => 45_000,
         ProviderKind::Cursor => 60_000,
     }

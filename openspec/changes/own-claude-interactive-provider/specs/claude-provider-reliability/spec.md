@@ -46,11 +46,6 @@ The system SHALL make Claude provider command selection deterministic and explai
 - **WHEN** a Claude task, preview, or smoke probe is built
 - **THEN** the Claude provider reports command selection as the owned interactive runner.
 
-#### Scenario: Upstream claude-p is configured
-- **WHEN** `CLAUDE_P_BIN` or an equivalent legacy setting is present
-- **THEN** the Claude provider does not use it for normal task execution or smoke checks.
-- **AND** diagnostics identify the setting as ignored or legacy for the owned provider.
-
 #### Scenario: Native Claude print mode is available
 - **WHEN** native `claude -p` is discoverable
 - **THEN** the Claude provider does not use native print mode as a fallback.
