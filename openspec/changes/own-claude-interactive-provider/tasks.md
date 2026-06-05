@@ -14,7 +14,7 @@
 - [x] 2.1 After task 1.7 passes, add an owned Claude runner module that starts official interactive `claude` in a PTY with the documented login-shell-compatible environment setup.
 - [x] 2.2 Implement terminal probe detection/responses needed for Claude Code startup without writing probe noise to MCP stdout.
 - [x] 2.3 Implement prompt injection through PTY input and ensure rendered task prompts never appear in process argv or diagnostics.
-- [ ] 2.4 Generate temporary runner-owned `--settings` JSON for `SessionStart`, `Stop`, and `StopFailure` hooks without editing durable Claude config.
+- [x] 2.4 Generate temporary runner-owned `--settings` JSON for `SessionStart`, `Stop`, and `StopFailure` hooks without editing durable Claude config.
 - [ ] 2.5 Implement runner-owned hook relay IPC per `hook-relay-contract.md`, including owner-only permissions, bounded reads, cleanup, and no hook stdout leakage into Claude context.
 - [ ] 2.6 Parse Stop-hook payloads, validate transcript paths, read transcript JSONL with bounded retry, extract final assistant output, and map it into existing provider result/log surfaces.
 - [ ] 2.7 Parse StopFailure hook payloads and map known Claude API/auth/billing/rate-limit failures to actionable provider diagnostics.
