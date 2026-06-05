@@ -7,6 +7,7 @@ Agent Bridge should be able to observe whether MCP clients can negotiate the cur
 - Add a non-advertising readiness probe path that records task-extension capability shapes seen from MCP clients.
 - Add deterministic compatibility fixtures for clients with no task extension metadata, legacy 2025-11-25-style metadata, and current `io.modelcontextprotocol/tasks` extension metadata.
 - Expose diagnostic output that says whether protocol-level task support is unavailable, unsupported, legacy-only, or extension-capable.
+- Surface the diagnostic output as an additive `doctor.taskExtensionReadiness` section.
 - Keep Agent Bridge `task_*` tools as the only task execution lifecycle in this change.
 - Do not add `tasks/*` methods, `CreateTaskResult`, task capability advertisement, task cancellation, or protocol task listing.
 
@@ -20,6 +21,7 @@ Agent Bridge should be able to observe whether MCP clients can negotiate the cur
 
 - `mcp-host-compatibility`: Host compatibility requirements must include deterministic client capability fixtures for task-extension readiness probing without enabling protocol tasks.
 - `mcp-usage-guidance`: Guidance must explain that readiness probes are diagnostic evidence only and do not make protocol task support available.
+- `agent-bridge-doctor`: Doctor output must include the additive task-extension readiness diagnostic without changing setup status aggregation or advertising protocol task support.
 
 ## Impact
 

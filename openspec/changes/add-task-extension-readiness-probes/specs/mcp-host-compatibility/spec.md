@@ -15,3 +15,11 @@ The system SHALL include compatibility fixtures for MCP clients with and without
 #### Scenario: Legacy task metadata fixture
 - **WHEN** the stdio fixture sends legacy 2025-11-25 task metadata
 - **THEN** Agent Bridge classifies the client shape as legacy-only without treating it as current extension support.
+
+#### Scenario: Unknown task-like metadata fixture
+- **WHEN** the stdio fixture sends task-like metadata that is neither legacy task metadata nor `io.modelcontextprotocol/tasks`
+- **THEN** Agent Bridge classifies the client shape as unknown without failing ordinary MCP requests.
+
+#### Scenario: Conflicting task metadata fixture
+- **WHEN** the stdio fixture sends both current `io.modelcontextprotocol/tasks` extension metadata and legacy task metadata
+- **THEN** Agent Bridge classifies the client shape as extension-capable.
