@@ -7,11 +7,11 @@ Define task launch profiles that let callers choose between the normal Agent Bri
 The system SHALL allow callers to select a task launch profile that controls prompt wrapping and provider configuration strategy.
 
 #### Scenario: Previewing a launch profile
-- **WHEN** a caller invokes `task_preview` with a supported launch profile
+- **WHEN** a caller invokes `agent_preview` with a supported launch profile
 - **THEN** the response includes the selected profile, profile-specific command metadata, prompt strategy metadata, and any provider-specific reduction diagnostics.
 
 #### Scenario: Spawning with a launch profile
-- **WHEN** a caller invokes `task_spawn` with a supported launch profile
+- **WHEN** a caller invokes `agent_spawn` with a supported launch profile
 - **THEN** the provider adapter launches the task using that profile and the task lifecycle records the selected profile.
 
 #### Scenario: Unsupported launch profile
@@ -52,7 +52,7 @@ The system SHALL expose launch profile metadata in provider capabilities, previe
 - **THEN** each provider includes supported launch profiles and reduced-configuration capability metadata.
 
 #### Scenario: Inspecting completed profile task
-- **WHEN** a caller reads `task_result` for a task launched with a profile
+- **WHEN** a caller reads `agent_result` for a task launched with a profile
 - **THEN** the response includes the selected profile and profile diagnostics describing prompt strategy and configuration reductions.
 
 ### Requirement: Reduced-profile support is discovered by spike before implementation

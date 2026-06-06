@@ -454,6 +454,22 @@ async fn canonical_agent_lifecycle_schemas_are_listed() {
             tool["outputSchema"]["properties"]["nextActions"]["type"], "array",
             "{tool_name}"
         );
+        assert!(
+            tool["inputSchema"]["properties"].get("agentId").is_some(),
+            "{tool_name}"
+        );
+        assert!(
+            tool["inputSchema"]["properties"].get("taskId").is_none(),
+            "{tool_name}"
+        );
+        assert!(
+            tool["outputSchema"]["properties"].get("agentId").is_some(),
+            "{tool_name}"
+        );
+        assert!(
+            tool["outputSchema"]["properties"].get("taskId").is_none(),
+            "{tool_name}"
+        );
     }
 }
 

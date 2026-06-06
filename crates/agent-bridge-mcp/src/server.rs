@@ -91,21 +91,21 @@ async fn call_tool(params: Value) -> Value {
             },
             ToolName::AgentStatus => {
                 match (
-                    require_task_id(&params.arguments),
+                    require_agent_id(&params.arguments),
                     TaskManagerHandle::from_env().await,
                 ) {
-                    (Ok(task_id), Ok(manager)) => tool_result(manager.status(task_id).await),
+                    (Ok(agent_id), Ok(manager)) => tool_result(manager.status(agent_id).await),
                     (Err(error), _) | (_, Err(error)) => tool_error(error),
                 }
             }
             ToolName::AgentWait => {
                 let timeout_ms = params.arguments.get("timeoutMs").and_then(Value::as_i64);
                 match (
-                    require_task_id(&params.arguments),
+                    require_agent_id(&params.arguments),
                     TaskManagerHandle::from_env().await,
                 ) {
-                    (Ok(task_id), Ok(manager)) => {
-                        tool_result(manager.wait(task_id, timeout_ms).await)
+                    (Ok(agent_id), Ok(manager)) => {
+                        tool_result(manager.wait(agent_id, timeout_ms).await)
                     }
                     (Err(error), _) | (_, Err(error)) => tool_error(error),
                 }
@@ -123,12 +123,12 @@ async fn call_tool(params: Value) -> Value {
                     .and_then(Value::as_u64)
                     .map(|value| value as usize);
                 match (
-                    require_task_id(&params.arguments),
+                    require_agent_id(&params.arguments),
                     TaskManagerHandle::from_env().await,
                 ) {
-                    (Ok(task_id), Ok(manager)) => tool_result(
+                    (Ok(agent_id), Ok(manager)) => tool_result(
                         manager
-                            .logs(task_id, max_bytes, stdout_line, stderr_line)
+                            .logs(agent_id, max_bytes, stdout_line, stderr_line)
                             .await,
                     ),
                     (Err(error), _) | (_, Err(error)) => tool_error(error),
@@ -138,11 +138,11 @@ async fn call_tool(params: Value) -> Value {
                 let cursor = params.arguments.get("cursor").and_then(Value::as_u64);
                 let limit = params.arguments.get("limit").and_then(Value::as_u64);
                 match (
-                    require_task_id(&params.arguments),
+                    require_agent_id(&params.arguments),
                     TaskManagerHandle::from_env().await,
                 ) {
-                    (Ok(task_id), Ok(manager)) => {
-                        tool_result(manager.transcript(task_id, cursor, limit).await)
+                    (Ok(agent_id), Ok(manager)) => {
+                        tool_result(manager.transcript(agent_id, cursor, limit).await)
                     }
                     (Err(error), _) | (_, Err(error)) => tool_error(error),
                 }
@@ -152,11 +152,11 @@ async fn call_tool(params: Value) -> Value {
                 let limit = params.arguments.get("limit").and_then(Value::as_u64);
                 let timeout_ms = params.arguments.get("timeoutMs").and_then(Value::as_i64);
                 match (
-                    require_task_id(&params.arguments),
+                    require_agent_id(&params.arguments),
                     TaskManagerHandle::from_env().await,
                 ) {
-                    (Ok(task_id), Ok(manager)) => {
-                        tool_result(manager.observe(task_id, cursor, limit, timeout_ms).await)
+                    (Ok(agent_id), Ok(manager)) => {
+                        tool_result(manager.observe(agent_id, cursor, limit, timeout_ms).await)
                     }
                     (Err(error), _) | (_, Err(error)) => tool_error(error),
                 }
@@ -164,30 +164,30 @@ async fn call_tool(params: Value) -> Value {
             ToolName::AgentResult => {
                 let max_bytes = params.arguments.get("maxBytes").and_then(Value::as_i64);
                 match (
-                    require_task_id(&params.arguments),
+                    require_agent_id(&params.arguments),
                     TaskManagerHandle::from_env().await,
                 ) {
-                    (Ok(task_id), Ok(manager)) => {
-                        tool_result(manager.result(task_id, max_bytes).await)
+                    (Ok(agent_id), Ok(manager)) => {
+                        tool_result(manager.result(agent_id, max_bytes).await)
                     }
                     (Err(error), _) | (_, Err(error)) => tool_error(error),
                 }
             }
             ToolName::AgentStop => {
                 match (
-                    require_task_id(&params.arguments),
+                    require_agent_id(&params.arguments),
                     TaskManagerHandle::from_env().await,
                 ) {
-                    (Ok(task_id), Ok(manager)) => tool_result(manager.stop(task_id).await),
+                    (Ok(agent_id), Ok(manager)) => tool_result(manager.stop(agent_id).await),
                     (Err(error), _) | (_, Err(error)) => tool_error(error),
                 }
             }
             ToolName::AgentRemove => {
                 match (
-                    require_task_id(&params.arguments),
+                    require_agent_id(&params.arguments),
                     TaskManagerHandle::from_env().await,
                 ) {
-                    (Ok(task_id), Ok(manager)) => tool_result(manager.remove(task_id).await),
+                    (Ok(agent_id), Ok(manager)) => tool_result(manager.remove(agent_id).await),
                     (Err(error), _) | (_, Err(error)) => tool_error(error),
                 }
             }
@@ -235,12 +235,12 @@ fn reject_unknown_arguments(name: ToolName, arguments: &Value) -> Result<(), Str
             "titleContains",
             "limit",
         ][..],
-        ToolName::AgentStatus | ToolName::AgentStop | ToolName::AgentRemove => &["taskId"][..],
-        ToolName::AgentWait => &["taskId", "timeoutMs"][..],
-        ToolName::AgentLogs => &["taskId", "maxBytes", "stdoutLine", "stderrLine"][..],
-        ToolName::AgentTranscript => &["taskId", "cursor", "limit"][..],
-        ToolName::AgentObserve => &["taskId", "cursor", "limit", "timeoutMs"][..],
-        ToolName::AgentResult => &["taskId", "maxBytes"][..],
+        ToolName::AgentStatus | ToolName::AgentStop | ToolName::AgentRemove => &["agentId"][..],
+        ToolName::AgentWait => &["agentId", "timeoutMs"][..],
+        ToolName::AgentLogs => &["agentId", "maxBytes", "stdoutLine", "stderrLine"][..],
+        ToolName::AgentTranscript => &["agentId", "cursor", "limit"][..],
+        ToolName::AgentObserve => &["agentId", "cursor", "limit", "timeoutMs"][..],
+        ToolName::AgentResult => &["agentId", "maxBytes"][..],
     };
     let Some(object) = arguments.as_object() else {
         return Ok(());
@@ -1478,7 +1478,7 @@ fn parse_toml_inline_table_keys(value: &str) -> Vec<String> {
 fn doctor_state() -> Value {
     let path = env::var("AGENT_BRIDGE_STATE_DIR")
         .map(|value| expand_home(&value))
-        .unwrap_or_else(|_| expand_home("~/.agent-bridge"));
+        .unwrap_or_else(|_| expand_home("~/.agent-bridge-mcp/state"));
     if let Err(error) = std::fs::create_dir_all(&path) {
         return json!({
             "status": "error",
@@ -2724,13 +2724,13 @@ fn tool_error(error: impl Into<String>) -> Value {
     })
 }
 
-fn require_task_id(arguments: &Value) -> Result<String, String> {
+fn require_agent_id(arguments: &Value) -> Result<String, String> {
     arguments
-        .get("taskId")
+        .get("agentId")
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .ok_or_else(|| "taskId is required".to_string())
+        .ok_or_else(|| "agentId is required".to_string())
 }
 
 #[cfg(test)]

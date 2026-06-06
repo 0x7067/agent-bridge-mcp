@@ -70,7 +70,7 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "providers_list",
-            "description": "List first-class delegation providers and their task capabilities.",
+            "description": "List first-class delegation providers and their agent capabilities.",
             "inputSchema": object_schema(json!({}), Vec::<&str>::new())
         }),
         json!({
@@ -113,7 +113,7 @@ pub fn tool_definitions() -> Vec<Value> {
         ),
         spawn_like_tool(
             "agent_spawn",
-            "Start a provider agent. Returns the persisted taskId used by agent_status, agent_wait, agent_logs, agent_transcript, agent_observe, agent_result, agent_stop, and agent_remove.",
+            "Start a provider agent. Returns the persisted agentId used by agent_status, agent_wait, agent_logs, agent_transcript, agent_observe, agent_result, agent_stop, and agent_remove.",
             &provider_enum,
             &mode_enum,
             &profile_enum,
@@ -138,43 +138,43 @@ pub fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "agent_wait",
             "description": "Wait for a provider agent to reach a final state or timeout.",
-            "inputSchema": object_schema(json!({"taskId": {"type": "string"}, "timeoutMs": {"type": "number"}}), vec!["taskId"]),
+            "inputSchema": object_schema(json!({"agentId": {"type": "string"}, "timeoutMs": {"type": "number"}}), vec!["agentId"]),
             "outputSchema": output_schema_for("agent_wait")
         }),
         json!({
             "name": "agent_logs",
             "description": "Return capped stdout/stderr log slices for a provider agent.",
             "inputSchema": object_schema(json!({
-                "taskId": {"type": "string"},
+                "agentId": {"type": "string"},
                 "maxBytes": {"type": "number"},
                 "stdoutLine": {"type": "number"},
                 "stderrLine": {"type": "number"}
-            }), vec!["taskId"])
+            }), vec!["agentId"])
         }),
         json!({
             "name": "agent_transcript",
             "description": "Return bounded normalized transcript events for a provider agent.",
             "inputSchema": object_schema(json!({
-                "taskId": {"type": "string"},
+                "agentId": {"type": "string"},
                 "cursor": {"type": "number"},
                 "limit": {"type": "number"}
-            }), vec!["taskId"])
+            }), vec!["agentId"])
         }),
         json!({
             "name": "agent_observe",
             "description": "Observe a provider agent for new transcript/lifecycle events or finalization using bounded long polling.",
             "inputSchema": object_schema(json!({
-                "taskId": {"type": "string"},
+                "agentId": {"type": "string"},
                 "cursor": {"type": "number", "minimum": 0},
                 "limit": {"type": "number", "minimum": 1, "maximum": 500},
                 "timeoutMs": {"type": "number", "minimum": 0, "maximum": 120000}
-            }), vec!["taskId"]),
+            }), vec!["agentId"]),
             "outputSchema": output_schema_for("agent_observe")
         }),
         json!({
             "name": "agent_result",
             "description": "Return final provider-agent metadata, logs, git status, diff, changed files, and exit metadata.",
-            "inputSchema": object_schema(json!({"taskId": {"type": "string"}, "maxBytes": {"type": "number"}}), vec!["taskId"]),
+            "inputSchema": object_schema(json!({"agentId": {"type": "string"}, "maxBytes": {"type": "number"}}), vec!["agentId"]),
             "outputSchema": output_schema_for("agent_result")
         }),
         simple_task_id_tool("agent_stop", "Terminate a running provider agent."),
@@ -216,7 +216,7 @@ fn simple_task_id_tool(name: &str, description: &str) -> Value {
     json!({
         "name": name,
         "description": description,
-        "inputSchema": object_schema(json!({"taskId": {"type": "string"}}), vec!["taskId"])
+        "inputSchema": object_schema(json!({"agentId": {"type": "string"}}), vec!["agentId"])
     })
 }
 
@@ -224,7 +224,7 @@ fn task_id_tool_with_output(name: &str, description: &str) -> Value {
     json!({
         "name": name,
         "description": description,
-        "inputSchema": object_schema(json!({"taskId": {"type": "string"}}), vec!["taskId"]),
+        "inputSchema": object_schema(json!({"agentId": {"type": "string"}}), vec!["agentId"]),
         "outputSchema": output_schema_for(name)
     })
 }
@@ -276,20 +276,20 @@ fn output_schema_for(name: &str) -> Value {
         ),
         "agent_status" | "agent_wait" => output_object_schema(
             json!({
-                "taskId": {"type": "string"},
+                "agentId": {"type": "string"},
                 "status": {"type": "string"},
                 "isFinal": {"type": "boolean"},
                 "presentation": {"type": "object"},
                 "nextActions": {"type": "array"}
             }),
-            vec!["taskId", "status", "isFinal", "presentation"],
+            vec!["agentId", "status", "isFinal", "presentation"],
         ),
         "agent_observe" => output_object_schema(
             json!({
-                "taskId": {"type": "string"},
+                "agentId": {"type": "string"},
                 "status": {"type": "string"},
                 "isFinal": {"type": "boolean"},
-                "task": {"type": "object"},
+                "agent": {"type": "object"},
                 "presentation": {"type": "object"},
                 "progress": {"type": "object"},
                 "events": {"type": "array"},
@@ -298,10 +298,10 @@ fn output_schema_for(name: &str) -> Value {
                 "nextActions": {"type": "array"}
             }),
             vec![
-                "taskId",
+                "agentId",
                 "status",
                 "isFinal",
-                "task",
+                "agent",
                 "presentation",
                 "progress",
                 "events",
@@ -312,7 +312,7 @@ fn output_schema_for(name: &str) -> Value {
         ),
         "agent_result" => output_object_schema(
             json!({
-                "taskId": {"type": "string"},
+                "agentId": {"type": "string"},
                 "status": {"type": "string"},
                 "isFinal": {"type": "boolean"},
                 "presentation": {"type": "object"},
@@ -323,7 +323,7 @@ fn output_schema_for(name: &str) -> Value {
                 "changedFiles": {"type": "array"}
             }),
             vec![
-                "taskId",
+                "agentId",
                 "status",
                 "isFinal",
                 "presentation",

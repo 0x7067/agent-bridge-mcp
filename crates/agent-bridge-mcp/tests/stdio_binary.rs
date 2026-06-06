@@ -29,38 +29,62 @@ struct FixtureEnv {
 impl McpClient {
     fn start(env: &FixtureEnv) -> Self {
         let workspaces = std::env::join_paths([env.root.as_os_str()]).unwrap();
-        Self::start_with_options(env, Some(workspaces), None, BTreeMap::new())
+        Self::start_with_options(
+            env,
+            Some(workspaces),
+            None,
+            Some(&env.state_dir),
+            BTreeMap::new(),
+        )
     }
 
     fn start_with_workspace_value(env: &FixtureEnv, workspaces: OsString) -> Self {
-        Self::start_with_options(env, Some(workspaces), None, BTreeMap::new())
+        Self::start_with_options(
+            env,
+            Some(workspaces),
+            None,
+            Some(&env.state_dir),
+            BTreeMap::new(),
+        )
     }
 
     fn start_with_legacy_allowed_root_only(env: &FixtureEnv) -> Self {
-        Self::start_with_options(env, None, Some(env.root.clone()), BTreeMap::new())
+        Self::start_with_options(
+            env,
+            None,
+            Some(env.root.clone()),
+            Some(&env.state_dir),
+            BTreeMap::new(),
+        )
     }
 
     fn start_without_workspace(env: &FixtureEnv) -> Self {
-        Self::start_with_options(env, None, None, BTreeMap::new())
+        Self::start_with_options(env, None, None, Some(&env.state_dir), BTreeMap::new())
+    }
+
+    fn start_without_state_dir(env: &FixtureEnv) -> Self {
+        let workspaces = std::env::join_paths([env.root.as_os_str()]).unwrap();
+        Self::start_with_options(env, Some(workspaces), None, None, BTreeMap::new())
     }
 
     fn start_with_extra_env(env: &FixtureEnv, extra_env: BTreeMap<String, OsString>) -> Self {
         let workspaces = std::env::join_paths([env.root.as_os_str()]).unwrap();
-        Self::start_with_options(env, Some(workspaces), None, extra_env)
+        Self::start_with_options(env, Some(workspaces), None, Some(&env.state_dir), extra_env)
     }
 
     fn start_with_options(
         env: &FixtureEnv,
         workspaces: Option<OsString>,
         legacy_allowed_root: Option<PathBuf>,
+        state_dir: Option<&Path>,
         extra_env: BTreeMap<String, OsString>,
     ) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"));
         command
             .env_remove("AGENT_BRIDGE_ALLOWED_ROOT")
             .env_remove("AGENT_BRIDGE_WORKSPACES")
+            .env_remove("AGENT_BRIDGE_STATE_DIR")
             .env("HOME", &env.root)
-            .env("AGENT_BRIDGE_STATE_DIR", &env.state_dir)
             .env("CURSOR_AGENT_BIN", &env.fake_provider)
             .env("PI_BIN", &env.fake_provider)
             .env("CODEX_BIN", &env.fake_provider)
@@ -76,6 +100,9 @@ impl McpClient {
         }
         if let Some(legacy_allowed_root) = legacy_allowed_root {
             command.env("AGENT_BRIDGE_ALLOWED_ROOT", legacy_allowed_root);
+        }
+        if let Some(state_dir) = state_dir {
+            command.env("AGENT_BRIDGE_STATE_DIR", state_dir);
         }
         command.env("CLAUDE_BIN", &env.fake_provider);
         for (key, value) in extra_env {
@@ -332,6 +359,26 @@ fn review_actions_text(result: &Value) -> String {
     serde_json::to_string(&result["reviewPacket"]["recommendedActions"]).unwrap()
 }
 
+fn assert_no_task_id_key(value: &Value) {
+    match value {
+        Value::Object(object) => {
+            assert!(
+                !object.contains_key("taskId"),
+                "public payload should not contain taskId: {value}"
+            );
+            for child in object.values() {
+                assert_no_task_id_key(child);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                assert_no_task_id_key(child);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn make_executable(path: &Path) {
     let mut permissions = std::fs::metadata(path).unwrap().permissions();
     permissions.set_mode(0o755);
@@ -494,7 +541,7 @@ fn stdio_protocol_and_tool_schema_smoke() {
     );
     assert_eq!(
         agent_transcript["inputSchema"]["required"],
-        json!(["taskId"])
+        json!(["agentId"])
     );
     assert_eq!(
         agent_transcript["inputSchema"]["properties"]["cursor"]["type"],
@@ -628,7 +675,7 @@ fn stdio_protocol_and_tool_schema_smoke() {
 }
 
 #[test]
-fn stdio_task_extension_readiness_reports_unavailable_without_metadata() {
+fn stdio_agent_extension_readiness_reports_unavailable_without_metadata() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
@@ -655,7 +702,7 @@ fn stdio_task_extension_readiness_reports_unavailable_without_metadata() {
 }
 
 #[test]
-fn stdio_task_extension_readiness_reports_current_extension_metadata() {
+fn stdio_agent_extension_readiness_reports_current_extension_metadata() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
@@ -693,7 +740,7 @@ fn stdio_task_extension_readiness_reports_current_extension_metadata() {
 }
 
 #[test]
-fn stdio_task_extension_readiness_reports_legacy_unknown_and_conflict_metadata() {
+fn stdio_agent_extension_readiness_reports_legacy_unknown_and_conflict_metadata() {
     let env = fixture_env();
 
     let mut legacy = McpClient::start(&env);
@@ -754,7 +801,7 @@ fn stdio_task_extension_readiness_reports_legacy_unknown_and_conflict_metadata()
 }
 
 #[test]
-fn stdio_task_extension_readiness_reads_request_meta_without_raw_metadata_leak() {
+fn stdio_agent_extension_readiness_reads_request_meta_without_raw_metadata_leak() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
@@ -789,7 +836,7 @@ fn stdio_task_extension_readiness_reads_request_meta_without_raw_metadata_leak()
 }
 
 #[test]
-fn stdio_protocol_task_methods_remain_unsupported() {
+fn stdio_protocol_agent_methods_remain_unsupported() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
     client.initialize(json!({
@@ -1138,14 +1185,17 @@ fn stdio_agent_transcript_captures_redacted_events_and_result_evidence() {
             "timeoutSeconds": 5
         }),
     );
-    let task_id = task["taskId"].as_str().unwrap().to_string();
-    let completed = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    let agent_id = task["agentId"].as_str().unwrap().to_string();
+    let completed = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 5000}),
+    );
     assert_eq!(completed["status"], "succeeded");
     assert_eq!(completed["profile"], "bare");
 
     let transcript = client.tool(
         "agent_transcript",
-        json!({"taskId": task_id, "cursor": 0, "limit": 100}),
+        json!({"agentId": agent_id, "cursor": 0, "limit": 100}),
     );
     assert_eq!(transcript["available"], true);
     assert!(transcript["events"].as_array().unwrap().len() >= 3);
@@ -1170,18 +1220,18 @@ fn stdio_agent_transcript_captures_redacted_events_and_result_evidence() {
 
     let first_page = client.tool(
         "agent_transcript",
-        json!({"taskId": task_id, "cursor": 0, "limit": 2}),
+        json!({"agentId": agent_id, "cursor": 0, "limit": 2}),
     );
     assert_eq!(first_page["events"].as_array().unwrap().len(), 2);
     assert_eq!(first_page["nextCursor"], 2);
     assert_eq!(first_page["truncated"], true);
     let second_page = client.tool(
         "agent_transcript",
-        json!({"taskId": task_id, "cursor": first_page["nextCursor"], "limit": 100}),
+        json!({"agentId": agent_id, "cursor": first_page["nextCursor"], "limit": 100}),
     );
     assert!(!second_page["events"].as_array().unwrap().is_empty());
 
-    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
     assert_eq!(result["transcriptAvailable"], true);
     assert_eq!(result["finalResultDetected"], true);
     assert_eq!(result["partialResultDetected"], false);
@@ -1209,14 +1259,17 @@ fn stdio_agent_transcript_reports_missing_artifact_without_hiding_logs() {
             "timeoutSeconds": 5
         }),
     );
-    let task_id = task["taskId"].as_str().unwrap().to_string();
-    let completed = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    let agent_id = task["agentId"].as_str().unwrap().to_string();
+    let completed = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 5000}),
+    );
     assert_eq!(completed["status"], "succeeded");
 
-    let task_dir = env.state_dir.join("tasks").join(&task_id);
-    std::fs::remove_file(task_dir.join("transcript.jsonl")).unwrap();
+    let agent_dir = env.state_dir.join("tasks").join(&agent_id);
+    std::fs::remove_file(agent_dir.join("transcript.jsonl")).unwrap();
 
-    let transcript = client.tool("agent_transcript", json!({"taskId": task_id}));
+    let transcript = client.tool("agent_transcript", json!({"agentId": agent_id}));
     assert_eq!(transcript["available"], false);
     assert!(transcript["events"].as_array().unwrap().is_empty());
     assert!(
@@ -1226,7 +1279,7 @@ fn stdio_agent_transcript_reports_missing_artifact_without_hiding_logs() {
             .contains("not available")
     );
 
-    let logs = client.tool("agent_logs", json!({"taskId": task_id}));
+    let logs = client.tool("agent_logs", json!({"agentId": agent_id}));
     assert!(
         logs["stdout"]
             .as_str()
@@ -1250,11 +1303,14 @@ fn stdio_agent_transcript_preserves_raw_events_and_partial_evidence() {
             "timeoutSeconds": 5
         }),
     );
-    let task_id = task["taskId"].as_str().unwrap().to_string();
-    let completed = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    let agent_id = task["agentId"].as_str().unwrap().to_string();
+    let completed = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 5000}),
+    );
     assert_eq!(completed["status"], "succeeded");
 
-    let transcript = client.tool("agent_transcript", json!({"taskId": task_id}));
+    let transcript = client.tool("agent_transcript", json!({"agentId": agent_id}));
     assert!(
         transcript["events"]
             .as_array()
@@ -1267,7 +1323,7 @@ fn stdio_agent_transcript_preserves_raw_events_and_partial_evidence() {
                     .contains("{\"type\":"))
     );
 
-    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
     assert_eq!(result["transcriptAvailable"], true);
     assert_eq!(result["finalResultDetected"], false);
     assert_eq!(result["partialResultDetected"], true);
@@ -1289,11 +1345,14 @@ fn stdio_agent_transcript_redacts_provider_env_values() {
             "timeoutSeconds": 5
         }),
     );
-    let task_id = task["taskId"].as_str().unwrap().to_string();
-    let completed = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    let agent_id = task["agentId"].as_str().unwrap().to_string();
+    let completed = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 5000}),
+    );
     assert_eq!(completed["status"], "succeeded");
 
-    let transcript = client.tool("agent_transcript", json!({"taskId": task_id}));
+    let transcript = client.tool("agent_transcript", json!({"agentId": agent_id}));
     let serialized = serde_json::to_string(&transcript).unwrap();
     assert!(!serialized.contains("test-key"));
     assert!(serialized.contains("<redacted>"));
@@ -1314,12 +1373,15 @@ fn stdio_agent_result_preserves_final_result_evidence_after_timeout() {
             "timeoutSeconds": 1
         }),
     );
-    let task_id = task["taskId"].as_str().unwrap().to_string();
-    let completed = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    let agent_id = task["agentId"].as_str().unwrap().to_string();
+    let completed = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 5000}),
+    );
     assert_eq!(completed["status"], "failed");
     assert_eq!(completed["errorType"], "timeout");
 
-    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
     assert_eq!(result["transcriptAvailable"], true);
     assert_eq!(result["finalResultDetected"], true);
     assert_eq!(result["partialResultDetected"], false);
@@ -1342,10 +1404,13 @@ fn stdio_agent_transcript_handles_provider_output_fixtures() {
             "timeoutSeconds": 5
         }),
     );
-    let task_id = task["taskId"].as_str().unwrap().to_string();
-    let completed = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    let agent_id = task["agentId"].as_str().unwrap().to_string();
+    let completed = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 5000}),
+    );
     assert_eq!(completed["status"], "succeeded", "{provider}");
-    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
     assert_eq!(result["finalResultDetected"], true, "{provider}");
     assert_eq!(result["partialResultDetected"], false, "{provider}");
 
@@ -1359,10 +1424,13 @@ fn stdio_agent_transcript_handles_provider_output_fixtures() {
             "timeoutSeconds": 5
         }),
     );
-    let task_id = task["taskId"].as_str().unwrap().to_string();
-    let completed = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    let agent_id = task["agentId"].as_str().unwrap().to_string();
+    let completed = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 5000}),
+    );
     assert_eq!(completed["status"], "succeeded");
-    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
     assert_eq!(result["finalResultDetected"], false);
     assert_eq!(result["partialResultDetected"], true);
 }
@@ -1768,6 +1836,18 @@ fn stdio_doctor_reports_state_dir_creation_and_registry_errors() {
             .unwrap()
             .contains("registry")
     );
+}
+
+#[test]
+fn stdio_doctor_uses_runtime_default_state_dir_when_unset() {
+    let env = fixture_env();
+    let mut client = McpClient::start_without_state_dir(&env);
+    let report = client.tool("doctor", json!({"cwd": env.root}));
+    let expected = env.root.join(".agent-bridge-mcp").join("state");
+
+    assert_eq!(report["state"]["status"], "ok");
+    assert_eq!(report["state"]["path"], expected.display().to_string());
+    assert!(expected.is_dir());
 }
 
 #[test]
@@ -2362,7 +2442,7 @@ fn stdio_ignores_legacy_allowed_root_env_var() {
 }
 
 #[test]
-fn stdio_task_lifecycle_stop_timeout_and_logs() {
+fn stdio_agent_lifecycle_stop_timeout_and_logs() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
@@ -2375,13 +2455,19 @@ fn stdio_task_lifecycle_stop_timeout_and_logs() {
             "cwd": env.root
         }),
     );
-    let task_id = spawned["taskId"].as_str().unwrap();
-    assert!(task_id.starts_with("task_"));
+    assert_no_task_id_key(&spawned);
+    let agent_id = spawned["agentId"].as_str().unwrap();
+    assert!(agent_id.starts_with("agent_"));
 
-    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 2000}));
+    let waited = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 2000}),
+    );
+    assert_no_task_id_key(&waited);
     assert_eq!(waited["status"], "succeeded");
 
-    let logs = client.tool("agent_logs", json!({"taskId": task_id}));
+    let logs = client.tool("agent_logs", json!({"agentId": agent_id}));
+    assert_no_task_id_key(&logs);
     assert!(
         logs["stdout"]
             .as_str()
@@ -2395,7 +2481,8 @@ fn stdio_task_lifecycle_stop_timeout_and_logs() {
             .contains("lifecycle-stderr")
     );
 
-    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
+    assert_no_task_id_key(&result);
     assert_eq!(result["status"], "succeeded");
     assert_eq!(result["exitCode"], 0);
     assert_eq!(result["reviewPacket"]["status"], "succeeded");
@@ -2421,8 +2508,12 @@ fn stdio_task_lifecycle_stop_timeout_and_logs() {
             "timeoutSeconds": 20
         }),
     );
-    let active_id = active["taskId"].as_str().unwrap();
-    let active_result = client.tool("agent_result", json!({"taskId": active_id}));
+    assert_no_task_id_key(&active);
+    let active_id = active["agentId"].as_str().unwrap();
+    let legacy_id_error = client.tool_error("agent_status", json!({"taskId": active_id}));
+    assert!(legacy_id_error.contains("Unknown argument for agent_status: taskId"));
+    let active_result = client.tool("agent_result", json!({"agentId": active_id}));
+    assert_no_task_id_key(&active_result);
     assert_eq!(active_result["reviewPacket"]["isFinal"], false);
     let actions = review_actions_text(&active_result);
     assert!(
@@ -2434,10 +2525,11 @@ fn stdio_task_lifecycle_stop_timeout_and_logs() {
     assert!(actions.contains("Use agent_status to confirm whether the agent is still active."));
     assert!(actions.contains("Use agent_stop if the agent is no longer useful."));
 
-    let remove_error = client.tool_error("agent_remove", json!({"taskId": active_id}));
-    assert!(remove_error.contains("cannot remove a running task"));
+    let remove_error = client.tool_error("agent_remove", json!({"agentId": active_id}));
+    assert!(remove_error.contains("cannot remove a running agent"));
 
-    let stopped = client.tool("agent_stop", json!({"taskId": active_id}));
+    let stopped = client.tool("agent_stop", json!({"agentId": active_id}));
+    assert_no_task_id_key(&stopped);
     assert_eq!(stopped["status"], "stopped");
 
     let timed = client.tool(
@@ -2450,8 +2542,11 @@ fn stdio_task_lifecycle_stop_timeout_and_logs() {
             "timeoutSeconds": 1
         }),
     );
-    let timed_id = timed["taskId"].as_str().unwrap();
-    let timed_wait = client.tool("agent_wait", json!({"taskId": timed_id, "timeoutMs": 3000}));
+    let timed_id = timed["agentId"].as_str().unwrap();
+    let timed_wait = client.tool(
+        "agent_wait",
+        json!({"agentId": timed_id, "timeoutMs": 3000}),
+    );
     assert_eq!(timed_wait["isFinal"], true);
     if timed_wait["status"] == "failed" {
         assert_eq!(timed_wait["errorType"], "timeout");
@@ -2473,13 +2568,16 @@ fn stdio_agent_observe_returns_events_and_progress() {
             "timeoutSeconds": 5
         }),
     );
-    let task_id = spawned["taskId"].as_str().unwrap();
+    let agent_id = spawned["agentId"].as_str().unwrap();
 
     let observed = client.tool(
         "agent_observe",
-        json!({"taskId": task_id, "cursor": 0, "limit": 100, "timeoutMs": 5000}),
+        json!({"agentId": agent_id, "cursor": 0, "limit": 100, "timeoutMs": 5000}),
     );
-    assert_eq!(observed["taskId"], task_id);
+    assert_no_task_id_key(&observed);
+    assert_eq!(observed["agentId"], agent_id);
+    assert!(observed.get("agent").is_some());
+    assert!(observed.get("task").is_none());
     assert!(!observed["events"].as_array().unwrap().is_empty());
     assert!(observed["nextCursor"].as_u64().unwrap() >= 1);
     assert!(observed["progress"]["elapsedMs"].is_number());
@@ -2510,24 +2608,26 @@ fn stdio_agent_observe_timeout_does_not_fail_running_agent() {
             "timeoutSeconds": 20
         }),
     );
-    let task_id = spawned["taskId"].as_str().unwrap();
+    let agent_id = spawned["agentId"].as_str().unwrap();
     std::thread::sleep(Duration::from_millis(250));
     let current = client.tool(
         "agent_transcript",
-        json!({"taskId": task_id, "cursor": 0, "limit": 100}),
+        json!({"agentId": agent_id, "cursor": 0, "limit": 100}),
     );
+    assert_no_task_id_key(&current);
     let cursor = current["nextCursor"].as_u64().unwrap();
     let second = client.tool(
         "agent_observe",
-        json!({"taskId": task_id, "cursor": cursor, "limit": 100, "timeoutMs": 100}),
+        json!({"agentId": agent_id, "cursor": cursor, "limit": 100, "timeoutMs": 100}),
     );
+    assert_no_task_id_key(&second);
 
     assert_eq!(second["timedOut"], true);
     assert_eq!(second["status"], "running");
     assert_eq!(second["isFinal"], false);
     assert_eq!(second["progress"]["noFurtherPollingNeeded"], false);
 
-    let stopped = client.tool("agent_stop", json!({"taskId": task_id}));
+    let stopped = client.tool("agent_stop", json!({"agentId": agent_id}));
     assert_eq!(stopped["status"], "stopped");
 }
 
@@ -2547,14 +2647,14 @@ fn stdio_agent_list_defaults_to_native_presentation_and_filters() {
             "timeoutSeconds": 5
         }),
     );
-    let completed_id = completed["taskId"].as_str().unwrap().to_string();
+    let completed_id = completed["agentId"].as_str().unwrap().to_string();
     assert_eq!(
         completed["presentation"]["displayTitle"],
         "Native UX review"
     );
     let waited = client.tool(
         "agent_wait",
-        json!({"taskId": completed_id, "timeoutMs": 5000}),
+        json!({"agentId": completed_id, "timeoutMs": 5000}),
     );
     assert_eq!(waited["status"], "succeeded");
 
@@ -2569,15 +2669,16 @@ fn stdio_agent_list_defaults_to_native_presentation_and_filters() {
             "timeoutSeconds": 20
         }),
     );
-    let active_id = active["taskId"].as_str().unwrap().to_string();
+    let active_id = active["agentId"].as_str().unwrap().to_string();
 
     let listed = client.tool("agent_list", json!({}));
+    assert_no_task_id_key(&listed);
     assert_eq!(listed["scope"], "active_recent");
     assert_eq!(listed["limit"], 25);
     assert!(listed.get("tasks").is_none());
     let agents = listed["agents"].as_array().unwrap();
     assert_eq!(agents.len(), 2);
-    assert_eq!(agents[0]["taskId"], active_id);
+    assert_eq!(agents[0]["agentId"], active_id);
     assert_eq!(agents[0]["presentation"]["phase"], "active");
     assert_eq!(agents[0]["presentation"]["actions"][0]["id"], "observe");
     assert_eq!(
@@ -2600,9 +2701,9 @@ fn stdio_agent_list_defaults_to_native_presentation_and_filters() {
     );
     assert_eq!(
         agents[0]["presentation"]["actions"][8]["reason"],
-        "provider_task_not_interactive"
+        "provider_agent_not_interactive"
     );
-    assert_eq!(agents[1]["taskId"], completed_id);
+    assert_eq!(agents[1]["agentId"], completed_id);
     assert_eq!(
         agents[1]["presentation"]["displayTitle"],
         "Native UX review"
@@ -2625,8 +2726,9 @@ fn stdio_agent_list_defaults_to_native_presentation_and_filters() {
             "limit": 1
         }),
     );
+    assert_no_task_id_key(&filtered);
     assert_eq!(filtered["agents"].as_array().unwrap().len(), 1);
-    assert_eq!(filtered["agents"][0]["taskId"], completed_id);
+    assert_eq!(filtered["agents"][0]["agentId"], completed_id);
 
     let filtered_agents = client.tool(
         "agent_list",
@@ -2639,7 +2741,7 @@ fn stdio_agent_list_defaults_to_native_presentation_and_filters() {
         }),
     );
     assert_eq!(filtered_agents["agents"].as_array().unwrap().len(), 1);
-    assert_eq!(filtered_agents["agents"][0]["taskId"], completed_id);
+    assert_eq!(filtered_agents["agents"][0]["agentId"], completed_id);
 
     let error = client.tool_error("agent_list", json!({"limit": 101}));
     assert!(error.contains("limit must be between 1 and 100"));
@@ -2648,12 +2750,12 @@ fn stdio_agent_list_defaults_to_native_presentation_and_filters() {
     let error = client.tool_error("agent_list", json!({"scope": "all"}));
     assert!(error.contains("Unknown argument for agent_list: scope"));
 
-    let stopped = client.tool("agent_stop", json!({"taskId": active_id}));
+    let stopped = client.tool("agent_stop", json!({"agentId": active_id}));
     assert_eq!(stopped["status"], "stopped");
 }
 
 #[test]
-fn stdio_claude_task_requires_host_runner_without_direct_prompt_launch() {
+fn stdio_claude_agent_requires_host_runner_without_direct_prompt_launch() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
     let prompt = "--leading-flag\nquoted \"value\" $(touch should-not-run) secret-token";
@@ -2667,12 +2769,15 @@ fn stdio_claude_task_requires_host_runner_without_direct_prompt_launch() {
             "cwd": env.root
         }),
     );
-    let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let agent_id = spawned["agentId"].as_str().unwrap();
+    let waited = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 3000}),
+    );
     assert_eq!(waited["status"], "failed");
     assert_eq!(waited["errorType"], "provider_start_error");
 
-    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
     assert_eq!(result["errorType"], "provider_start_error");
     assert!(!env.log_dir.join("argv.txt").exists());
     assert!(!env.log_dir.join("stdin.txt").exists());
@@ -2697,13 +2802,16 @@ fn stdio_claude_no_host_runner_ignores_zsh_startup_files() {
             "timeoutSeconds": 5
         }),
     );
-    let task_id = spawned["taskId"].as_str().unwrap();
+    let agent_id = spawned["agentId"].as_str().unwrap();
 
-    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let waited = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 3000}),
+    );
     assert_eq!(waited["status"], "failed");
     assert_eq!(waited["errorType"], "provider_start_error");
 
-    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
     assert_eq!(result["errorType"], "provider_start_error");
 }
 
@@ -2773,7 +2881,7 @@ fn stdio_claude_smoke_timeout_returns_bounded_diagnostic() {
 }
 
 #[test]
-fn stdio_claude_task_malformed_output_returns_diagnostic() {
+fn stdio_claude_agent_malformed_output_returns_diagnostic() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
@@ -2786,12 +2894,15 @@ fn stdio_claude_task_malformed_output_returns_diagnostic() {
             "cwd": env.root
         }),
     );
-    let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let agent_id = spawned["agentId"].as_str().unwrap();
+    let waited = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 3000}),
+    );
     assert_eq!(waited["status"], "failed");
     assert_eq!(waited["errorType"], "provider_start_error");
 
-    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
     assert_eq!(result["errorType"], "provider_start_error");
     assert_eq!(result["reviewPacket"]["status"], "failed");
     assert_eq!(result["reviewPacket"]["errorType"], "provider_start_error");
@@ -2806,7 +2917,7 @@ fn stdio_claude_task_malformed_output_returns_diagnostic() {
 }
 
 #[test]
-fn stdio_claude_task_failure_modes_are_classified() {
+fn stdio_claude_agent_failure_modes_are_classified() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
@@ -2826,18 +2937,21 @@ fn stdio_claude_task_failure_modes_are_classified() {
                 "timeoutSeconds": timeout_seconds
             }),
         );
-        let task_id = spawned["taskId"].as_str().unwrap();
-        let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+        let agent_id = spawned["agentId"].as_str().unwrap();
+        let waited = client.tool(
+            "agent_wait",
+            json!({"agentId": agent_id, "timeoutMs": 3000}),
+        );
         assert_eq!(waited["status"], "failed", "{prompt}");
         assert_eq!(waited["errorType"], error_type, "{prompt}");
 
-        let result = client.tool("agent_result", json!({"taskId": task_id}));
+        let result = client.tool("agent_result", json!({"agentId": agent_id}));
         assert_eq!(result["errorType"], "provider_start_error", "{prompt}");
     }
 }
 
 #[test]
-fn stdio_claude_task_extracts_result_with_surrounding_noise() {
+fn stdio_claude_agent_extracts_result_with_surrounding_noise() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
@@ -2850,14 +2964,17 @@ fn stdio_claude_task_extracts_result_with_surrounding_noise() {
             "cwd": env.root
         }),
     );
-    let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let agent_id = spawned["agentId"].as_str().unwrap();
+    let waited = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 3000}),
+    );
     assert_eq!(waited["status"], "failed");
     assert_eq!(waited["errorType"], "provider_start_error");
 }
 
 #[test]
-fn stdio_claude_task_diagnostic_redacts_prompt_content() {
+fn stdio_claude_agent_diagnostic_redacts_prompt_content() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
@@ -2870,11 +2987,14 @@ fn stdio_claude_task_diagnostic_redacts_prompt_content() {
             "cwd": env.root
         }),
     );
-    let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let agent_id = spawned["agentId"].as_str().unwrap();
+    let waited = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 3000}),
+    );
     assert_eq!(waited["status"], "failed");
 
-    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
     let diagnostic = serde_json::to_string(&result["diagnostic"]).unwrap();
     assert!(
         !diagnostic.contains("secret-token-for-redaction"),
@@ -2883,7 +3003,7 @@ fn stdio_claude_task_diagnostic_redacts_prompt_content() {
 }
 
 #[test]
-fn stdio_claude_task_diagnostic_redacts_token_values() {
+fn stdio_claude_agent_diagnostic_redacts_token_values() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
@@ -2896,11 +3016,14 @@ fn stdio_claude_task_diagnostic_redacts_token_values() {
             "cwd": env.root
         }),
     );
-    let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let agent_id = spawned["agentId"].as_str().unwrap();
+    let waited = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 3000}),
+    );
     assert_eq!(waited["status"], "failed");
 
-    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
     let diagnostic = serde_json::to_string(&result["diagnostic"]).unwrap();
     assert!(!diagnostic.contains("test-key"), "diagnostic leaked token");
 }
@@ -2944,11 +3067,14 @@ fn stdio_agent_result_review_packet_summarizes_worktree_changes() {
             "worktreeName": "review-packet"
         }),
     );
-    let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let agent_id = spawned["agentId"].as_str().unwrap();
+    let waited = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 3000}),
+    );
     assert_eq!(waited["status"], "succeeded");
 
-    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
     assert_eq!(result["changedFiles"], json!(["README.md"]));
     assert_eq!(result["reviewPacket"]["hasChanges"], true);
     assert_eq!(result["reviewPacket"]["changedFiles"], json!(["README.md"]));
@@ -2985,19 +3111,22 @@ fn stdio_managed_worktree_lifecycle() {
         }),
     );
     assert_eq!(spawned["isolation"], "worktree");
-    let task_id = spawned["taskId"].as_str().unwrap();
+    let agent_id = spawned["agentId"].as_str().unwrap();
     let worktree_path = PathBuf::from(spawned["worktreePath"].as_str().unwrap());
     assert!(worktree_path.exists());
 
-    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let waited = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 3000}),
+    );
     assert_eq!(waited["status"], "succeeded");
     assert_eq!(
         waited["presentation"]["nextActions"][0]["id"],
         "inspect_result"
     );
     assert_eq!(
-        waited["presentation"]["nextActions"][0]["arguments"]["taskId"],
-        task_id
+        waited["presentation"]["nextActions"][0]["arguments"]["agentId"],
+        agent_id
     );
     let cleanup_before_result = waited["presentation"]["actions"]
         .as_array()
@@ -3011,7 +3140,7 @@ fn stdio_managed_worktree_lifecycle() {
         "managed_worktree_cleanup_requires_result_inspection"
     );
 
-    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
     assert_eq!(result["gitStatus"], "");
     assert_eq!(result["changedFiles"], json!([]));
     assert_eq!(result["nextActions"][0]["id"], "verify_project");
@@ -3034,13 +3163,13 @@ fn stdio_managed_worktree_lifecycle() {
     assert_eq!(cleanup_after_result["state"], "available");
     assert!(cleanup_after_result.get("reason").is_none());
 
-    let removed = client.tool("agent_remove", json!({"taskId": task_id}));
+    let removed = client.tool("agent_remove", json!({"agentId": agent_id}));
     assert_eq!(removed["status"], "removed");
     assert!(!worktree_path.exists());
 }
 
 #[test]
-fn stdio_codex_task_sandbox_denial_exits_immediately() {
+fn stdio_codex_agent_sandbox_denial_exits_immediately() {
     let env = fixture_env();
     write_fake_provider(
         &env,
@@ -3067,15 +3196,18 @@ fn stdio_codex_task_sandbox_denial_exits_immediately() {
             "cwd": env.root
         }),
     );
-    let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let agent_id = spawned["agentId"].as_str().unwrap();
+    let waited = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 3000}),
+    );
     assert_eq!(waited["status"], "failed");
     assert_eq!(waited["errorType"], "codex_sandbox_denied");
 
-    let logs = client.tool("agent_logs", json!({"taskId": task_id}));
+    let logs = client.tool("agent_logs", json!({"agentId": agent_id}));
     assert!(logs["stderr"].as_str().unwrap().contains("patch rejected"));
 
-    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
     assert_eq!(
         result["diagnostic"]["failureCategory"],
         "provider_sandbox_denied"
@@ -3103,7 +3235,7 @@ fn stdio_codex_task_sandbox_denial_exits_immediately() {
 }
 
 #[test]
-fn stdio_codex_task_sandbox_denial_hangs_and_is_terminated_early() {
+fn stdio_codex_agent_sandbox_denial_hangs_and_is_terminated_early() {
     let env = fixture_env();
     write_fake_provider(
         &env,
@@ -3134,19 +3266,22 @@ fn stdio_codex_task_sandbox_denial_hangs_and_is_terminated_early() {
             "timeoutSeconds": 20
         }),
     );
-    let task_id = spawned["taskId"].as_str().unwrap();
+    let agent_id = spawned["agentId"].as_str().unwrap();
     let pid = spawned["pid"].as_i64().unwrap() as i32;
-    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let waited = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 3000}),
+    );
     assert_eq!(waited["status"], "failed");
     assert_eq!(waited["errorType"], "codex_sandbox_denied");
 
-    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
     assert_eq!(
         result["diagnostic"]["failureCategory"],
         "provider_sandbox_denied"
     );
     assert_eq!(result["diagnostic"]["provider"], "codex");
-    let logs = client.tool("agent_logs", json!({"taskId": task_id}));
+    let logs = client.tool("agent_logs", json!({"agentId": agent_id}));
     let stdout = logs["stdout"].as_str().unwrap();
     let child_pid = stdout
         .lines()
@@ -3170,7 +3305,7 @@ fn stdio_codex_task_sandbox_denial_hangs_and_is_terminated_early() {
 }
 
 #[test]
-fn stdio_codex_task_sandbox_denial_redacts_prompt_and_secrets() {
+fn stdio_codex_agent_sandbox_denial_redacts_prompt_and_secrets() {
     let env = fixture_env();
     write_fake_provider(
         &env,
@@ -3199,11 +3334,14 @@ fn stdio_codex_task_sandbox_denial_redacts_prompt_and_secrets() {
             "cwd": env.root
         }),
     );
-    let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let agent_id = spawned["agentId"].as_str().unwrap();
+    let waited = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 3000}),
+    );
     assert_eq!(waited["status"], "failed");
 
-    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
     let diagnostic_text = serde_json::to_string(&result["diagnostic"]).unwrap();
     assert!(
         !diagnostic_text.contains("secret-prompt-content"),
@@ -3226,7 +3364,7 @@ fn stdio_codex_task_sandbox_denial_redacts_prompt_and_secrets() {
 }
 
 #[test]
-fn stdio_codex_task_success_still_reports_success() {
+fn stdio_codex_agent_success_still_reports_success() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
@@ -3239,12 +3377,15 @@ fn stdio_codex_task_success_still_reports_success() {
             "cwd": env.root
         }),
     );
-    let task_id = spawned["taskId"].as_str().unwrap();
-    let waited = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 3000}));
+    let agent_id = spawned["agentId"].as_str().unwrap();
+    let waited = client.tool(
+        "agent_wait",
+        json!({"agentId": agent_id, "timeoutMs": 3000}),
+    );
     assert_eq!(waited["status"], "succeeded");
     assert_eq!(waited["errorType"], Value::Null);
 
-    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
     assert_eq!(result["status"], "succeeded");
     assert_eq!(result["errorType"], Value::Null);
     assert_eq!(result["reviewPacket"]["status"], "succeeded");

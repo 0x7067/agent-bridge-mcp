@@ -64,7 +64,7 @@ The system SHALL expose MCP resources for host-runner lifecycle and reproducible
 
 #### Scenario: Read dogfood workflows resource
 - **WHEN** a client reads the dogfood workflows resource
-- **THEN** the markdown content describes read-only review, isolated implementation, stalled-task recovery, and provider comparison workflows using bounded waits and final `task_result` inspection.
+- **THEN** the markdown content describes read-only review, isolated implementation, stalled-task recovery, and provider comparison workflows using bounded waits and final `agent_result` inspection.
 
 ### Requirement: Guidance points callers at review packets
 The system SHALL mention `reviewPacket` in result-inspection guidance without replacing existing raw evidence.
@@ -97,7 +97,7 @@ The system SHALL document how callers should investigate and recover from Codex 
 
 #### Scenario: Guidance recommends bounded lifecycle inspection
 - **WHEN** guidance describes recovering from Codex denial failures
-- **THEN** it tells callers to use bounded `task_wait`, `task_logs`, `task_status`, and final `task_result` inspection instead of waiting indefinitely
+- **THEN** it tells callers to use bounded `agent_wait`, `agent_logs`, `agent_status`, and final `agent_result` inspection instead of waiting indefinitely
 
 #### Scenario: Guidance preserves safety boundary
 - **WHEN** guidance describes follow-up actions for Codex denial failures
@@ -113,7 +113,7 @@ The system SHALL keep MCP prompts and resources aligned with the initialization 
 
 #### Scenario: Guidance preserves fallback path
 - **WHEN** a client does not use initialization instructions or structured content
-- **THEN** prompts and resources still describe the manual lifecycle using `doctor`, `providers_check`, `task_spawn`, `task_wait`, `task_logs`, `task_transcript`, `task_result`, and `task_remove`.
+- **THEN** prompts and resources still describe the manual lifecycle using `doctor`, `providers_check`, `agent_spawn`, `agent_wait`, `agent_logs`, `agent_transcript`, `agent_result`, and `agent_remove`.
 
 ### Requirement: Guidance explains doctor launch readiness
 The system SHALL explain that setup health and provider launch readiness are separate concerns.

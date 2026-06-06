@@ -34,7 +34,7 @@ The system SHALL surface bounded Claude provider diagnostics that identify likel
 - **THEN** the task or smoke result reports a provider output failure category and includes capped stdout/stderr excerpts sufficient for troubleshooting.
 
 #### Scenario: Claude diagnostics redact sensitive data
-- **WHEN** Claude provider diagnostics are returned through `providers_check`, `task_result`, or task logs
+- **WHEN** Claude provider diagnostics are returned through `providers_check`, `agent_result`, or task logs
 - **THEN** prompts, API tokens, OAuth tokens, and non-allowlisted environment values are absent from diagnostic fields.
 
 #### Scenario: Claude host runner is unavailable

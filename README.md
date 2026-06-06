@@ -102,6 +102,9 @@ Example MCP config:
 `AGENT_BRIDGE_WORKSPACES` is a platform path-list of allowed workspace roots.
 Task `cwd` values must resolve inside one of those roots.
 
+`AGENT_BRIDGE_STATE_DIR` is optional. When omitted, Agent Bridge stores state in
+`~/.agent-bridge-mcp/state`.
+
 ## Claude Host Runner
 
 Claude tasks use an Agent Bridge-owned host runner so interactive Claude Code can
@@ -150,6 +153,17 @@ Claude setup.
 
 Provider output is evidence, not proof. The caller remains responsible for tests,
 lint, build, review, and cleanup.
+
+## Breaking API Simplification
+
+The public lifecycle surface is agent-oriented only:
+
+- Use `agent_*` tools; public `task_*` lifecycle tools are not supported.
+- Use `agentId` for follow-up lifecycle calls and response parsing.
+- `taskId` is rejected as an unknown public argument.
+- New lifecycle IDs use the `agent_...` prefix.
+- Existing registries written with old `taskId` records are not migrated; use a
+  fresh state directory if you need to discard old records.
 
 ## Safety Model
 

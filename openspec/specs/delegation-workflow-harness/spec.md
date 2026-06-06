@@ -49,7 +49,7 @@ The system SHALL document managed worktree isolation as the default workflow for
 
 #### Scenario: Cleanup remains explicit after inspection
 - **WHEN** a managed worktree task reaches a final state
-- **THEN** the workflow requires result inspection before calling `task_remove` to clean the task record and managed worktree
+- **THEN** the workflow requires result inspection before calling `agent_remove` to clean the task record and managed worktree
 
 ### Requirement: Delegated results are treated as evidence
 The system SHALL document that provider task results are evidence for the main thread rather than final verification by themselves.

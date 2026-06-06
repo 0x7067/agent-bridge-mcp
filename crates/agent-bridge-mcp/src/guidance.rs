@@ -270,16 +270,17 @@ Recommended flow:
 1. Call `doctor` first when setup, workspace, state, provider, host-runner, or client registration readiness is uncertain.
 2. Inspect `doctor.clients` for static user-level MCP client config diagnostics. It reads only `~/.codex/config.toml`, `~/.claude.json`, and `~/.cursor/mcp.json`; it does not edit config, run client CLIs, search project-level overrides, or prove startup. Follow `kind: "shell"` recommendations such as `codex mcp list` or `claude mcp list` when you need client-side verification.
 3. Inspect `doctor.binary` for read-only freshness evidence about the running, installed, and release Agent Bridge binaries. It may recommend shell build/install commands, but it does not build, copy, install, or delete binaries.
-4. Inspect `doctor.taskExtensionReadiness` only as passive evidence about task-like client metadata observed during `initialize` or request `_meta`. It always reports `serverAdvertisesTasks: false`; protocol-level `tasks/*`, `CreateTaskResult`, listing, cancellation, and notifications remain unavailable until a future implementation change.
-5. Call `providers_check` to catch missing or misconfigured provider CLIs. Use smoke checks when debugging startup. `doctor.summary.status` covers setup health; `doctor.launchReadiness` covers startup verification and launchability. Client config, binary freshness, and task-extension diagnostics remain separate and do not change `summary.status`.
-6. Call `agent_preview` when cwd, flags, environment, prompt transport, or worktree isolation need inspection.
-7. Call `agent_spawn` for the real delegated provider agent.
-8. Use `agent_list` and `agent_status` `presentation` metadata for native-client rendering: active/recent ordering, display titles, status tone, result availability, structured actions, and ranked `nextActions`.
-9. Render unavailable `reply` and `resume` actions as disabled controls with their reasons; provider tasks are not interactive or resumable in v1.
-10. Call `agent_observe` with a bounded timeout to wait for new transcript/lifecycle events. If observation times out, call `agent_logs` with line cursors and `agent_transcript` with cursor/limit to inspect progress.
-11. Once final, call `agent_result` for `reviewPacket`, `nextActions`, transcript availability/result evidence, logs, git status, diff, changed files, exit metadata, diagnostics, and `errorType`.
-12. Treat provider output and native-feeling completion as evidence for the main caller, not as final verification.
-13. Call `agent_remove` intentionally after any managed worktree has been inspected. `presentation.actions` and `nextActions` may mark cleanup as `unsafe` for managed worktree tasks until result inspection is explicit.
+4. Use `AGENT_BRIDGE_WORKSPACES` for workspace policy. `AGENT_BRIDGE_STATE_DIR` is optional; when omitted, runtime state and doctor diagnostics use `~/.agent-bridge-mcp/state`.
+5. Inspect `doctor.taskExtensionReadiness` only as passive evidence about task-like client metadata observed during `initialize` or request `_meta`. It always reports `serverAdvertisesTasks: false`; protocol-level `tasks/*`, `CreateTaskResult`, listing, cancellation, and notifications remain unavailable until a future implementation change.
+6. Call `providers_check` to catch missing or misconfigured provider CLIs. Use smoke checks when debugging startup. `doctor.summary.status` covers setup health; `doctor.launchReadiness` covers startup verification and launchability. Client config, binary freshness, and task-extension diagnostics remain separate and do not change `summary.status`.
+7. Call `agent_preview` when cwd, flags, environment, prompt transport, or worktree isolation need inspection.
+8. Call `agent_spawn` for the real delegated provider agent.
+9. Use `agent_list` and `agent_status` `presentation` metadata for native-client rendering: active/recent ordering, display titles, status tone, result availability, structured actions, and ranked `nextActions`.
+10. Render unavailable `reply` and `resume` actions as disabled controls with their reasons; provider tasks are not interactive or resumable in v1.
+11. Call `agent_observe` with a bounded timeout to wait for new transcript/lifecycle events. If observation times out, call `agent_logs` with line cursors and `agent_transcript` with cursor/limit to inspect progress.
+12. Once final, call `agent_result` for `reviewPacket`, `nextActions`, transcript availability/result evidence, logs, git status, diff, changed files, exit metadata, diagnostics, and `errorType`.
+13. Treat provider output and native-feeling completion as evidence for the main caller, not as final verification.
+14. Call `agent_remove` intentionally after any managed worktree has been inspected. `presentation.actions` and `nextActions` may mark cleanup as `unsafe` for managed worktree tasks until result inspection is explicit.
 
 Self-guided clients should read `initialize.instructions`, `structuredContent`, output schemas, and `nextActions` when available. Clients that ignore those fields can still follow this manual lifecycle.
 

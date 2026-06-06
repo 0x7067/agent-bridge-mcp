@@ -7,7 +7,7 @@ Define the Rust-built Agent Bridge MCP binary behavior, including stdio protocol
 The system SHALL provide a Rust-built MCP server binary that preserves the current public MCP tool names, tool input schemas, argument defaults, validation behavior, response shapes, and tool error semantics while allowing documented additive response fields and additive tools.
 
 #### Scenario: MCP protocol smoke
-- **WHEN** a caller sends `initialize`, `tools/list`, `providers_list`, `providers_check`, and `task_preview` requests over stdio to the Rust binary
+- **WHEN** a caller sends `initialize`, `tools/list`, `providers_list`, `providers_check`, and `agent_preview` requests over stdio to the Rust binary
 - **THEN** the responses match the migrated public JSON-RPC behavior for those requests.
 
 #### Scenario: Unknown public input
@@ -15,7 +15,7 @@ The system SHALL provide a Rust-built MCP server binary that preserves the curre
 - **THEN** the Rust binary rejects the input with tool-level error semantics.
 
 #### Scenario: Task result includes additive review packet
-- **WHEN** a caller reads `task_result`
+- **WHEN** a caller reads `agent_result`
 - **THEN** the existing result fields remain present and the response may include documented additive fields such as `reviewPacket`.
 
 #### Scenario: Doctor tool is additive
@@ -157,7 +157,7 @@ The system SHALL verify the built or packaged artifact through stdio smoke tests
 
 #### Scenario: Built binary smoke
 - **WHEN** the release candidate binary is built
-- **THEN** a smoke test executes that binary and verifies `initialize`, `tools/list`, `providers_list`, `providers_check`, and `task_preview`.
+- **THEN** a smoke test executes that binary and verifies `initialize`, `tools/list`, `providers_list`, `providers_check`, and `agent_preview`.
 
 ### Requirement: Rust binary exposes MCP guidance capabilities
 The Rust MCP binary SHALL advertise and serve the MCP prompts and resources capabilities for static Agent Bridge usage guidance.
@@ -184,7 +184,7 @@ The Rust MCP binary SHALL transition tasks to a final failed state when a provid
 #### Scenario: Fatal provider evidence ends running state
 - **WHEN** a running task has provider fatal-error evidence that cannot recover
 - **THEN** lifecycle tools stop reporting the task as running after a bounded cleanup period
-- **AND** the task remains inspectable through `task_result`
+- **AND** the task remains inspectable through `agent_result`
 
 #### Scenario: Fatal provider cleanup terminates process tree
 - **WHEN** Agent Bridge finalizes a task early because of fatal provider evidence

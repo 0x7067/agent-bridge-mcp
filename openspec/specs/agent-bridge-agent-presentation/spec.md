@@ -4,7 +4,7 @@
 TBD - created by archiving change make-agent-bridge-agents-native-feeling. Update Purpose after archive.
 ## Requirements
 ### Requirement: Tasks expose client-renderable presentation summaries
-The system SHALL expose a compact `presentation` summary for Agent Bridge tasks through the existing `task_*` lifecycle surface so MCP clients can render them as native-feeling agents without parsing raw logs, full task results, or provider prose.
+The system SHALL expose a compact `presentation` summary for Agent Bridge tasks through the existing `agent_*` lifecycle surface so MCP clients can render them as native-feeling agents without parsing raw logs, full task results, or provider prose.
 
 #### Scenario: Active task summary
 - **WHEN** a client requests the presentation summary for a running Agent Bridge task
