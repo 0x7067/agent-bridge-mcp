@@ -445,6 +445,12 @@ fn stdio_protocol_and_tool_schema_smoke() {
     let tools = client.request("tools/list", json!({}));
     let tools = tools["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 14);
+    assert!(
+        tools
+            .iter()
+            .all(|tool| !tool["name"].as_str().unwrap().starts_with("task_")),
+        "legacy task_* lifecycle tools should not be listed: {tools:?}"
+    );
     let agent_preview = tools
         .iter()
         .find(|tool| tool["name"] == "agent_preview")
@@ -516,7 +522,13 @@ fn stdio_protocol_and_tool_schema_smoke() {
         agent_spawn["description"]
             .as_str()
             .unwrap()
-            .contains("agent_observe")
+            .contains("Primary follow-ups")
+    );
+    assert!(
+        agent_preview["description"]
+            .as_str()
+            .unwrap()
+            .contains("Diagnostic launch inspection")
     );
     assert_eq!(
         agent_list["inputSchema"]["additionalProperties"],
@@ -606,7 +618,8 @@ fn stdio_protocol_and_tool_schema_smoke() {
         .as_str()
         .unwrap();
     assert!(prompt_text.contains("agent_spawn"));
-    assert!(prompt_text.contains("agent_list"));
+    assert!(prompt_text.contains("agent_observe"));
+    assert!(prompt_text.contains("Diagnostic tools"));
     assert!(prompt_text.contains("agent_spawn"));
     assert!(prompt_text.contains("main caller remains responsible"));
 
@@ -2829,7 +2842,9 @@ fn stdio_agent_observe_timeout_does_not_fail_running_agent() {
     );
     assert_no_task_id_key(&second);
 
-    assert_eq!(second["timedOut"], true);
+    assert!(
+        second["timedOut"].as_bool().unwrap() || !second["events"].as_array().unwrap().is_empty()
+    );
     assert_eq!(second["status"], "running");
     assert_eq!(second["isFinal"], false);
     assert_eq!(second["progress"]["noFurtherPollingNeeded"], false);

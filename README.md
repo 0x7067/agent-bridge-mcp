@@ -14,18 +14,19 @@ responsible for verification.
   `providers_check`.
 - Setup diagnostics through `doctor`, including workspace policy, provider,
   client config, Claude host-runner, and binary freshness checks.
-- Task launch and lifecycle tools:
-  - `agent_preview`
+- Primary task launch and lifecycle tools:
   - `agent_spawn`
+  - `agent_observe`
+  - `agent_result`
+  - `agent_remove`
+- Focused diagnostic, presentation, and control tools:
+  - `agent_preview`
   - `agent_list`
   - `agent_status`
   - `agent_wait`
   - `agent_logs`
   - `agent_transcript`
-  - `agent_observe`
-  - `agent_result`
   - `agent_stop`
-  - `agent_remove`
 - MCP self-description through prompts and guidance resources.
 - Deterministic fake-provider tests that do not require paid model access,
   network access, provider credentials, or host keychain permissions.
@@ -142,15 +143,20 @@ Claude setup.
 ## Recommended Workflow
 
 1. Call `doctor` when setup or provider readiness is uncertain.
-2. Call `providers_check`; use `smoke: true` when launch readiness matters.
-3. Call `agent_preview` to inspect command construction.
-4. Call `agent_spawn` to start a bounded provider task.
-5. Use `agent_observe`, `agent_status`, `agent_logs`, and `agent_transcript` to
-   monitor progress.
-6. Use `agent_result` after finalization to inspect logs, transcript metadata,
+2. Call `providers_check` only for focused readiness follow-up; use
+   `smoke: true` when launch readiness matters.
+3. Call `agent_spawn` to start a bounded provider task.
+4. Use `agent_observe` to monitor progress and follow `nextActions`.
+5. Use `agent_result` after finalization to inspect logs, transcript metadata,
    changed files, diff, diagnostics, and the derived review packet.
-7. Run local project verification yourself before trusting delegated output.
-8. Call `agent_remove` intentionally after inspecting any managed worktree.
+6. Run local project verification yourself before trusting delegated output.
+7. Call `agent_remove` intentionally after inspecting any managed worktree.
+
+Diagnostic tools stay available when the primary path is not enough:
+`agent_preview` inspects launch construction, `agent_list` and `agent_status`
+support native presentation and state reads, `agent_wait` handles simple
+finality waits, `agent_logs` and `agent_transcript` expose raw evidence, and
+`agent_stop` terminates agents that are no longer useful.
 
 Provider output is evidence, not proof. The caller remains responsible for tests,
 lint, build, review, and cleanup.

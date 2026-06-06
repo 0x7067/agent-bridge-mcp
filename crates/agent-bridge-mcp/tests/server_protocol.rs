@@ -10,6 +10,19 @@ fn request(method: &str, id: i64, params: serde_json::Value) -> JsonRpcRequest {
     }
 }
 
+fn assert_before(text: &str, first: &str, second: &str) {
+    let first_index = text
+        .find(first)
+        .unwrap_or_else(|| panic!("missing first marker: {first}"));
+    let second_index = text
+        .find(second)
+        .unwrap_or_else(|| panic!("missing second marker: {second}"));
+    assert!(
+        first_index < second_index,
+        "expected {first:?} before {second:?} in {text:?}"
+    );
+}
+
 #[tokio::test]
 async fn initialize_returns_public_server_info() {
     let response = handle_request(request("initialize", 1, serde_json::json!({}))).await;
@@ -27,6 +40,11 @@ async fn initialize_returns_public_server_info() {
         instructions[..512.min(instructions.len())]
             .contains("caller still owns project verification")
     );
+    assert!(instructions.contains("Primary workflow"));
+    assert!(instructions.contains("Diagnostic tools remain available"));
+    assert_before(instructions, "agent_spawn", "agent_preview");
+    assert_before(instructions, "agent_observe", "agent_status");
+    assert_before(instructions, "agent_result", "agent_logs");
 }
 
 #[tokio::test]
@@ -62,9 +80,11 @@ async fn guidance_prompts_are_listed_and_retrievable() {
     let text = result["messages"][0]["content"]["text"].as_str().unwrap();
 
     assert!(text.contains("agent_spawn"));
-    assert!(text.contains("agent_list"));
     assert!(text.contains("agent_observe"));
     assert!(text.contains("agent_result"));
+    assert!(text.contains("Diagnostic tools"));
+    assert_before(text, "agent_spawn", "agent_preview");
+    assert_before(text, "agent_observe", "agent_wait");
     assert!(text.contains("main caller remains responsible"));
 
     let response = handle_request(request(
@@ -138,6 +158,11 @@ async fn guidance_resources_are_listed_and_read_from_allowlist() {
     assert!(content["text"].as_str().unwrap().contains("doctor"));
     assert!(content["text"].as_str().unwrap().contains("reviewPacket"));
     assert!(content["text"].as_str().unwrap().contains("agent_remove"));
+    let text = content["text"].as_str().unwrap();
+    assert!(text.contains("Primary flow"));
+    assert!(text.contains("Diagnostic and presentation tools"));
+    assert_before(text, "agent_spawn", "agent_preview");
+    assert_before(text, "agent_observe", "agent_logs");
 
     let response = handle_request(request(
         "resources/read",
@@ -161,6 +186,7 @@ async fn guidance_resources_are_listed_and_read_from_allowlist() {
     assert!(text.contains("read-only review"));
     assert!(text.contains("isolated implementation"));
     assert!(text.contains("provider comparison"));
+    assert!(text.contains("Use `agent_observe` as the primary progress path"));
 }
 
 fn assert_codex_denial_guidance(text: &str, surface: &str) {
@@ -291,6 +317,129 @@ async fn tools_list_returns_current_public_tool_names() {
             "agent_stop",
             "agent_remove"
         ]
+    );
+    assert!(
+        names.iter().all(|name| !name.starts_with("task_")),
+        "legacy task_* lifecycle tools should not be listed: {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn tools_list_descriptions_distinguish_primary_and_diagnostic_surfaces() {
+    let response = handle_request(request("tools/list", 18, serde_json::json!({}))).await;
+    let result = response.unwrap().result.unwrap();
+    let tools = result["tools"].as_array().unwrap();
+    let description = |name: &str| {
+        tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .and_then(|tool| tool["description"].as_str())
+            .unwrap_or_else(|| panic!("missing description for {name}"))
+    };
+
+    assert!(description("agent_spawn").contains("Primary follow-ups"));
+    assert!(description("agent_observe").contains("Primary progress path"));
+    assert!(description("agent_result").contains("Primary final evidence path"));
+    assert!(description("providers_check").contains("focused provider readiness"));
+    assert!(description("agent_preview").contains("Diagnostic launch inspection"));
+    assert!(description("agent_status").contains("Diagnostic state read"));
+    assert!(description("agent_wait").contains("Simple finality primitive"));
+    assert!(description("agent_logs").contains("Raw evidence inspection"));
+    assert!(description("agent_transcript").contains("Transcript evidence inspection"));
+}
+
+#[tokio::test]
+async fn public_tool_input_schemas_remain_strict_and_compatible() {
+    let response = handle_request(request("tools/list", 19, serde_json::json!({}))).await;
+    let result = response.unwrap().result.unwrap();
+    let tools = result["tools"].as_array().unwrap();
+    let tool = |name: &str| {
+        tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("missing tool {name}"))
+    };
+    let schema = |name: &str| &tool(name)["inputSchema"];
+
+    let empty_required = serde_json::json!([]);
+    for name in ["providers_list", "providers_check", "doctor", "agent_list"] {
+        assert_eq!(schema(name)["type"], "object", "{name}");
+        assert_eq!(schema(name)["additionalProperties"], false, "{name}");
+        assert_eq!(schema(name)["required"], empty_required, "{name}");
+    }
+
+    for name in ["agent_preview", "agent_spawn"] {
+        assert_eq!(schema(name)["type"], "object", "{name}");
+        assert_eq!(schema(name)["additionalProperties"], false, "{name}");
+        assert_eq!(
+            schema(name)["required"],
+            serde_json::json!(["provider", "mode", "prompt"]),
+            "{name}"
+        );
+        for property in [
+            "provider",
+            "mode",
+            "prompt",
+            "title",
+            "cwd",
+            "timeoutSeconds",
+            "model",
+            "effort",
+            "thinking",
+            "isolation",
+            "worktreeName",
+            "profile",
+        ] {
+            assert!(
+                schema(name)["properties"].get(property).is_some(),
+                "{name} missing {property}"
+            );
+        }
+    }
+
+    for name in ["agent_status", "agent_stop", "agent_remove"] {
+        assert_eq!(schema(name)["type"], "object", "{name}");
+        assert_eq!(schema(name)["additionalProperties"], false, "{name}");
+        assert_eq!(
+            schema(name)["required"],
+            serde_json::json!(["agentId"]),
+            "{name}"
+        );
+        assert!(
+            schema(name)["properties"].get("agentId").is_some(),
+            "{name}"
+        );
+        assert!(schema(name)["properties"].get("taskId").is_none(), "{name}");
+    }
+
+    let expected_required = [
+        ("agent_wait", serde_json::json!(["agentId"])),
+        ("agent_logs", serde_json::json!(["agentId"])),
+        ("agent_transcript", serde_json::json!(["agentId"])),
+        ("agent_observe", serde_json::json!(["agentId"])),
+        ("agent_result", serde_json::json!(["agentId"])),
+    ];
+    for (name, required) in expected_required {
+        assert_eq!(schema(name)["type"], "object", "{name}");
+        assert_eq!(schema(name)["additionalProperties"], false, "{name}");
+        assert_eq!(schema(name)["required"], required, "{name}");
+        assert!(
+            schema(name)["properties"].get("agentId").is_some(),
+            "{name}"
+        );
+        assert!(schema(name)["properties"].get("taskId").is_none(), "{name}");
+    }
+
+    assert!(
+        schema("providers_check")["properties"]
+            .get("smoke")
+            .is_some()
+    );
+    assert!(schema("doctor")["properties"].get("cwd").is_some());
+    assert_eq!(schema("agent_list")["properties"]["limit"]["maximum"], 100);
+    assert_eq!(
+        schema("agent_observe")["properties"]["limit"]["maximum"],
+        500
     );
 }
 

@@ -7,7 +7,7 @@ const PROVIDER_CAPABILITIES_URI: &str = "agent-bridge://guidance/provider-capabi
 const CLAUDE_HOST_LIFECYCLE_URI: &str = "agent-bridge://guidance/claude-host-lifecycle";
 const DOGFOOD_WORKFLOWS_URI: &str = "agent-bridge://guidance/dogfood-workflows";
 
-pub const INITIALIZATION_INSTRUCTIONS: &str = r#"Agent Bridge delegates review, research, command, and implementation work to provider agents. Provider output is evidence only: the caller still owns project verification before claiming work is done. Start with doctor when setup or provider readiness is uncertain; use smoke checks intentionally when launch readiness matters. Use the canonical agent_* lifecycle: agent_preview for launch inspection, agent_spawn for launches, agent_list for active/recent presentation summaries, agent_observe for progress-aware polling, and agent_status/agent_wait/agent_logs/agent_transcript/agent_result/agent_stop/agent_remove for inspection and cleanup. Follow structuredContent and nextActions when present, and remove managed worktrees only after reviewing final state."#;
+pub const INITIALIZATION_INSTRUCTIONS: &str = r#"Agent Bridge delegates review, research, command, and implementation work to provider agents. Provider output is evidence only: the caller still owns project verification before claiming work is done. Primary workflow: run doctor when setup or readiness is uncertain, use providers_check only for focused readiness or smoke verification, call agent_spawn, monitor with agent_observe, inspect final evidence with agent_result, verify locally, then call agent_remove only after reviewing managed worktrees. Diagnostic tools remain available: agent_preview for launch inspection, agent_list for native summaries, agent_status/agent_wait for simple state or finality checks, agent_logs/agent_transcript for raw evidence, and agent_stop when the agent is no longer useful. Follow structuredContent and nextActions when present."#;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -184,25 +184,26 @@ const REVIEW_PROMPT: &str = r#"Use Agent Bridge for a read-only provider review.
 
 Suggested flow:
 1. Call doctor first when setup, workspace, state, provider, or host-runner readiness is uncertain.
-2. Call providers_check when provider readiness needs focused follow-up.
+2. Use providers_check only when provider readiness needs focused follow-up or smoke verification.
 3. Use agent_spawn with mode "review" or "research" and a bounded prompt.
-4. Use agent_list for active/recent presentation summaries when the client needs a native-feeling agent list.
-5. Use agent_observe for progress-aware polling, or agent_wait when only finalization matters; inspect agent_logs and agent_transcript if more detail is needed.
-6. Read agent_result once the task is final and inspect reviewPacket, transcript evidence, logs, gitStatus, diff, changedFiles, exit metadata, and errorType.
-7. Treat provider output as evidence; the main caller remains responsible for deciding whether findings are valid."#;
+4. Use agent_observe for progress-aware polling.
+5. Read agent_result once the task is final and inspect reviewPacket, transcript evidence, logs, gitStatus, diff, changedFiles, exit metadata, and errorType.
+6. Treat provider output as evidence; the main caller remains responsible for deciding whether findings are valid.
+
+Diagnostic tools: use agent_list for active/recent presentation summaries, agent_wait when only finality matters, and agent_logs or agent_transcript when observe/result evidence is not enough."#;
 
 const IMPLEMENTATION_PROMPT: &str = r#"Use Agent Bridge for isolated implementation work.
 
 Suggested flow:
 1. Call doctor first when setup, workspace, state, provider, or host-runner readiness is uncertain.
-2. Call providers_check if provider readiness needs focused follow-up.
-3. Call agent_preview when command flags, cwd, environment, or isolation need inspection.
-4. Call agent_spawn with mode "implement", a clear task prompt, cwd under an allowed workspace, and isolation "worktree" by default.
-5. Use agent_list or agent_status presentation metadata for native-client summaries, action availability, ranked nextActions, and active/recent task ordering.
-6. Use agent_observe, agent_wait, agent_logs, agent_transcript, and agent_status to monitor the task without assuming it is finished.
-7. When final, call agent_result and inspect the report, transcript evidence, logs, gitStatus, diff, changedFiles, exit metadata, and errorType.
-8. The main caller remains responsible for running relevant tests, lint, typecheck, build, or OpenSpec validation before claiming work complete.
-9. Call agent_remove only after the managed worktree has been inspected and cleanup is intentional."#;
+2. Use providers_check only when provider readiness needs focused follow-up or smoke verification.
+3. Call agent_spawn with mode "implement", a clear task prompt, cwd under an allowed workspace, and isolation "worktree" by default.
+4. Use agent_observe for progress-aware monitoring.
+5. When final, call agent_result and inspect the report, transcript evidence, logs, gitStatus, diff, changedFiles, exit metadata, and errorType.
+6. The main caller remains responsible for running relevant tests, lint, typecheck, build, or OpenSpec validation before claiming work complete.
+7. Call agent_remove only after the managed worktree has been inspected and cleanup is intentional.
+
+Diagnostic tools: call agent_preview when command flags, cwd, environment, prompt transport, or isolation need inspection; use agent_list or agent_status for native-client summaries; use agent_wait, agent_logs, or agent_transcript when observe/result evidence is insufficient."#;
 
 const INSPECT_RESULT_PROMPT: &str = r#"Inspect an Agent Bridge task result.
 
@@ -244,45 +245,49 @@ Suggested flow:
 const DOGFOOD_WORKFLOWS_PROMPT: &str = r#"Run Agent Bridge dogfood workflows.
 
 Suggested workflows:
-1. For read-only review, use agent_spawn with mode "review" or "research", isolation "none", a small prompt, bounded agent_wait, and final agent_result review.
+1. For read-only review, use agent_spawn with mode "review" or "research", isolation "none", a small prompt, bounded agent_observe, and final agent_result review.
 2. For isolated implementation, use agent_spawn with mode "implement", isolation "worktree", inspect reviewPacket, gitStatus, gitDiff, changedFiles, stdout, stderr, and diagnostics, then run verification in the main caller.
 3. For stalled-task recovery, use bounded agent_observe, incremental agent_logs cursors, agent_status, agent_stop if needed, and final agent_result inspection. For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms, inspect cwd, workspace policy, prompt scope, and isolation strategy before retrying.
 4. For provider comparison, run equivalent read-only prompts against selected providers, optionally paired as profile "bridge" and profile "bare"; compare agent_result, agent_transcript, profileDiagnostics, and provider prose, and keep final conclusions in the main caller.
-5. Use agent_list when a harness needs the active/recent provider-agent presentation list.
+5. Use agent_list when a harness or native client needs the active/recent provider-agent presentation list.
 
 Live provider execution remains opt-in and should not be added to default CI."#;
 
 const COMPARE_PROVIDERS_PROMPT: &str = r#"Compare Agent Bridge providers safely.
 
 Suggested flow:
-1. Call providers_check for the selected providers; use smoke only when startup readiness matters.
-2. Use agent_preview to confirm command shape, cwd, launch strategy, selected profile, profileDiagnostics, and provider options.
-3. Spawn equivalent read-only review or research tasks with short prompts and bounded timeouts. Use profile "bridge" for normal Agent Bridge guidance and profile "bare" for compact reduced-configuration experiments.
-4. Use agent_wait, agent_logs, agent_transcript, and agent_result for each task.
-5. Compare reviewPacket, transcript evidence, logs, diagnostics, exit metadata, profileDiagnostics, and provider prose as evidence.
-6. Keep correctness decisions and project verification in the main caller."#;
+1. Call providers_check for the selected providers only when readiness needs focused verification; use smoke only when startup readiness matters.
+2. Spawn equivalent read-only review or research tasks with short prompts and bounded timeouts. Use profile "bridge" for normal Agent Bridge guidance and profile "bare" for compact reduced-configuration experiments.
+3. Use agent_observe for progress and agent_result for final evidence for each task.
+4. Compare reviewPacket, transcript evidence, logs, diagnostics, exit metadata, profileDiagnostics, and provider prose as evidence.
+5. Keep correctness decisions and project verification in the main caller.
+
+Diagnostic tools: use agent_preview to confirm command shape, cwd, launch strategy, selected profile, profileDiagnostics, and provider options; use agent_wait, agent_logs, and agent_transcript when comparison needs simple finality or deeper raw evidence."#;
 
 const CALLER_WORKFLOW_RESOURCE: &str = r#"# Agent Bridge Caller Workflow
 
 Use Agent Bridge when a separate coding agent can provide useful research, review, command execution, or isolated implementation work.
 
-Recommended flow:
-1. Call `doctor` first when setup, workspace, state, provider, host-runner, or client registration readiness is uncertain.
-2. Inspect `doctor.clients` for static user-level MCP client config diagnostics. It reads only `~/.codex/config.toml`, `~/.claude.json`, and `~/.cursor/mcp.json`; it does not edit config, run client CLIs, search project-level overrides, or prove startup. Follow `kind: "shell"` recommendations such as `codex mcp list` or `claude mcp list` when you need client-side verification.
-3. Inspect `doctor.binary` for read-only freshness evidence about the running, installed, and release Agent Bridge binaries. It may recommend shell build/install commands, but it does not build, copy, install, or delete binaries.
-4. Use `AGENT_BRIDGE_WORKSPACES` for workspace policy. `AGENT_BRIDGE_STATE_DIR` is optional; when omitted, runtime state and doctor diagnostics use `~/.agent-bridge-mcp/state`.
-5. Inspect `doctor.taskExtensionReadiness` only as passive evidence about task-like client metadata observed during `initialize` or request `_meta`. It always reports `serverAdvertisesTasks: false`; protocol-level `tasks/*`, `CreateTaskResult`, listing, cancellation, and notifications remain unavailable until a future implementation change.
-6. Call `providers_check` to catch missing or misconfigured provider CLIs. Use smoke checks when debugging startup. `doctor.summary.status` covers setup health; `doctor.launchReadiness` covers startup verification and launchability. Client config, binary freshness, and task-extension diagnostics remain separate and do not change `summary.status`.
-7. Call `agent_preview` when cwd, flags, environment, prompt transport, or worktree isolation need inspection.
-8. Call `agent_spawn` for the real delegated provider agent.
-9. Use `agent_list` and `agent_status` `presentation` metadata for native-client rendering: active/recent ordering, display titles, status tone, result availability, structured actions, and ranked `nextActions`.
-10. Render unavailable `reply` and `resume` actions as disabled controls with their reasons; provider tasks are not interactive or resumable in v1.
-11. Call `agent_observe` with a bounded timeout to wait for new transcript/lifecycle events. If observation times out, call `agent_logs` with line cursors and `agent_transcript` with cursor/limit to inspect progress.
-12. Once final, call `agent_result` for `reviewPacket`, `nextActions`, transcript availability/result evidence, logs, git status, diff, changed files, exit metadata, diagnostics, and `errorType`.
-13. Treat provider output and native-feeling completion as evidence for the main caller, not as final verification.
-14. Call `agent_remove` intentionally after any managed worktree has been inspected. `presentation.actions` and `nextActions` may mark cleanup as `unsafe` for managed worktree tasks until result inspection is explicit.
+Primary flow:
+1. Call `doctor` when setup, workspace, state, provider, host-runner, client registration, or binary freshness is uncertain.
+2. Call `providers_check` only for focused readiness follow-up; use smoke checks intentionally when startup readiness matters.
+3. Call `agent_spawn` for the real delegated provider agent.
+4. Call `agent_observe` with a bounded timeout to wait for transcript and lifecycle progress.
+5. Once final, call `agent_result` for `reviewPacket`, transcript availability/result evidence, logs, git status, diff, changed files, exit metadata, diagnostics, `errorType`, and `nextActions`.
+6. Treat provider output and native-feeling completion as evidence for the main caller, not as final verification.
+7. Call `agent_remove` intentionally after any managed worktree has been inspected. `presentation.actions` and `nextActions` may mark cleanup as `unsafe` for managed worktree tasks until result inspection is explicit.
 
-Self-guided clients should read `initialize.instructions`, `structuredContent`, output schemas, and `nextActions` when available. Clients that ignore those fields can still follow this manual lifecycle.
+Diagnostic and presentation tools:
+- Inspect `doctor.clients` for static user-level MCP client config diagnostics. It reads only `~/.codex/config.toml`, `~/.claude.json`, and `~/.cursor/mcp.json`; it does not edit config, run client CLIs, search project-level overrides, or prove startup. Follow `kind: "shell"` recommendations such as `codex mcp list` or `claude mcp list` when you need client-side verification.
+- Inspect `doctor.binary` for read-only freshness evidence about the running, installed, and release Agent Bridge binaries. It may recommend shell build/install commands, but it does not build, copy, install, or delete binaries.
+- Inspect `doctor.taskExtensionReadiness` only as passive evidence about task-like client metadata observed during `initialize` or request `_meta`. It always reports `serverAdvertisesTasks: false`; protocol-level `tasks/*`, `CreateTaskResult`, listing, cancellation, and notifications remain unavailable until a future implementation change.
+- Use `AGENT_BRIDGE_WORKSPACES` for workspace policy. `AGENT_BRIDGE_STATE_DIR` is optional; when omitted, runtime state and doctor diagnostics use `~/.agent-bridge-mcp/state`.
+- Call `agent_preview` when cwd, flags, environment, prompt transport, or worktree isolation need inspection before launch.
+- Use `agent_list` and `agent_status` `presentation` metadata for native-client rendering: active/recent ordering, display titles, status tone, result availability, structured actions, and ranked `nextActions`.
+- Render unavailable `reply` and `resume` actions as disabled controls with their reasons; provider tasks are not interactive or resumable in v1.
+- If observation times out or progress is unclear, call `agent_logs` with line cursors and `agent_transcript` with cursor/limit to inspect progress. Use `agent_wait` only when simple finality is enough.
+
+Self-guided clients should read `initialize.instructions`, `structuredContent`, output schemas, and `nextActions` when available. Clients that ignore those fields can still follow the primary flow and use diagnostic tools manually when needed.
 
 Protocol-level MCP Tasks are distinct from Agent Bridge agent/task tools. Use `agent_spawn`, `agent_list`, and the stable `agent_*` lifecycle by default; `doctor.taskExtensionReadiness` can report observed client metadata, but protocol task support depends on a future negotiated implementation and remains unavailable here.
 "#;
@@ -295,7 +300,7 @@ const SAFETY_RESOURCE: &str = r#"# Agent Bridge Safety Guidance
 - Prefer `implement` with `isolation: "worktree"` so provider edits can be inspected before integration.
 - Use `command` mode only for bounded command-oriented work with explicit expected evidence.
 - Do not remove a managed worktree until the final result, git status, diff, and changed files have been inspected.
-- If a task appears stalled, use bounded `agent_observe`, incremental `agent_logs`, and `agent_stop` only after deciding the agent is no longer useful.
+- If a task appears stalled, use bounded `agent_observe`, incremental `agent_logs`, `agent_transcript`, `agent_status`, and `agent_stop` only after deciding the agent is no longer useful.
 - Use `agent_transcript` for behavior analysis, provider comparison, and final/partial result evidence; it does not replace raw logs or main-thread verification.
 - For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms, use `agent_wait`, `agent_logs`, `agent_status`, and final `agent_result`; inspect cwd, workspace policy, prompt scope, and isolation before retrying.
 - Do not loosen Codex sandbox permissions as a reflex or repeat an unchanged request after denial diagnostics.
@@ -351,7 +356,7 @@ These workflows are reproducible local operator checks. They intentionally keep 
 
 ## read-only review
 
-Use `agent_spawn` with mode `review` or `research`, `isolation: "none"`, a small prompt, and a bounded timeout. Use `agent_observe` or `agent_wait`, then inspect `agent_result.reviewPacket`, `agent_transcript`, stdout, stderr, diagnostics, git status, diff, changed files, and exit metadata.
+Use `agent_spawn` with mode `review` or `research`, `isolation: "none"`, a small prompt, and a bounded timeout. Use `agent_observe` as the primary progress path, then inspect `agent_result.reviewPacket`, `agent_transcript`, stdout, stderr, diagnostics, git status, diff, changed files, and exit metadata. Use `agent_wait` only when simple finality is enough.
 
 ## native task presentation
 

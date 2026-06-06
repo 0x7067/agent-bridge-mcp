@@ -75,7 +75,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "providers_check",
-            "description": "Check availability of each provider by running their command with --version, optionally with a startup smoke probe.",
+            "description": "Run focused provider readiness checks, optionally including startup smoke probes when launchability needs verification.",
             "inputSchema": object_schema(json!({
                 "smoke": {"type": "boolean"},
                 "timeoutMs": {"type": "number"},
@@ -90,7 +90,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "doctor",
-            "description": "Diagnose Agent Bridge MCP server, workspace, state, provider, and Claude host-runner readiness.",
+            "description": "Diagnose Agent Bridge setup, workspace, state, client config, binary freshness, provider readiness, and Claude host-runner readiness.",
             "inputSchema": object_schema(json!({
                 "smoke": {"type": "boolean"},
                 "providers": {"type": "array", "items": {"type": "string", "enum": provider_enum}},
@@ -106,21 +106,21 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         spawn_like_tool(
             "agent_preview",
-            "Preview the command that would be run for a provider agent without actually spawning it.",
+            "Diagnostic launch inspection: preview the command, cwd, environment, profile, and isolation that would be used without spawning.",
             &provider_enum,
             &mode_enum,
             &profile_enum,
         ),
         spawn_like_tool(
             "agent_spawn",
-            "Start a provider agent. Returns the persisted agentId used by agent_status, agent_wait, agent_logs, agent_transcript, agent_observe, agent_result, agent_stop, and agent_remove.",
+            "Start a provider agent. Primary follow-ups are agent_observe for progress and agent_result for final evidence; diagnostic follow-ups use the returned agentId.",
             &provider_enum,
             &mode_enum,
             &profile_enum,
         ),
         json!({
             "name": "agent_list",
-            "description": "List active and recent provider agents using bounded presentation summaries.",
+            "description": "Presentation surface: list active and recent provider agents using bounded native-client summaries.",
             "inputSchema": object_schema(json!({
                 "status": {
                     "type": "array",
@@ -134,16 +134,19 @@ pub fn tool_definitions() -> Vec<Value> {
             }), Vec::<&str>::new()),
             "outputSchema": output_schema_for("agent_list")
         }),
-        task_id_tool_with_output("agent_status", "Read one provider agent's lifecycle state."),
+        task_id_tool_with_output(
+            "agent_status",
+            "Diagnostic state read: return one provider agent's lifecycle and presentation state.",
+        ),
         json!({
             "name": "agent_wait",
-            "description": "Wait for a provider agent to reach a final state or timeout.",
+            "description": "Simple finality primitive: wait for a provider agent to reach a final state or timeout when progress events are unnecessary.",
             "inputSchema": object_schema(json!({"agentId": {"type": "string"}, "timeoutMs": {"type": "number"}}), vec!["agentId"]),
             "outputSchema": output_schema_for("agent_wait")
         }),
         json!({
             "name": "agent_logs",
-            "description": "Return capped stdout/stderr log slices for a provider agent.",
+            "description": "Raw evidence inspection: return capped stdout/stderr log slices for a provider agent.",
             "inputSchema": object_schema(json!({
                 "agentId": {"type": "string"},
                 "maxBytes": {"type": "number"},
@@ -153,7 +156,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "agent_transcript",
-            "description": "Return bounded normalized transcript events for a provider agent.",
+            "description": "Transcript evidence inspection: return bounded normalized provider and lifecycle transcript events.",
             "inputSchema": object_schema(json!({
                 "agentId": {"type": "string"},
                 "cursor": {"type": "number"},
@@ -162,7 +165,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "agent_observe",
-            "description": "Observe a provider agent for new transcript/lifecycle events or finalization using bounded long polling.",
+            "description": "Primary progress path: observe a provider agent for new transcript/lifecycle events, progress metadata, next actions, or finalization.",
             "inputSchema": object_schema(json!({
                 "agentId": {"type": "string"},
                 "cursor": {"type": "number", "minimum": 0},
@@ -173,14 +176,17 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "agent_result",
-            "description": "Return final provider-agent metadata, logs, git status, diff, changed files, and exit metadata.",
+            "description": "Primary final evidence path: return provider-agent metadata, review packet, logs, git status, diff, changed files, diagnostics, and exit metadata.",
             "inputSchema": object_schema(json!({"agentId": {"type": "string"}, "maxBytes": {"type": "number"}}), vec!["agentId"]),
             "outputSchema": output_schema_for("agent_result")
         }),
-        simple_task_id_tool("agent_stop", "Terminate a running provider agent."),
+        simple_task_id_tool(
+            "agent_stop",
+            "Control surface: terminate a running provider agent when it is no longer useful.",
+        ),
         simple_task_id_tool(
             "agent_remove",
-            "Remove a finished/stopped provider agent. Managed worktree cleanup is mandatory and failure keeps the task record.",
+            "Cleanup surface: remove a finished/stopped provider agent after result inspection; managed worktree cleanup failure keeps the agent record.",
         ),
     ]
 }
