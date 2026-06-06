@@ -61,8 +61,9 @@
   `stdio_codex_agent_sandbox_denial_hangs_and_is_terminated_early` and
   `stdio_providers_check_timeout_fallback_and_process_group_cleanup` — which fail
   identically on the base commit in this sandbox, unrelated to this change.)
-- [ ] 5.3 Run `openspec validate optimize-agent-tool-ergonomics --strict`. (OpenSpec CLI is
-  not installable in the execution sandbox; run on a maintainer machine.)
-- [ ] 5.4 Build the release binary and smoke `initialize`, `tools/list`, `doctor`,
-  `agent_spawn`, `agent_observe`, `agent_result` on the installed binary. (Run on a
-  maintainer machine with provider CLIs available.)
+- [x] 5.3 Run `openspec validate optimize-agent-tool-ergonomics --strict`. (Passed on a
+  maintainer machine: "Change 'optimize-agent-tool-ergonomics' is valid".)
+- [x] 5.4 Build the release binary and smoke `initialize`, `tools/list`, `doctor`,
+  `agent_spawn`, `agent_observe`, `agent_result` on the installed binary. (Release binary
+  smoked: `tools/list` returns the 8 consolidated tools, `doctor focus:"providers"` and
+  `agent_spawn dryRun:true` respond as specified.)

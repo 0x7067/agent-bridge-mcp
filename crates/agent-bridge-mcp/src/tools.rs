@@ -240,17 +240,10 @@ fn output_schema_for(name: &str) -> Value {
                 "timedOut": {"type": "boolean"},
                 "next": {"type": "array"}
             }),
-            vec![
-                "agentId",
-                "status",
-                "isFinal",
-                "phase",
-                "progress",
-                "events",
-                "nextCursor",
-                "timedOut",
-                "next",
-            ],
+            // events/nextCursor/timedOut are only present on the events-returning
+            // path; the state-only reads (limit:0, until:"final") legitimately omit
+            // them, so they are optional rather than required.
+            vec!["agentId", "status", "isFinal", "phase", "progress", "next"],
         ),
         "agent_result" => output_object_schema(
             json!({
