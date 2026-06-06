@@ -69,151 +69,156 @@ pub async fn handle_request(request: JsonRpcRequest) -> Option<JsonRpcResponse> 
 
 async fn call_tool(params: Value) -> Value {
     let parsed: Result<ToolCallParams, _> = serde_json::from_value(params);
-    match parsed {
-        Ok(params) => match params.name {
-            name if reject_unknown_arguments(name, &params.arguments).is_err() => {
-                tool_error(reject_unknown_arguments(name, &params.arguments).unwrap_err())
-            }
-            ToolName::ProvidersList => tool_json(json!({ "providers": provider::capabilities() })),
-            ToolName::ProvidersCheck => tool_result(providers_check(params.arguments).await),
-            ToolName::Doctor => tool_result(doctor(params.arguments).await),
-            ToolName::AgentPreview => match task_preview(params.arguments) {
-                Ok(payload) => tool_json(payload),
-                Err(error) => tool_error(error),
-            },
-            ToolName::AgentSpawn => match TaskManagerHandle::from_env().await {
-                Ok(manager) => tool_result(manager.spawn(params.arguments).await),
-                Err(error) => tool_error(error),
-            },
-            ToolName::AgentList => match TaskManagerHandle::from_env().await {
-                Ok(manager) => tool_result(agent_list(manager, params.arguments).await),
-                Err(error) => tool_error(error),
-            },
-            ToolName::AgentStatus => {
-                match (
-                    require_agent_id(&params.arguments),
-                    TaskManagerHandle::from_env().await,
-                ) {
-                    (Ok(agent_id), Ok(manager)) => tool_result(manager.status(agent_id).await),
-                    (Err(error), _) | (_, Err(error)) => tool_error(error),
+    let params = match parsed {
+        Ok(params) => params,
+        Err(error) => return tool_error(error.to_string()),
+    };
+    if let Err(error) = reject_unknown_arguments(params.name, &params.arguments) {
+        return tool_error(error);
+    }
+    match params.name {
+        ToolName::ProvidersList => tool_json(json!({ "providers": provider::capabilities() })),
+        ToolName::Doctor => tool_result(doctor(params.arguments).await),
+        ToolName::AgentSpawn => {
+            let dry_run = params
+                .arguments
+                .get("dryRun")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if dry_run {
+                // dryRun subsumes the former agent_preview tool.
+                match task_preview(params.arguments) {
+                    Ok(payload) => tool_json(payload),
+                    Err(error) => tool_error(error),
+                }
+            } else {
+                let mut args = params.arguments.clone();
+                if let Some(object) = args.as_object_mut() {
+                    object.remove("dryRun");
+                }
+                match TaskManagerHandle::from_env().await {
+                    Ok(manager) => tool_result(manager.spawn(args).await),
+                    Err(error) => tool_error(error),
                 }
             }
-            ToolName::AgentWait => {
-                let timeout_ms = params.arguments.get("timeoutMs").and_then(Value::as_i64);
-                match (
-                    require_agent_id(&params.arguments),
-                    TaskManagerHandle::from_env().await,
-                ) {
-                    (Ok(agent_id), Ok(manager)) => {
-                        tool_result(manager.wait(agent_id, timeout_ms).await)
-                    }
-                    (Err(error), _) | (_, Err(error)) => tool_error(error),
-                }
-            }
-            ToolName::AgentLogs => {
-                let max_bytes = params.arguments.get("maxBytes").and_then(Value::as_i64);
-                let stdout_line = params
-                    .arguments
-                    .get("stdoutLine")
-                    .and_then(Value::as_u64)
-                    .map(|value| value as usize);
-                let stderr_line = params
-                    .arguments
-                    .get("stderrLine")
-                    .and_then(Value::as_u64)
-                    .map(|value| value as usize);
-                match (
-                    require_agent_id(&params.arguments),
-                    TaskManagerHandle::from_env().await,
-                ) {
-                    (Ok(agent_id), Ok(manager)) => tool_result(
-                        manager
-                            .logs(agent_id, max_bytes, stdout_line, stderr_line)
-                            .await,
-                    ),
-                    (Err(error), _) | (_, Err(error)) => tool_error(error),
-                }
-            }
-            ToolName::AgentTranscript => {
-                let cursor = params.arguments.get("cursor").and_then(Value::as_u64);
-                let limit = params.arguments.get("limit").and_then(Value::as_u64);
-                match (
-                    require_agent_id(&params.arguments),
-                    TaskManagerHandle::from_env().await,
-                ) {
-                    (Ok(agent_id), Ok(manager)) => {
-                        tool_result(manager.transcript(agent_id, cursor, limit).await)
-                    }
-                    (Err(error), _) | (_, Err(error)) => tool_error(error),
-                }
-            }
-            ToolName::AgentObserve => {
-                let cursor = params.arguments.get("cursor").and_then(Value::as_u64);
-                let limit = params.arguments.get("limit").and_then(Value::as_u64);
-                let timeout_ms = params.arguments.get("timeoutMs").and_then(Value::as_i64);
-                match (
-                    require_agent_id(&params.arguments),
-                    TaskManagerHandle::from_env().await,
-                ) {
-                    (Ok(agent_id), Ok(manager)) => {
-                        tool_result(manager.observe(agent_id, cursor, limit, timeout_ms).await)
-                    }
-                    (Err(error), _) | (_, Err(error)) => tool_error(error),
-                }
-            }
-            ToolName::AgentResult => {
-                let max_bytes = params.arguments.get("maxBytes").and_then(Value::as_i64);
-                match (
-                    require_agent_id(&params.arguments),
-                    TaskManagerHandle::from_env().await,
-                ) {
-                    (Ok(agent_id), Ok(manager)) => {
-                        tool_result(manager.result(agent_id, max_bytes).await)
-                    }
-                    (Err(error), _) | (_, Err(error)) => tool_error(error),
-                }
-            }
-            ToolName::AgentStop => {
-                match (
-                    require_agent_id(&params.arguments),
-                    TaskManagerHandle::from_env().await,
-                ) {
-                    (Ok(agent_id), Ok(manager)) => tool_result(manager.stop(agent_id).await),
-                    (Err(error), _) | (_, Err(error)) => tool_error(error),
-                }
-            }
-            ToolName::AgentRemove => {
-                match (
-                    require_agent_id(&params.arguments),
-                    TaskManagerHandle::from_env().await,
-                ) {
-                    (Ok(agent_id), Ok(manager)) => tool_result(manager.remove(agent_id).await),
-                    (Err(error), _) | (_, Err(error)) => tool_error(error),
-                }
-            }
+        }
+        ToolName::AgentList => match TaskManagerHandle::from_env().await {
+            Ok(manager) => tool_result(agent_list(manager, params.arguments).await),
+            Err(error) => tool_error(error),
         },
-        Err(error) => tool_error(error.to_string()),
+        ToolName::AgentObserve => {
+            // observe subsumes the former agent_status (limit:0) and agent_wait
+            // (until:"final") and agent_transcript (events) tools.
+            let detailed = is_detailed(&params.arguments);
+            let until = params
+                .arguments
+                .get("until")
+                .and_then(Value::as_str)
+                .unwrap_or("now");
+            let cursor = params.arguments.get("cursor").and_then(Value::as_u64);
+            let limit = params.arguments.get("limit").and_then(Value::as_u64);
+            let timeout_ms = params.arguments.get("timeoutMs").and_then(Value::as_i64);
+            match (
+                require_agent_id(&params.arguments),
+                TaskManagerHandle::from_env().await,
+            ) {
+                (Ok(agent_id), Ok(manager)) => {
+                    if until == "final" {
+                        tool_result(manager.wait(agent_id, timeout_ms, detailed).await)
+                    } else if limit == Some(0) {
+                        tool_result(manager.status(agent_id, detailed).await)
+                    } else {
+                        tool_result(
+                            manager
+                                .observe(agent_id, cursor, limit, timeout_ms, detailed)
+                                .await,
+                        )
+                    }
+                }
+                (Err(error), _) | (_, Err(error)) => tool_error(error),
+            }
+        }
+        ToolName::AgentResult => {
+            // result subsumes the former agent_logs tool via sections.
+            let detailed = is_detailed(&params.arguments);
+            let sections = result_sections(&params.arguments);
+            let max_bytes = params.arguments.get("maxBytes").and_then(Value::as_i64);
+            let stdout_line = params
+                .arguments
+                .get("stdoutLine")
+                .and_then(Value::as_u64)
+                .map(|value| value as usize);
+            let stderr_line = params
+                .arguments
+                .get("stderrLine")
+                .and_then(Value::as_u64)
+                .map(|value| value as usize);
+            let cursor = params.arguments.get("cursor").and_then(Value::as_u64);
+            let limit = params.arguments.get("limit").and_then(Value::as_u64);
+            match (
+                require_agent_id(&params.arguments),
+                TaskManagerHandle::from_env().await,
+            ) {
+                (Ok(agent_id), Ok(manager)) => tool_result(
+                    manager
+                        .result(
+                            agent_id,
+                            sections,
+                            max_bytes,
+                            stdout_line,
+                            stderr_line,
+                            cursor,
+                            limit,
+                            detailed,
+                        )
+                        .await,
+                ),
+                (Err(error), _) | (_, Err(error)) => tool_error(error),
+            }
+        }
+        ToolName::AgentStop => match (
+            require_agent_id(&params.arguments),
+            TaskManagerHandle::from_env().await,
+        ) {
+            (Ok(agent_id), Ok(manager)) => tool_result(manager.stop(agent_id).await),
+            (Err(error), _) | (_, Err(error)) => tool_error(error),
+        },
+        ToolName::AgentRemove => match (
+            require_agent_id(&params.arguments),
+            TaskManagerHandle::from_env().await,
+        ) {
+            (Ok(agent_id), Ok(manager)) => tool_result(manager.remove(agent_id).await),
+            (Err(error), _) | (_, Err(error)) => tool_error(error),
+        },
+    }
+}
+
+fn is_detailed(arguments: &Value) -> bool {
+    arguments.get("verbosity").and_then(Value::as_str) == Some("detailed")
+}
+
+fn result_sections(arguments: &Value) -> crate::task::ResultSections {
+    match arguments.get("sections").and_then(Value::as_array) {
+        Some(items) => {
+            crate::task::ResultSections::from_names(items.iter().filter_map(Value::as_str))
+        }
+        None => crate::task::ResultSections::default_sections(),
     }
 }
 
 fn reject_unknown_arguments(name: ToolName, arguments: &Value) -> Result<(), String> {
     let allowed = match name {
         ToolName::ProvidersList => &[][..],
-        ToolName::ProvidersCheck => &[
+        ToolName::Doctor => &[
+            "focus",
             "smoke",
             "timeoutMs",
             "providers",
             "aggregateTimeoutMs",
             "providerTimeoutMs",
-        ][..],
-        ToolName::Doctor => &[
-            "smoke",
-            "providers",
-            "aggregateTimeoutMs",
-            "providerTimeoutMs",
             "cwd",
         ][..],
-        ToolName::AgentPreview | ToolName::AgentSpawn => &[
+        ToolName::AgentSpawn => &[
             "provider",
             "mode",
             "prompt",
@@ -226,6 +231,7 @@ fn reject_unknown_arguments(name: ToolName, arguments: &Value) -> Result<(), Str
             "isolation",
             "worktreeName",
             "profile",
+            "dryRun",
         ][..],
         ToolName::AgentList => &[
             "status",
@@ -235,12 +241,25 @@ fn reject_unknown_arguments(name: ToolName, arguments: &Value) -> Result<(), Str
             "titleContains",
             "limit",
         ][..],
-        ToolName::AgentStatus | ToolName::AgentStop | ToolName::AgentRemove => &["agentId"][..],
-        ToolName::AgentWait => &["agentId", "timeoutMs"][..],
-        ToolName::AgentLogs => &["agentId", "maxBytes", "stdoutLine", "stderrLine"][..],
-        ToolName::AgentTranscript => &["agentId", "cursor", "limit"][..],
-        ToolName::AgentObserve => &["agentId", "cursor", "limit", "timeoutMs"][..],
-        ToolName::AgentResult => &["agentId", "maxBytes"][..],
+        ToolName::AgentStop | ToolName::AgentRemove => &["agentId"][..],
+        ToolName::AgentObserve => &[
+            "agentId",
+            "until",
+            "cursor",
+            "limit",
+            "timeoutMs",
+            "verbosity",
+        ][..],
+        ToolName::AgentResult => &[
+            "agentId",
+            "sections",
+            "maxBytes",
+            "stdoutLine",
+            "stderrLine",
+            "cursor",
+            "limit",
+            "verbosity",
+        ][..],
     };
     let Some(object) = arguments.as_object() else {
         return Ok(());
@@ -259,15 +278,9 @@ fn reject_unknown_arguments(name: ToolName, arguments: &Value) -> Result<(), Str
 fn tool_name_str(name: ToolName) -> &'static str {
     match name {
         ToolName::ProvidersList => "providers_list",
-        ToolName::ProvidersCheck => "providers_check",
         ToolName::Doctor => "doctor",
-        ToolName::AgentPreview => "agent_preview",
         ToolName::AgentSpawn => "agent_spawn",
         ToolName::AgentList => "agent_list",
-        ToolName::AgentStatus => "agent_status",
-        ToolName::AgentWait => "agent_wait",
-        ToolName::AgentLogs => "agent_logs",
-        ToolName::AgentTranscript => "agent_transcript",
         ToolName::AgentObserve => "agent_observe",
         ToolName::AgentResult => "agent_result",
         ToolName::AgentStop => "agent_stop",
@@ -315,8 +328,10 @@ struct ProvidersCheckInput {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DoctorInput {
+    focus: Option<String>,
     #[serde(default)]
     smoke: bool,
+    timeout_ms: Option<i64>,
     providers: Option<Vec<ProviderKind>>,
     aggregate_timeout_ms: Option<i64>,
     provider_timeout_ms: Option<BTreeMap<String, i64>>,
@@ -326,6 +341,15 @@ struct DoctorInput {
 async fn doctor(arguments: Value) -> Result<Value, String> {
     let input: DoctorInput =
         serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+    match input.focus.as_deref() {
+        None | Some("all") => {}
+        Some("providers") => return providers_check(doctor_provider_arguments(&input)).await,
+        Some(other) => {
+            return Err(format!(
+                "focus must be one of: all, providers (got {other})"
+            ));
+        }
+    }
     let workspace = doctor_workspace(input.cwd.as_deref());
     let state = doctor_state();
     let binary = doctor_binary(input.cwd.as_deref());
@@ -628,6 +652,9 @@ fn doctor_task_extension_readiness() -> Value {
 fn doctor_provider_arguments(input: &DoctorInput) -> Value {
     let mut arguments = serde_json::Map::new();
     arguments.insert("smoke".to_string(), json!(input.smoke));
+    if let Some(timeout_ms) = input.timeout_ms {
+        arguments.insert("timeoutMs".to_string(), json!(timeout_ms));
+    }
     if let Some(providers) = input.providers.as_ref() {
         arguments.insert("providers".to_string(), json!(providers));
     }
@@ -1668,8 +1695,8 @@ fn doctor_recommendations(
             "id": "fix_unavailable_providers",
             "severity": "warning",
             "message": "Install or configure unavailable providers, or pass providers to focus doctor output.",
-            "tool": "providers_check",
-            "arguments": {}
+            "tool": "doctor",
+            "arguments": { "focus": "providers" }
         }));
     }
     let stale_providers: Vec<_> = launch_readiness["providers"]
@@ -1690,8 +1717,9 @@ fn doctor_recommendations(
             "id": "verify_provider_startup",
             "severity": "info",
             "message": "Selected providers are version-available but not startup-verified; run a bounded smoke check before first launch when startup readiness matters.",
-            "tool": "providers_check",
+            "tool": "doctor",
             "arguments": {
+                "focus": "providers",
                 "providers": stale_providers,
                 "smoke": true
             }
@@ -2462,7 +2490,7 @@ fn provider_diagnostic(
     });
     if provider == ProviderKind::Claude && crate::claude_host::socket_path_from_env().is_none() {
         diagnostic["recommendation"] = json!(
-            "Start the Agent Bridge Claude host runner and retry providers_check with smoke: true"
+            "Start the Agent Bridge Claude host runner and retry doctor with focus: providers and smoke: true"
         );
     }
     diagnostic

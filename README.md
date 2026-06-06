@@ -10,26 +10,34 @@ responsible for verification.
 
 ## What It Provides
 
-- Provider discovery and readiness checks through `providers_list` and
-  `providers_check`.
-- Setup diagnostics through `doctor`, including workspace policy, provider,
-  client config, Claude host-runner, and binary freshness checks.
-- Primary task launch and lifecycle tools:
-  - `agent_spawn`
-  - `agent_observe`
-  - `agent_result`
-  - `agent_remove`
-- Focused diagnostic, presentation, and control tools:
-  - `agent_preview`
-  - `agent_list`
-  - `agent_status`
-  - `agent_wait`
-  - `agent_logs`
-  - `agent_transcript`
-  - `agent_stop`
-- MCP self-description through prompts and guidance resources.
-- Deterministic fake-provider tests that do not require paid model access,
-  network access, provider credentials, or host keychain permissions.
+A consolidated, lean eight-tool surface:
+
+- `providers_list` — first-class providers and their agent capabilities.
+- `doctor` — setup, workspace, state, client config, binary freshness, and
+  provider/host-runner readiness. `focus: "providers"` runs a readiness-only
+  check; `smoke: true` verifies launchability.
+- `agent_spawn` — start a provider agent. `dryRun: true` previews the launch
+  (command, cwd, environment, profile, isolation) without spawning.
+- `agent_observe` — primary progress path. `until: "final"` blocks to finality,
+  `limit: 0` returns lifecycle state only, and the `events` stream is the agent
+  transcript.
+- `agent_result` — final evidence. Returns the review packet and changed files
+  by default; request `sections: ["stdout","stderr","diff","transcript"]` to
+  fetch raw evidence on demand (paged with `maxBytes`/`stdoutLine`/`stderrLine`/
+  transcript `cursor`/`limit`).
+- `agent_list` — bounded active/recent agent summaries.
+- `agent_stop` — terminate a running agent that is no longer useful.
+- `agent_remove` — remove a finished/stopped agent after result inspection.
+
+Responses are lean by default (each field appears once, no GUI presentation
+chrome); pass `verbosity: "detailed"` on `agent_observe`/`agent_result` for debug
+metadata. Tools carry MCP `annotations` (`readOnlyHint`/`destructiveHint`) so
+Tool-Search-capable clients can tier and defer them.
+
+It also provides MCP self-description through prompts and guidance resources
+(including `agent-bridge://guidance/code-execution`), and deterministic
+fake-provider tests that do not require paid model access, network access,
+provider credentials, or host keychain permissions.
 
 ## Providers
 
@@ -137,26 +145,22 @@ Expose the same socket to the MCP server:
 }
 ```
 
-Run `doctor` and then `providers_check` with `smoke: true` when validating a
+Run `doctor` with `focus: "providers"` and `smoke: true` when validating a
 Claude setup.
 
 ## Recommended Workflow
 
-1. Call `doctor` when setup or provider readiness is uncertain.
-2. Call `providers_check` only for focused readiness follow-up; use
-   `smoke: true` when launch readiness matters.
-3. Call `agent_spawn` to start a bounded provider task.
-4. Use `agent_observe` to monitor progress and follow `nextActions`.
-5. Use `agent_result` after finalization to inspect logs, transcript metadata,
-   changed files, diff, diagnostics, and the derived review packet.
-6. Run local project verification yourself before trusting delegated output.
-7. Call `agent_remove` intentionally after inspecting any managed worktree.
-
-Diagnostic tools stay available when the primary path is not enough:
-`agent_preview` inspects launch construction, `agent_list` and `agent_status`
-support native presentation and state reads, `agent_wait` handles simple
-finality waits, `agent_logs` and `agent_transcript` expose raw evidence, and
-`agent_stop` terminates agents that are no longer useful.
+1. Call `doctor` when setup or provider readiness is uncertain
+   (`focus: "providers"` for a readiness-only check; `smoke: true` when launch
+   readiness matters).
+2. Call `agent_spawn` to start a bounded provider task (`dryRun: true` to preview
+   the launch without spawning).
+3. Use `agent_observe` to monitor progress and follow the `next` action list
+   (`until: "final"` to block to finality, `limit: 0` for a quick state check).
+4. Use `agent_result` after finalization for the review packet and changed
+   files; request `sections` for raw logs, diff, or transcript evidence.
+5. Run local project verification yourself before trusting delegated output.
+6. Call `agent_remove` intentionally after inspecting any managed worktree.
 
 Provider output is evidence, not proof. The caller remains responsible for tests,
 lint, build, review, and cleanup.
@@ -171,6 +175,23 @@ The public lifecycle surface is agent-oriented only:
 - New lifecycle IDs use the `agent_...` prefix.
 - Existing registries written with old `taskId` records are not migrated; use a
   fresh state directory if you need to discard old records.
+
+The surface was consolidated from fourteen tools to eight; six tools were folded
+into the retained ones via parameters. Migrate as follows:
+
+| Removed tool | Replacement |
+| --- | --- |
+| `agent_preview` | `agent_spawn` with `dryRun: true` |
+| `agent_status` | `agent_observe` with `limit: 0` |
+| `agent_wait` | `agent_observe` with `until: "final"`, `timeoutMs` |
+| `agent_transcript` | `agent_observe` `events` (with `cursor`/`limit`) |
+| `agent_logs` | `agent_result` with `sections: ["stdout","stderr"]` and line pagination |
+| `providers_check` | `doctor` with `focus: "providers"` (plus `smoke`/`providers`/`timeoutMs` as before) |
+
+Responses are also leaner: `agent_observe`/`agent_result` return a single `next`
+action list (the previous duplicated `nextActions`/`presentation`/`progress`
+copies and the GUI `presentation` object are gone). Pass `verbosity: "detailed"`
+to re-add debug metadata, and request `agent_result` `sections` for raw evidence.
 
 ## Safety Model
 

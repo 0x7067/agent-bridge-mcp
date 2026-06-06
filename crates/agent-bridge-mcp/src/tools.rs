@@ -8,24 +8,12 @@ use serde_json::{Value, json};
 pub enum ToolName {
     #[serde(rename = "providers_list")]
     ProvidersList,
-    #[serde(rename = "providers_check")]
-    ProvidersCheck,
     #[serde(rename = "doctor")]
     Doctor,
-    #[serde(rename = "agent_preview")]
-    AgentPreview,
     #[serde(rename = "agent_spawn")]
     AgentSpawn,
     #[serde(rename = "agent_list")]
     AgentList,
-    #[serde(rename = "agent_status")]
-    AgentStatus,
-    #[serde(rename = "agent_wait")]
-    AgentWait,
-    #[serde(rename = "agent_logs")]
-    AgentLogs,
-    #[serde(rename = "agent_transcript")]
-    AgentTranscript,
     #[serde(rename = "agent_observe")]
     AgentObserve,
     #[serde(rename = "agent_result")]
@@ -61,6 +49,8 @@ pub struct TaskPreviewInput {
     pub isolation: Option<Isolation>,
     pub worktree_name: Option<String>,
     pub profile: Option<LaunchProfile>,
+    #[serde(default)]
+    pub dry_run: Option<bool>,
 }
 
 pub fn tool_definitions() -> Vec<Value> {
@@ -71,28 +61,16 @@ pub fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "providers_list",
             "description": "List first-class delegation providers and their agent capabilities.",
-            "inputSchema": object_schema(json!({}), Vec::<&str>::new())
-        }),
-        json!({
-            "name": "providers_check",
-            "description": "Run focused provider readiness checks, optionally including startup smoke probes when launchability needs verification.",
-            "inputSchema": object_schema(json!({
-                "smoke": {"type": "boolean"},
-                "timeoutMs": {"type": "number"},
-                "providers": {"type": "array", "items": {"type": "string", "enum": provider_enum}},
-                "aggregateTimeoutMs": {"type": "integer", "minimum": 1, "maximum": 120000},
-                "providerTimeoutMs": {
-                    "type": "object",
-                    "propertyNames": {"enum": provider_enum},
-                    "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 90000}
-                }
-            }), Vec::<&str>::new())
+            "inputSchema": object_schema(json!({}), Vec::<&str>::new()),
+            "annotations": read_only_annotations("List delegation providers")
         }),
         json!({
             "name": "doctor",
-            "description": "Diagnose Agent Bridge setup, workspace, state, client config, binary freshness, provider readiness, and Claude host-runner readiness.",
+            "description": "Diagnose Agent Bridge setup, workspace, state, client config, binary freshness, and provider/host-runner readiness. Set focus: \"providers\" for a readiness-only check (replaces the former providers_check tool); add smoke: true to startup-verify launchability.",
             "inputSchema": object_schema(json!({
+                "focus": {"type": "string", "enum": ["all", "providers"], "description": "\"all\" (default) runs full setup diagnostics; \"providers\" runs only provider readiness."},
                 "smoke": {"type": "boolean"},
+                "timeoutMs": {"type": "number", "description": "Per-provider smoke budget when smoke is requested."},
                 "providers": {"type": "array", "items": {"type": "string", "enum": provider_enum}},
                 "aggregateTimeoutMs": {"type": "integer", "minimum": 1, "maximum": 120000},
                 "providerTimeoutMs": {
@@ -102,25 +80,18 @@ pub fn tool_definitions() -> Vec<Value> {
                 },
                 "cwd": {"type": "string", "description": "Workspace directory to validate against configured workspace roots."}
             }), Vec::<&str>::new()),
-            "outputSchema": output_schema_for("doctor")
+            "outputSchema": output_schema_for("doctor"),
+            "annotations": read_only_annotations("Diagnose Agent Bridge setup")
         }),
-        spawn_like_tool(
-            "agent_preview",
-            "Diagnostic launch inspection: preview the command, cwd, environment, profile, and isolation that would be used without spawning.",
-            &provider_enum,
-            &mode_enum,
-            &profile_enum,
-        ),
-        spawn_like_tool(
-            "agent_spawn",
-            "Start a provider agent. Primary follow-ups are agent_observe for progress and agent_result for final evidence; diagnostic follow-ups use the returned agentId.",
-            &provider_enum,
-            &mode_enum,
-            &profile_enum,
-        ),
+        json!({
+            "name": "agent_spawn",
+            "description": "Start a provider agent. Primary follow-ups are agent_observe for progress and agent_result for final evidence. Set dryRun: true to preview the command, cwd, environment, profile, and isolation without spawning (replaces the former agent_preview tool).",
+            "inputSchema": object_schema(spawn_properties(&provider_enum, &mode_enum, &profile_enum), vec!["provider", "mode", "prompt"]),
+            "annotations": {"title": "Start a provider agent", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": true}
+        }),
         json!({
             "name": "agent_list",
-            "description": "Presentation surface: list active and recent provider agents using bounded native-client summaries.",
+            "description": "List active and recent provider agents as lean summaries (identity, status, phase, progress, primary next action).",
             "inputSchema": object_schema(json!({
                 "status": {
                     "type": "array",
@@ -132,106 +103,83 @@ pub fn tool_definitions() -> Vec<Value> {
                 "titleContains": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100}
             }), Vec::<&str>::new()),
-            "outputSchema": output_schema_for("agent_list")
-        }),
-        task_id_tool_with_output(
-            "agent_status",
-            "Diagnostic state read: return one provider agent's lifecycle and presentation state.",
-        ),
-        json!({
-            "name": "agent_wait",
-            "description": "Simple finality primitive: wait for a provider agent to reach a final state or timeout when progress events are unnecessary.",
-            "inputSchema": object_schema(json!({"agentId": {"type": "string"}, "timeoutMs": {"type": "number"}}), vec!["agentId"]),
-            "outputSchema": output_schema_for("agent_wait")
-        }),
-        json!({
-            "name": "agent_logs",
-            "description": "Raw evidence inspection: return capped stdout/stderr log slices for a provider agent.",
-            "inputSchema": object_schema(json!({
-                "agentId": {"type": "string"},
-                "maxBytes": {"type": "number"},
-                "stdoutLine": {"type": "number"},
-                "stderrLine": {"type": "number"}
-            }), vec!["agentId"])
-        }),
-        json!({
-            "name": "agent_transcript",
-            "description": "Transcript evidence inspection: return bounded normalized provider and lifecycle transcript events.",
-            "inputSchema": object_schema(json!({
-                "agentId": {"type": "string"},
-                "cursor": {"type": "number"},
-                "limit": {"type": "number"}
-            }), vec!["agentId"])
+            "outputSchema": output_schema_for("agent_list"),
+            "annotations": read_only_annotations("List provider agents")
         }),
         json!({
             "name": "agent_observe",
-            "description": "Primary progress path: observe a provider agent for new transcript/lifecycle events, progress metadata, next actions, or finalization.",
+            "description": "Primary progress path: observe a provider agent for new transcript/lifecycle events, progress, and next actions. until \"now\" (default) returns state plus new events; until \"final\" blocks until finality or timeoutMs (replaces agent_wait); limit 0 returns state only (replaces agent_status). The events stream is the agent transcript (replaces agent_transcript).",
             "inputSchema": object_schema(json!({
                 "agentId": {"type": "string"},
+                "until": {"type": "string", "enum": ["now", "final"], "description": "\"now\" (default) returns immediately with state and new events; \"final\" blocks until the agent is final or timeoutMs elapses."},
                 "cursor": {"type": "number", "minimum": 0},
-                "limit": {"type": "number", "minimum": 1, "maximum": 500},
-                "timeoutMs": {"type": "number", "minimum": 0, "maximum": 120000}
+                "limit": {"type": "number", "minimum": 0, "maximum": 500, "description": "Max transcript events to return; 0 returns lifecycle state without events."},
+                "timeoutMs": {"type": "number", "minimum": 0, "maximum": 120000},
+                "verbosity": {"type": "string", "enum": ["compact", "detailed"], "description": "\"compact\" (default) returns the lean envelope; \"detailed\" adds debug metadata."}
             }), vec!["agentId"]),
-            "outputSchema": output_schema_for("agent_observe")
+            "outputSchema": output_schema_for("agent_observe"),
+            "annotations": read_only_annotations("Observe a provider agent")
         }),
         json!({
             "name": "agent_result",
-            "description": "Primary final evidence path: return provider-agent metadata, review packet, logs, git status, diff, changed files, diagnostics, and exit metadata.",
-            "inputSchema": object_schema(json!({"agentId": {"type": "string"}, "maxBytes": {"type": "number"}}), vec!["agentId"]),
-            "outputSchema": output_schema_for("agent_result")
+            "description": "Primary final evidence path: return the review packet and changed files by default; request raw evidence sections on demand. sections selects [\"summary\",\"stdout\",\"stderr\",\"transcript\",\"diff\",\"changedFiles\"] (default [\"summary\",\"changedFiles\"]); request [\"stdout\",\"stderr\"] for the former agent_logs evidence.",
+            "inputSchema": object_schema(json!({
+                "agentId": {"type": "string"},
+                "sections": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["summary", "stdout", "stderr", "transcript", "diff", "changedFiles"]},
+                    "description": "Evidence sections to include. Defaults to [\"summary\",\"changedFiles\"]."
+                },
+                "maxBytes": {"type": "number"},
+                "stdoutLine": {"type": "number"},
+                "stderrLine": {"type": "number"},
+                "cursor": {"type": "number", "minimum": 0, "description": "Transcript cursor when the transcript section is requested."},
+                "limit": {"type": "number", "minimum": 1, "maximum": 500, "description": "Max transcript events when the transcript section is requested."},
+                "verbosity": {"type": "string", "enum": ["compact", "detailed"]}
+            }), vec!["agentId"]),
+            "outputSchema": output_schema_for("agent_result"),
+            "annotations": read_only_annotations("Inspect provider agent result")
         }),
-        simple_task_id_tool(
-            "agent_stop",
-            "Control surface: terminate a running provider agent when it is no longer useful.",
-        ),
-        simple_task_id_tool(
-            "agent_remove",
-            "Cleanup surface: remove a finished/stopped provider agent after result inspection; managed worktree cleanup failure keeps the agent record.",
-        ),
+        json!({
+            "name": "agent_stop",
+            "description": "Control surface: terminate a running provider agent when it is no longer useful. The stopped agent remains inspectable.",
+            "inputSchema": object_schema(json!({"agentId": {"type": "string"}}), vec!["agentId"]),
+            "annotations": {"title": "Stop a provider agent", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false}
+        }),
+        json!({
+            "name": "agent_remove",
+            "description": "Cleanup surface: remove a finished/stopped provider agent after result inspection; managed worktree cleanup failure keeps the agent record.",
+            "inputSchema": object_schema(json!({"agentId": {"type": "string"}}), vec!["agentId"]),
+            "annotations": {"title": "Remove a provider agent", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false}
+        }),
     ]
 }
 
-fn spawn_like_tool(
-    name: &str,
-    description: &str,
-    provider_enum: &[&str],
-    mode_enum: &[&str],
-    profile_enum: &[&str],
-) -> Value {
+fn spawn_properties(provider_enum: &[&str], mode_enum: &[&str], profile_enum: &[&str]) -> Value {
     json!({
-        "name": name,
-        "description": description,
-        "inputSchema": object_schema(json!({
-            "provider": {"type": "string", "enum": provider_enum},
-            "mode": {"type": "string", "enum": mode_enum},
-            "prompt": {"type": "string", "description": "Task prompt. Maximum 100 KiB UTF-8."},
-            "title": {"type": "string"},
-            "cwd": {"type": "string", "description": "Workspace directory under a configured workspace root."},
-            "timeoutSeconds": {"type": "number"},
-            "model": {"type": "string"},
-            "effort": {"type": "string"},
-            "thinking": {"type": "string"},
-            "isolation": {"type": "string", "enum": ["none", "worktree"]},
-            "worktreeName": {"type": "string"},
-            "profile": {"type": "string", "enum": profile_enum}
-        }), vec!["provider", "mode", "prompt"])
+        "provider": {"type": "string", "enum": provider_enum},
+        "mode": {"type": "string", "enum": mode_enum},
+        "prompt": {"type": "string", "description": "Task prompt. Maximum 100 KiB UTF-8."},
+        "title": {"type": "string"},
+        "cwd": {"type": "string", "description": "Workspace directory under a configured workspace root."},
+        "timeoutSeconds": {"type": "number"},
+        "model": {"type": "string"},
+        "effort": {"type": "string"},
+        "thinking": {"type": "string"},
+        "isolation": {"type": "string", "enum": ["none", "worktree"]},
+        "worktreeName": {"type": "string"},
+        "profile": {"type": "string", "enum": profile_enum},
+        "dryRun": {"type": "boolean", "description": "Preview the launch (command, cwd, environment, profile, isolation) without spawning."}
     })
 }
 
-fn simple_task_id_tool(name: &str, description: &str) -> Value {
+fn read_only_annotations(title: &str) -> Value {
     json!({
-        "name": name,
-        "description": description,
-        "inputSchema": object_schema(json!({"agentId": {"type": "string"}}), vec!["agentId"])
-    })
-}
-
-fn task_id_tool_with_output(name: &str, description: &str) -> Value {
-    json!({
-        "name": name,
-        "description": description,
-        "inputSchema": object_schema(json!({"agentId": {"type": "string"}}), vec!["agentId"]),
-        "outputSchema": output_schema_for(name)
+        "title": title,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
     })
 }
 
@@ -280,40 +228,28 @@ fn output_schema_for(name: &str) -> Value {
             }),
             vec!["agents", "scope"],
         ),
-        "agent_status" | "agent_wait" => output_object_schema(
-            json!({
-                "agentId": {"type": "string"},
-                "status": {"type": "string"},
-                "isFinal": {"type": "boolean"},
-                "presentation": {"type": "object"},
-                "nextActions": {"type": "array"}
-            }),
-            vec!["agentId", "status", "isFinal", "presentation"],
-        ),
         "agent_observe" => output_object_schema(
             json!({
                 "agentId": {"type": "string"},
                 "status": {"type": "string"},
                 "isFinal": {"type": "boolean"},
-                "agent": {"type": "object"},
-                "presentation": {"type": "object"},
+                "phase": {"type": "string"},
                 "progress": {"type": "object"},
                 "events": {"type": "array"},
                 "nextCursor": {"type": "integer"},
                 "timedOut": {"type": "boolean"},
-                "nextActions": {"type": "array"}
+                "next": {"type": "array"}
             }),
             vec![
                 "agentId",
                 "status",
                 "isFinal",
-                "agent",
-                "presentation",
+                "phase",
                 "progress",
                 "events",
                 "nextCursor",
                 "timedOut",
-                "nextActions",
+                "next",
             ],
         ),
         "agent_result" => output_object_schema(
@@ -321,20 +257,12 @@ fn output_schema_for(name: &str) -> Value {
                 "agentId": {"type": "string"},
                 "status": {"type": "string"},
                 "isFinal": {"type": "boolean"},
-                "presentation": {"type": "object"},
-                "nextActions": {"type": "array"},
+                "phase": {"type": "string"},
                 "reviewPacket": {"type": "object"},
-                "stdout": {"type": "string"},
-                "stderr": {"type": "string"},
-                "changedFiles": {"type": "array"}
+                "changedFiles": {"type": "array"},
+                "next": {"type": "array"}
             }),
-            vec![
-                "agentId",
-                "status",
-                "isFinal",
-                "presentation",
-                "reviewPacket",
-            ],
+            vec!["agentId", "status", "isFinal", "reviewPacket", "next"],
         ),
         _ => output_object_schema(json!({}), Vec::<&str>::new()),
     }
