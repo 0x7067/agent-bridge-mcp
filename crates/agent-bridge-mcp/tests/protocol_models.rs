@@ -36,14 +36,14 @@ fn json_rpc_response_serializes_public_shape() {
 #[test]
 fn tool_call_params_parse_known_tool_names() {
     let params: ToolCallParams = serde_json::from_str(
-        r#"{"name":"agent_preview","arguments":{"provider":"codex","mode":"review","prompt":"x"}}"#,
+        r#"{"name":"agent_spawn","arguments":{"provider":"codex","mode":"review","prompt":"x","dryRun":true}}"#,
     )
     .unwrap();
-    assert_eq!(params.name, ToolName::AgentPreview);
+    assert_eq!(params.name, ToolName::AgentSpawn);
 }
 
 #[test]
-fn agent_preview_input_rejects_unknown_fields() {
+fn spawn_preview_input_rejects_unknown_fields() {
     let error = serde_json::from_str::<TaskPreviewInput>(
         r#"{"provider":"codex","mode":"review","prompt":"x","maxTurns":2}"#,
     )

@@ -99,20 +99,32 @@ impl TaskManagerHandle {
             .await
     }
 
-    pub async fn status(&self, agent_id: String) -> Result<Value, String> {
-        self.request(|reply| ActorCommand::Status(agent_id, reply))
-            .await
+    /// Lean state-only read (subsumes the former agent_status tool / observe limit:0).
+    pub async fn status(&self, agent_id: String, detailed: bool) -> Result<Value, String> {
+        let task: TaskRecord = self
+            .request(|reply| ActorCommand::Get(agent_id.clone(), reply))
+            .await?;
+        let mut value = public_task(&task);
+        if detailed {
+            add_detail(&mut value, &task);
+        }
+        Ok(value)
     }
 
-    pub async fn wait(&self, agent_id: String, timeout_ms: Option<i64>) -> Result<Value, String> {
+    /// Block until finality or timeout (subsumes the former agent_wait tool / observe until:"final").
+    pub async fn wait(
+        &self,
+        agent_id: String,
+        timeout_ms: Option<i64>,
+        detailed: bool,
+    ) -> Result<Value, String> {
         let deadline = Instant::now() + Duration::from_millis(normalize_wait_ms(timeout_ms) as u64);
         loop {
-            let status = self.status(agent_id.clone()).await?;
+            let mut status = self.status(agent_id.clone(), detailed).await?;
             if status["isFinal"].as_bool().unwrap_or(false) {
                 return Ok(status);
             }
             if Instant::now() >= deadline {
-                let mut status = status;
                 status["timedOut"] = json!(true);
                 return Ok(status);
             }
@@ -126,6 +138,7 @@ impl TaskManagerHandle {
         cursor: Option<u64>,
         limit: Option<u64>,
         timeout_ms: Option<i64>,
+        detailed: bool,
     ) -> Result<Value, String> {
         let cursor = cursor.unwrap_or(0) as usize;
         let limit = normalize_observe_limit(limit);
@@ -141,13 +154,13 @@ impl TaskManagerHandle {
                 .as_array()
                 .is_some_and(|events| !events.is_empty());
             if has_events || is_final(task.status) {
-                return Ok(observe_payload(task, transcript, false));
+                return Ok(observe_payload(task, transcript, false, detailed));
             }
             if Instant::now() >= deadline {
-                return Ok(observe_payload(task, transcript, true));
+                return Ok(observe_payload(task, transcript, true, detailed));
             }
             if next_cursor > cursor as u64 {
-                return Ok(observe_payload(task, transcript, false));
+                return Ok(observe_payload(task, transcript, false, detailed));
             }
             sleep(Duration::from_millis(50)).await;
         }
@@ -204,43 +217,131 @@ impl TaskManagerHandle {
         .await
     }
 
-    pub async fn result(&self, agent_id: String, max_bytes: Option<i64>) -> Result<Value, String> {
+    /// Final evidence. The review packet (`summary`) and `changedFiles` are returned by
+    /// default; raw `stdout`/`stderr`/`diff`/`transcript` sections are fetched on demand so
+    /// large evidence stays out of context until requested (subsumes the former agent_logs tool).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn result(
+        &self,
+        agent_id: String,
+        sections: ResultSections,
+        max_bytes: Option<i64>,
+        stdout_line: Option<usize>,
+        stderr_line: Option<usize>,
+        transcript_cursor: Option<u64>,
+        transcript_limit: Option<u64>,
+        detailed: bool,
+    ) -> Result<Value, String> {
         let task: TaskRecord = self
             .request(|reply| ActorCommand::InspectResult(agent_id.clone(), reply))
             .await?;
-        let logs = self.logs(agent_id, max_bytes, None, None).await?;
-        let mut public = public_task(&task);
-        public["exitCode"] = task.exit_code.map_or(Value::Null, Value::from);
-        public["signal"] = task.signal.clone().map_or(Value::Null, Value::from);
-        public["error"] = task.error.clone().map_or(Value::Null, Value::from);
-        public["stdout"] = logs["stdout"].clone();
-        public["stderr"] = logs["stderr"].clone();
-        public["stdoutTruncated"] = logs["stdoutTruncated"].clone();
-        public["stderrTruncated"] = logs["stderrTruncated"].clone();
-        public["diagnostic"] = task.diagnostic.clone().unwrap_or(Value::Null);
-        public["profile"] = json!(task.profile);
-        public["promptStrategy"] = Value::String(task.prompt_strategy.clone());
-        public["profileDiagnostics"] = task.profile_diagnostics.clone().unwrap_or(Value::Null);
-        public["transcriptAvailable"] = Value::Bool(task.transcript_available);
-        public["finalResultDetected"] = Value::Bool(task.final_result_detected);
-        public["partialResultDetected"] = Value::Bool(task.partial_result_detected);
-        public["transcriptDiagnostic"] = task.transcript_diagnostic.clone().unwrap_or(Value::Null);
-        public["gitStatus"] = Value::String(task.git_status.clone().unwrap_or_default());
-        public["gitDiff"] = Value::String(task.git_diff.clone().unwrap_or_default());
-        public["changedFiles"] = Value::Array(
-            task.changed_files
-                .clone()
-                .unwrap_or_default()
-                .into_iter()
-                .map(Value::String)
-                .collect(),
-        );
-        public["reviewPacket"] = review_packet(
-            &task,
-            logs["stdoutTruncated"].as_bool().unwrap_or(false),
-            logs["stderrTruncated"].as_bool().unwrap_or(false),
-        );
-        Ok(public)
+        let mut value = public_task(&task);
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "exitCode".to_string(),
+                task.exit_code.map_or(Value::Null, Value::from),
+            );
+            object.insert(
+                "signal".to_string(),
+                task.signal.clone().map_or(Value::Null, Value::from),
+            );
+            object.insert(
+                "error".to_string(),
+                task.error.clone().map_or(Value::Null, Value::from),
+            );
+            object.insert("errorType".to_string(), json!(task.error_type));
+        }
+        let (stdout_truncated, stderr_truncated) = if sections.stdout || sections.stderr {
+            let logs = self
+                .logs(agent_id.clone(), max_bytes, stdout_line, stderr_line)
+                .await?;
+            if let Some(object) = value.as_object_mut() {
+                if sections.stdout {
+                    object.insert("stdout".to_string(), logs["stdout"].clone());
+                    object.insert(
+                        "stdoutTruncated".to_string(),
+                        logs["stdoutTruncated"].clone(),
+                    );
+                    object.insert("nextStdoutLine".to_string(), logs["nextStdoutLine"].clone());
+                }
+                if sections.stderr {
+                    object.insert("stderr".to_string(), logs["stderr"].clone());
+                    object.insert(
+                        "stderrTruncated".to_string(),
+                        logs["stderrTruncated"].clone(),
+                    );
+                    object.insert("nextStderrLine".to_string(), logs["nextStderrLine"].clone());
+                }
+            }
+            (
+                logs["stdoutTruncated"].as_bool().unwrap_or(false),
+                logs["stderrTruncated"].as_bool().unwrap_or(false),
+            )
+        } else {
+            (false, false)
+        };
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "reviewPacket".to_string(),
+                review_packet(&task, stdout_truncated, stderr_truncated),
+            );
+            if sections.changed_files {
+                object.insert(
+                    "changedFiles".to_string(),
+                    Value::Array(
+                        task.changed_files
+                            .clone()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(Value::String)
+                            .collect(),
+                    ),
+                );
+            }
+            if sections.diff {
+                object.insert(
+                    "gitStatus".to_string(),
+                    Value::String(task.git_status.clone().unwrap_or_default()),
+                );
+                object.insert(
+                    "gitDiff".to_string(),
+                    Value::String(task.git_diff.clone().unwrap_or_default()),
+                );
+            }
+        }
+        if sections.transcript {
+            let transcript = read_transcript(
+                &task,
+                transcript_cursor.unwrap_or(0) as usize,
+                transcript_limit.unwrap_or(200) as usize,
+            )
+            .await?;
+            if let Some(object) = value.as_object_mut() {
+                object.insert("transcript".to_string(), transcript);
+            }
+        }
+        if detailed {
+            if let Some(object) = value.as_object_mut() {
+                object.insert(
+                    "diagnostic".to_string(),
+                    task.diagnostic.clone().unwrap_or(Value::Null),
+                );
+                object.insert(
+                    "transcriptAvailable".to_string(),
+                    Value::Bool(task.transcript_available),
+                );
+                object.insert(
+                    "finalResultDetected".to_string(),
+                    Value::Bool(task.final_result_detected),
+                );
+                object.insert(
+                    "partialResultDetected".to_string(),
+                    Value::Bool(task.partial_result_detected),
+                );
+            }
+            add_detail(&mut value, &task);
+        }
+        Ok(value)
     }
 
     pub async fn stop(&self, agent_id: String) -> Result<Value, String> {
@@ -271,10 +372,54 @@ impl TaskManagerHandle {
     }
 }
 
+/// Evidence sections a caller can request from `agent_result`. The review-packet
+/// summary is always returned; these gate the larger, on-demand evidence.
+#[derive(Debug, Clone, Copy)]
+pub struct ResultSections {
+    pub changed_files: bool,
+    pub stdout: bool,
+    pub stderr: bool,
+    pub diff: bool,
+    pub transcript: bool,
+}
+
+impl ResultSections {
+    pub fn default_sections() -> Self {
+        Self {
+            changed_files: true,
+            stdout: false,
+            stderr: false,
+            diff: false,
+            transcript: false,
+        }
+    }
+
+    pub fn from_names<'a>(names: impl Iterator<Item = &'a str>) -> Self {
+        let mut sections = Self {
+            changed_files: false,
+            stdout: false,
+            stderr: false,
+            diff: false,
+            transcript: false,
+        };
+        for name in names {
+            match name {
+                "summary" => {}
+                "changedFiles" => sections.changed_files = true,
+                "stdout" => sections.stdout = true,
+                "stderr" => sections.stderr = true,
+                "diff" => sections.diff = true,
+                "transcript" => sections.transcript = true,
+                _ => {}
+            }
+        }
+        sections
+    }
+}
+
 enum ActorCommand {
     Spawn(Value, oneshot::Sender<Result<Value, String>>),
     List(Value, oneshot::Sender<Result<Value, String>>),
-    Status(String, oneshot::Sender<Result<Value, String>>),
     Get(String, oneshot::Sender<Result<TaskRecord, String>>),
     InspectResult(String, oneshot::Sender<Result<TaskRecord, String>>),
     Stop(String, oneshot::Sender<Result<Value, String>>),
@@ -300,10 +445,6 @@ impl TaskActor {
                 }
                 ActorCommand::List(arguments, reply) => {
                     let result = list_tasks(&self.registry, arguments);
-                    let _ = reply.send(result);
-                }
-                ActorCommand::Status(agent_id, reply) => {
-                    let result = self.require_task(&agent_id).map(public_task);
                     let _ = reply.send(result);
                 }
                 ActorCommand::Get(agent_id, reply) => {
@@ -432,7 +573,12 @@ impl TaskActor {
         }
         self.registry.tasks.insert(agent_id.clone(), record);
         self.save().await?;
-        Ok(public_task(self.registry.tasks.get(&agent_id).unwrap()))
+        // Spawn is a one-shot launch (not a polling loop), so include launch detail
+        // (pid, isolation, worktreePath, profile) for the caller.
+        let task = self.registry.tasks.get(&agent_id).unwrap();
+        let mut value = public_task(task);
+        add_detail(&mut value, task);
+        Ok(value)
     }
 
     async fn stop(&mut self, agent_id: &str) -> Result<Value, String> {
@@ -1953,95 +2099,76 @@ fn transcript_progress_snapshot(task: &TaskRecord) -> TranscriptProgressSnapshot
     snapshot
 }
 
-fn observe_payload(task: TaskRecord, transcript: Value, timed_out: bool) -> Value {
-    let public = public_task(&task);
+fn observe_payload(task: TaskRecord, transcript: Value, timed_out: bool, detailed: bool) -> Value {
+    let progress = agent_progress(&task);
+    let next = next_actions(&task, &progress);
+    let mut value = json!({
+        "agentId": task.agent_id,
+        "status": task.status,
+        "isFinal": is_final(task.status),
+        "phase": task_phase(task.status),
+        "progress": progress,
+        "events": transcript["events"],
+        "nextCursor": transcript["nextCursor"],
+        "timedOut": timed_out,
+        "next": next
+    });
+    if detailed {
+        add_detail(&mut value, &task);
+    }
+    value
+}
+
+/// Lean agent-facing state envelope. Each field appears once; GUI presentation
+/// chrome is intentionally omitted (only LLM callers consume this surface).
+fn public_task(task: &TaskRecord) -> Value {
+    let progress = agent_progress(task);
     json!({
         "agentId": task.agent_id,
         "status": task.status,
         "isFinal": is_final(task.status),
-        "agent": public,
-        "presentation": public["presentation"],
-        "progress": public["progress"],
-        "events": transcript["events"],
-        "nextCursor": transcript["nextCursor"],
-        "timedOut": timed_out,
-        "nextActions": public["nextActions"]
+        "phase": task_phase(task.status),
+        "progress": progress.clone(),
+        "next": next_actions(task, &progress)
     })
 }
 
-fn public_task(task: &TaskRecord) -> Value {
-    let is_final = is_final(task.status);
-    let phase = match task.status {
+fn task_phase(status: TaskStatus) -> TaskPhase {
+    match status {
         TaskStatus::Queued => TaskPhase::Pending,
         TaskStatus::Running => TaskPhase::Active,
         _ => TaskPhase::Done,
-    };
-    let progress = agent_progress(task);
-    json!({
-        "agentId": task.agent_id,
-        "provider": task.provider,
-        "mode": task.mode,
-        "title": task.title,
-        "status": task.status,
-        "cwd": task.cwd,
-        "isolation": task.isolation,
-        "worktreePath": task.worktree_path,
-        "pid": task.pid,
-        "createdAt": task.created_at,
-        "updatedAt": task.updated_at,
-        "startedAt": task.started_at,
-        "completedAt": task.completed_at,
-        "isFinal": is_final,
-        "phase": phase,
-        "durationMs": duration_ms(task),
-        "errorType": task.error_type,
-        "profile": task.profile,
-        "promptStrategy": task.prompt_strategy,
-        "profileDiagnostics": task.profile_diagnostics,
-        "transcriptDiagnostic": task.transcript_diagnostic,
-        "progress": progress,
-        "presentation": presentation(task, &progress),
-        "nextActions": next_actions(task, &progress)
-    })
+    }
 }
 
-fn presentation(task: &TaskRecord, progress: &Value) -> Value {
-    let changed_files = task.changed_files.clone().unwrap_or_default();
-    let git_status = task.git_status.clone().unwrap_or_default();
-    let has_changes = !changed_files.is_empty() || !git_status.trim().is_empty();
-    json!({
-        "displayTitle": display_title(task),
-        "subtitle": format!("{} {}", task.provider.as_str(), task.mode.as_str()),
-        "phase": match task.status {
-            TaskStatus::Queued => "pending",
-            TaskStatus::Running => "active",
-            _ => "done",
-        },
-        "statusTone": status_tone(task.status),
-        "workspace": task.cwd,
-        "timestamps": {
-            "createdAt": task.created_at,
-            "updatedAt": task.updated_at,
-            "startedAt": task.started_at,
-            "completedAt": task.completed_at,
-        },
-        "durationMs": duration_ms(task),
-        "errorType": task.error_type,
-        "result": {
-            "available": is_final(task.status),
-            "hasChanges": has_changes,
-            "changedFileCount": changed_files.len(),
-            "inspectedAt": task.result_inspected_at,
-            "transcriptAvailable": task.transcript_available,
-            "finalResultDetected": task.final_result_detected,
-            "partialResultDetected": task.partial_result_detected,
-            "reviewPacketAvailable": is_final(task.status)
-        },
-        "progress": progress,
-        "verificationStatus": "not_verified",
-        "actions": presentation_actions(task),
-        "nextActions": next_actions(task, progress)
-    })
+/// Opt-in (`verbosity: "detailed"`) debug metadata added to lean responses.
+fn add_detail(value: &mut Value, task: &TaskRecord) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    object.insert("provider".to_string(), json!(task.provider));
+    object.insert("mode".to_string(), json!(task.mode));
+    object.insert("title".to_string(), json!(task.title));
+    object.insert("cwd".to_string(), json!(task.cwd));
+    object.insert("isolation".to_string(), json!(task.isolation));
+    object.insert("worktreePath".to_string(), json!(task.worktree_path));
+    object.insert("pid".to_string(), json!(task.pid));
+    object.insert("createdAt".to_string(), json!(task.created_at));
+    object.insert("updatedAt".to_string(), json!(task.updated_at));
+    object.insert("startedAt".to_string(), json!(task.started_at));
+    object.insert("completedAt".to_string(), json!(task.completed_at));
+    object.insert("durationMs".to_string(), duration_ms(task));
+    object.insert("errorType".to_string(), json!(task.error_type));
+    object.insert("profile".to_string(), json!(task.profile));
+    object.insert("promptStrategy".to_string(), json!(task.prompt_strategy));
+    object.insert(
+        "profileDiagnostics".to_string(),
+        task.profile_diagnostics.clone().unwrap_or(Value::Null),
+    );
+    object.insert(
+        "transcriptDiagnostic".to_string(),
+        task.transcript_diagnostic.clone().unwrap_or(Value::Null),
+    );
 }
 
 fn display_title(task: &TaskRecord) -> String {
@@ -2050,119 +2177,8 @@ fn display_title(task: &TaskRecord) -> String {
         .unwrap_or_else(|| format!("{} {} task", task.provider.as_str(), task.mode.as_str()))
 }
 
-fn status_tone(status: TaskStatus) -> &'static str {
-    match status {
-        TaskStatus::Queued => "pending",
-        TaskStatus::Running => "running",
-        TaskStatus::Succeeded => "success",
-        TaskStatus::Failed => "error",
-        TaskStatus::Stopped => "stopped",
-        TaskStatus::FailedStale => "stale",
-        TaskStatus::Removed => "removed",
-    }
-}
-
-fn presentation_actions(task: &TaskRecord) -> Value {
-    let mut actions = vec![
-        action(
-            "observe",
-            Some("agent_observe"),
-            action_state(!is_final(task.status)),
-            unavailable_reason(is_final(task.status), "agent_final"),
-        ),
-        action(
-            "wait",
-            Some("agent_wait"),
-            action_state(!is_final(task.status)),
-            None,
-        ),
-        action("inspect_status", Some("agent_status"), "available", None),
-        action("inspect_logs", Some("agent_logs"), "available", None),
-        action(
-            "inspect_transcript",
-            Some("agent_transcript"),
-            action_state(task.transcript_available),
-            unavailable_reason(!task.transcript_available, "transcript_unavailable"),
-        ),
-        action(
-            "inspect_result",
-            Some("agent_result"),
-            action_state(is_final(task.status)),
-            unavailable_reason(!is_final(task.status), "agent_not_final"),
-        ),
-        action(
-            "stop",
-            Some("agent_stop"),
-            action_state(matches!(
-                task.status,
-                TaskStatus::Queued | TaskStatus::Running
-            )),
-            unavailable_reason(
-                !matches!(task.status, TaskStatus::Queued | TaskStatus::Running),
-                "agent_not_running",
-            ),
-        ),
-    ];
-
-    let cleanup_state = if !is_final(task.status) {
-        "unavailable"
-    } else if task.worktree_managed && task.result_inspected_at.is_none() {
-        "unsafe"
-    } else {
-        "available"
-    };
-    let cleanup_reason = if !is_final(task.status) {
-        Some("agent_not_final")
-    } else if task.worktree_managed && task.result_inspected_at.is_none() {
-        Some("managed_worktree_cleanup_requires_result_inspection")
-    } else {
-        None
-    };
-    actions.push(action(
-        "cleanup",
-        Some("agent_remove"),
-        cleanup_state,
-        cleanup_reason,
-    ));
-    actions.push(action(
-        "reply",
-        None,
-        "unavailable",
-        Some("provider_agent_not_interactive"),
-    ));
-    actions.push(action(
-        "resume",
-        None,
-        "unavailable",
-        Some("provider_agent_not_resumable"),
-    ));
-    Value::Array(actions)
-}
-
-fn action_state(available: bool) -> &'static str {
-    if available {
-        "available"
-    } else {
-        "unavailable"
-    }
-}
-
-fn unavailable_reason(unavailable: bool, reason: &'static str) -> Option<&'static str> {
-    unavailable.then_some(reason)
-}
-
-fn action(id: &str, tool: Option<&str>, state: &str, reason: Option<&str>) -> Value {
-    let mut value = json!({
-        "id": id,
-        "tool": tool,
-        "state": state
-    });
-    if let Some(reason) = reason {
-        value["reason"] = Value::String(reason.to_string());
-    }
-    value
-}
-
+/// Single deduplicated `next` action list. Targets only the consolidated
+/// eight-tool surface (agent_observe / agent_result / agent_stop / agent_remove).
 fn next_actions(task: &TaskRecord, progress: &Value) -> Value {
     let mut actions = Vec::new();
     if !is_final(task.status) {
@@ -2171,33 +2187,17 @@ fn next_actions(task: &TaskRecord, progress: &Value) -> Value {
         actions.push(next_action(
             "observe",
             Some("agent_observe"),
-            json!({ "agentId": task.agent_id, "cursor": 0, "limit": 100, "timeoutMs": recommended_poll_ms }),
+            json!({ "agentId": task.agent_id, "until": "now", "cursor": 0, "limit": 100, "timeoutMs": recommended_poll_ms }),
             "available",
-            "Observe bounded transcript and lifecycle progress before deciding whether to wait, inspect, stop, or fall back.",
+            "Observe bounded transcript and lifecycle progress before deciding whether to wait, inspect, or stop.",
             "safe",
         ));
         actions.push(next_action(
-            "wait",
-            Some("agent_wait"),
-            json!({ "agentId": task.agent_id, "timeoutMs": recommended_poll_ms.min(MAX_WAIT_MS) }),
+            "wait_final",
+            Some("agent_observe"),
+            json!({ "agentId": task.agent_id, "until": "final", "timeoutMs": recommended_poll_ms.min(MAX_WAIT_MS) }),
             "available",
-            "Wait for finalization using the provider-aware polling interval.",
-            "safe",
-        ));
-        actions.push(next_action(
-            "inspect_logs",
-            Some("agent_logs"),
-            json!({ "agentId": task.agent_id }),
-            "available",
-            if stall_risk == "high" { "Inspect logs because the agent has exceeded its recommended observation budget or is near timeout." } else { "Inspect incremental stdout and stderr if observation times out or progress is unclear." },
-            "safe",
-        ));
-        actions.push(next_action(
-            "inspect_status",
-            Some("agent_status"),
-            json!({ "agentId": task.agent_id }),
-            "available",
-            "Confirm the task lifecycle state without assuming provider completion verifies the original request.",
+            "Block until the agent reaches a final state using the provider-aware polling interval.",
             "safe",
         ));
         actions.push(next_action(
@@ -2217,7 +2217,7 @@ fn next_actions(task: &TaskRecord, progress: &Value) -> Value {
             Some("agent_result"),
             json!({ "agentId": task.agent_id }),
             "available",
-            "Inspect final logs, diagnostics, git state, transcript evidence, and review packet before cleanup or verification.",
+            "Inspect the review packet, then request stdout/stderr/diff/transcript sections as needed before cleanup or verification.",
             "safe",
         ));
         if task.worktree_managed {
@@ -2239,9 +2239,9 @@ fn next_actions(task: &TaskRecord, progress: &Value) -> Value {
     ) || task.error_type.is_some()
     {
         actions.push(next_action(
-            "inspect_logs",
-            Some("agent_logs"),
-            json!({ "agentId": task.agent_id }),
+            "inspect_evidence",
+            Some("agent_result"),
+            json!({ "agentId": task.agent_id, "sections": ["summary", "stdout", "stderr"] }),
             "available",
             "Inspect logs and diagnostics before deciding whether to rerun, narrow the prompt, or continue manually.",
             "safe",
@@ -2249,8 +2249,8 @@ fn next_actions(task: &TaskRecord, progress: &Value) -> Value {
         if task.transcript_available {
             actions.push(next_action(
                 "inspect_transcript",
-                Some("agent_transcript"),
-                json!({ "agentId": task.agent_id }),
+                Some("agent_result"),
+                json!({ "agentId": task.agent_id, "sections": ["transcript"] }),
                 "available",
                 "Inspect transcript evidence when provider behavior or final-state classification is unclear.",
                 "safe",
@@ -2336,7 +2336,6 @@ fn review_packet(task: &TaskRecord, stdout_truncated: bool, stderr_truncated: bo
         "stdoutTruncated": stdout_truncated,
         "stderrTruncated": stderr_truncated,
         "progress": progress,
-        "nextActions": next_actions(task, &progress),
         "recommendedActions": recommended_actions(task, has_changes)
     })
 }
@@ -2345,8 +2344,8 @@ fn recommended_actions(task: &TaskRecord, has_changes: bool) -> Vec<&'static str
     if !is_final(task.status) {
         return vec![
             "Use agent_observe with a bounded timeout before treating silence as a stall.",
-            "Use agent_logs with line cursors to inspect incremental output.",
-            "Use agent_status to confirm whether the agent is still active.",
+            "Use agent_observe with limit:0 to confirm whether the agent is still active.",
+            "Use agent_observe with until:final when only finality matters.",
             "Use agent_stop if the agent is no longer useful.",
         ];
     }
@@ -2364,7 +2363,7 @@ fn recommended_actions(task: &TaskRecord, has_changes: bool) -> Vec<&'static str
     let mut actions =
         vec!["Inspect stdout, stderr, diagnostics, git status, diff, and changed files."];
     if task.transcript_available {
-        actions.push("Inspect agent_transcript when provider behavior or final-state classification is unclear.");
+        actions.push("Request agent_result sections:[\"transcript\"] when provider behavior or final-state classification is unclear.");
     }
     if has_changes {
         actions.push("Inspect gitStatus, gitDiff, and changedFiles before verification.");
@@ -2755,29 +2754,26 @@ mod tests {
         }
     }
 
-    fn action_state<'a>(task: &'a Value, id: &str) -> &'a str {
-        task["presentation"]["actions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|action| action["id"] == id)
-            .unwrap_or_else(|| panic!("missing action: {id}"))["state"]
-            .as_str()
-            .unwrap()
-    }
-
-    fn action_reason<'a>(task: &'a Value, id: &str) -> Option<&'a str> {
-        task["presentation"]["actions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|action| action["id"] == id)
-            .unwrap_or_else(|| panic!("missing action: {id}"))["reason"]
-            .as_str()
+    fn next_items(task: &Value) -> &Vec<Value> {
+        task["next"].as_array().unwrap()
     }
 
     fn next_action(task: &Value, index: usize) -> &Value {
-        &task["presentation"]["nextActions"].as_array().unwrap()[index]
+        &next_items(task)[index]
+    }
+
+    fn next_ids(task: &Value) -> Vec<String> {
+        next_items(task)
+            .iter()
+            .map(|item| item["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn next_item<'a>(task: &'a Value, id: &str) -> &'a Value {
+        next_items(task)
+            .iter()
+            .find(|item| item["id"] == id)
+            .unwrap_or_else(|| panic!("missing next action: {id}"))
     }
 
     #[test]
@@ -2790,20 +2786,18 @@ mod tests {
     }
 
     #[test]
-    fn public_agent_includes_presentation_for_all_lifecycle_states() {
-        for (status, phase, tone) in [
-            (TaskStatus::Queued, "pending", "pending"),
-            (TaskStatus::Running, "active", "running"),
-            (TaskStatus::Succeeded, "done", "success"),
-            (TaskStatus::Failed, "done", "error"),
-            (TaskStatus::Stopped, "done", "stopped"),
-            (TaskStatus::FailedStale, "done", "stale"),
+    fn public_agent_returns_lean_envelope_for_all_lifecycle_states() {
+        for (status, phase) in [
+            (TaskStatus::Queued, "pending"),
+            (TaskStatus::Running, "active"),
+            (TaskStatus::Succeeded, "done"),
+            (TaskStatus::Failed, "done"),
+            (TaskStatus::Stopped, "done"),
+            (TaskStatus::FailedStale, "done"),
         ] {
             let mut task = sample_task(status);
             task.title = Some("Presentation audit".to_string());
             task.transcript_available = true;
-            task.final_result_detected = status == TaskStatus::Succeeded;
-            task.partial_result_detected = status == TaskStatus::Failed;
             task.changed_files = Some(vec!["README.md".to_string()]);
             if status == TaskStatus::FailedStale {
                 task.error_type = Some(ErrorType::Stale);
@@ -2811,53 +2805,35 @@ mod tests {
 
             let public = public_task(&task);
 
-            assert_eq!(public["presentation"]["displayTitle"], "Presentation audit");
-            assert_eq!(public["presentation"]["subtitle"], "codex review");
-            assert_eq!(public["presentation"]["phase"], phase);
-            assert_eq!(public["presentation"]["statusTone"], tone);
-            assert_eq!(public["presentation"]["result"]["changedFileCount"], 1);
-            assert_eq!(
-                public["presentation"]["result"]["transcriptAvailable"],
-                true
-            );
-            assert_eq!(public["presentation"]["verificationStatus"], "not_verified");
-            assert!(public["presentation"]["result"]["available"].is_boolean());
-            assert!(public["presentation"]["actions"].is_array());
-            assert!(public["presentation"]["nextActions"].is_array());
-            assert!(public["nextActions"].is_array());
+            // Lean envelope: each field once, no GUI presentation chrome.
+            assert_eq!(public["agentId"], task.agent_id);
+            assert_eq!(public["status"], json!(status));
+            assert_eq!(public["phase"], phase);
+            assert_eq!(public["isFinal"], is_final(status));
+            assert!(public["progress"].is_object());
+            assert!(public["next"].is_array());
+            assert!(public.get("presentation").is_none());
+            assert!(public.get("nextActions").is_none());
             assert!(public.get("stdout").is_none());
             assert!(public.get("gitDiff").is_none());
         }
     }
 
     #[test]
-    fn presentation_uses_safe_display_title_fallback() {
-        let task = sample_task(TaskStatus::Running);
-        let public = public_task(&task);
-
-        assert_eq!(public["presentation"]["displayTitle"], "codex review task");
+    fn display_title_uses_safe_provider_mode_fallback() {
+        let mut task = sample_task(TaskStatus::Running);
+        task.title = None;
+        assert_eq!(display_title(&task), "codex review task");
     }
 
     #[test]
-    fn presentation_actions_reflect_running_final_and_worktree_states() {
+    fn next_actions_reflect_running_final_and_worktree_states() {
         let mut running = sample_task(TaskStatus::Running);
         running.transcript_available = true;
         let running_public = public_task(&running);
-        assert_eq!(action_state(&running_public, "wait"), "available");
-        assert_eq!(action_state(&running_public, "stop"), "available");
-        assert_eq!(
-            running_public["presentation"]["actions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|action| action["id"] == "wait")
-                .unwrap()["tool"],
-            "agent_wait"
-        );
-        assert_eq!(
-            action_state(&running_public, "inspect_result"),
-            "unavailable"
-        );
+        // Lean envelope: a single `next` list, no GUI `presentation`/`actions`.
+        assert!(running_public.get("presentation").is_none());
+        let running_ids = next_ids(&running_public);
         assert_eq!(next_action(&running_public, 0)["id"], "observe");
         assert_eq!(next_action(&running_public, 0)["tool"], "agent_observe");
         assert_eq!(
@@ -2865,65 +2841,48 @@ mod tests {
             running.agent_id
         );
         assert_eq!(next_action(&running_public, 0)["safety"], "safe");
-        assert_eq!(
-            action_reason(&running_public, "inspect_result"),
-            Some("agent_not_final")
-        );
-        assert_eq!(action_state(&running_public, "reply"), "unavailable");
-        assert_eq!(
-            action_reason(&running_public, "reply"),
-            Some("provider_agent_not_interactive")
-        );
+        assert!(running_ids.contains(&"wait_final".to_string()));
+        assert!(running_ids.contains(&"stop".to_string()));
+        assert!(!running_ids.contains(&"inspect_result".to_string()));
+        // wait_final subsumes the former agent_wait via agent_observe until:"final".
+        let wait = next_item(&running_public, "wait_final");
+        assert_eq!(wait["tool"], "agent_observe");
+        assert_eq!(wait["arguments"]["until"], "final");
 
         let mut final_task = sample_task(TaskStatus::Succeeded);
         final_task.transcript_available = false;
         let final_public = public_task(&final_task);
-        assert_eq!(action_state(&final_public, "wait"), "unavailable");
-        assert_eq!(action_state(&final_public, "inspect_result"), "available");
-        assert_eq!(action_state(&final_public, "cleanup"), "available");
-        assert_eq!(
-            action_state(&final_public, "inspect_transcript"),
-            "unavailable"
-        );
-        assert_eq!(
-            action_reason(&final_public, "inspect_transcript"),
-            Some("transcript_unavailable")
-        );
+        assert_eq!(next_action(&final_public, 0)["id"], "inspect_result");
+        assert_eq!(next_action(&final_public, 0)["tool"], "agent_result");
+        assert!(!next_ids(&final_public).contains(&"cleanup".to_string()));
 
         let mut worktree = sample_task(TaskStatus::Succeeded);
         worktree.worktree_managed = true;
         worktree.worktree_path = Some("/tmp/worktree".to_string());
         let worktree_public = public_task(&worktree);
-        assert_eq!(action_state(&worktree_public, "cleanup"), "unsafe");
         assert_eq!(next_action(&worktree_public, 0)["id"], "inspect_result");
         assert_eq!(next_action(&worktree_public, 1)["id"], "cleanup");
         assert_eq!(next_action(&worktree_public, 1)["state"], "unsafe");
-        assert_eq!(
-            action_reason(&worktree_public, "cleanup"),
-            Some("managed_worktree_cleanup_requires_result_inspection")
-        );
 
         worktree.result_inspected_at = Some(now_iso());
         let inspected_worktree_public = public_task(&worktree);
+        // Succeeded + inspected + no error => verify_project is primary, cleanup destructive.
         assert_eq!(
-            action_state(&inspected_worktree_public, "cleanup"),
-            "available"
+            next_action(&inspected_worktree_public, 0)["id"],
+            "verify_project"
         );
         assert_eq!(
-            next_action(&inspected_worktree_public, 1)["safety"],
+            next_item(&inspected_worktree_public, "cleanup")["safety"],
             "destructive"
         );
-        assert_eq!(action_reason(&inspected_worktree_public, "cleanup"), None);
-        assert!(inspected_worktree_public["presentation"]["result"]["inspectedAt"].is_string());
 
         let mut stale = sample_task(TaskStatus::FailedStale);
         stale.error_type = Some(ErrorType::Stale);
         stale.result_inspected_at = Some(now_iso());
         let stale_public = public_task(&stale);
-        assert_eq!(stale_public["presentation"]["phase"], "done");
-        assert_eq!(stale_public["presentation"]["errorType"], "stale");
-        assert_eq!(next_action(&stale_public, 0)["id"], "inspect_logs");
-        assert_eq!(action_state(&stale_public, "resume"), "unavailable");
+        assert_eq!(stale_public["phase"], "done");
+        assert_eq!(next_action(&stale_public, 0)["id"], "inspect_evidence");
+        assert_eq!(next_action(&stale_public, 0)["tool"], "agent_result");
     }
 
     #[test]
@@ -2960,7 +2919,9 @@ mod tests {
         assert_eq!(tasks[0]["agentId"], "agent_running");
         assert_eq!(tasks[1]["agentId"], "agent_recent");
         assert_eq!(tasks[2]["agentId"], "agent_old");
-        assert!(tasks.iter().all(|task| task.get("presentation").is_some()));
+        // Lean per-agent summaries: a single `next` list, no GUI presentation blob.
+        assert!(tasks.iter().all(|task| task["next"].is_array()));
+        assert!(tasks.iter().all(|task| task.get("presentation").is_none()));
     }
 
     #[test]
