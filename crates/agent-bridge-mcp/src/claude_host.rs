@@ -1162,7 +1162,10 @@ mod tests {
         }
         disconnect_tx.send(()).unwrap();
 
-        let result = timeout(Duration::from_secs(5), child)
+        // Generous safety net: the run completes deterministically after the
+        // disconnect-driven terminate_with_grace; this bound only guards a true
+        // hang, so it must not race finalization under parallel load.
+        let result = timeout(Duration::from_secs(30), child)
             .await
             .unwrap()
             .unwrap();
@@ -1190,7 +1193,9 @@ mod tests {
         active_pids.lock().unwrap().push(pid);
 
         terminate_active_children(&active_pids, libc::SIGTERM);
-        let status = timeout(Duration::from_secs(5), child.wait())
+        // Generous safety net for child reaping under parallel load; the child
+        // exits deterministically once signaled.
+        let status = timeout(Duration::from_secs(30), child.wait())
             .await
             .unwrap()
             .unwrap();

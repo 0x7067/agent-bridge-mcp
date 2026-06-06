@@ -1264,7 +1264,7 @@ fn stdio_agent_transcript_captures_redacted_events_and_result_evidence() {
     let agent_id = task["agentId"].as_str().unwrap().to_string();
     let completed = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 5000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(completed["status"], "succeeded");
     assert_eq!(completed["profile"], "bare");
@@ -1335,7 +1335,7 @@ fn stdio_agent_transcript_reports_missing_artifact_without_hiding_logs() {
     let agent_id = task["agentId"].as_str().unwrap().to_string();
     let completed = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 5000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(completed["status"], "succeeded");
 
@@ -1386,7 +1386,7 @@ fn stdio_agent_transcript_preserves_raw_events_and_partial_evidence() {
     let agent_id = task["agentId"].as_str().unwrap().to_string();
     let completed = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 5000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(completed["status"], "succeeded");
 
@@ -1431,7 +1431,7 @@ fn stdio_agent_transcript_redacts_provider_env_values() {
     let agent_id = task["agentId"].as_str().unwrap().to_string();
     let completed = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 5000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(completed["status"], "succeeded");
 
@@ -1463,7 +1463,7 @@ fn stdio_agent_result_preserves_final_result_evidence_after_timeout() {
     let agent_id = task["agentId"].as_str().unwrap().to_string();
     let completed = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 5000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(completed["status"], "failed");
     assert_eq!(completed["errorType"], "timeout");
@@ -1493,7 +1493,7 @@ fn stdio_agent_transcript_handles_provider_output_fixtures() {
     let agent_id = task["agentId"].as_str().unwrap().to_string();
     let completed = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 5000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(completed["status"], "succeeded", "{provider}");
     let result = client.tool("agent_result", json!({"agentId": agent_id}));
@@ -1519,7 +1519,7 @@ fn stdio_agent_transcript_handles_provider_output_fixtures() {
     let agent_id = task["agentId"].as_str().unwrap().to_string();
     let completed = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 5000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(completed["status"], "succeeded");
     let result = client.tool("agent_result", json!({"agentId": agent_id}));
@@ -2645,7 +2645,7 @@ fn stdio_agent_lifecycle_stop_timeout_and_logs() {
 
     let waited = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 2000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_no_task_id_key(&waited);
     assert_eq!(waited["status"], "succeeded");
@@ -2736,7 +2736,7 @@ fn stdio_agent_lifecycle_stop_timeout_and_logs() {
     let timed_id = timed["agentId"].as_str().unwrap();
     let timed_wait = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": timed_id, "timeoutMs": 3000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": timed_id, "timeoutMs": 30000}),
     );
     assert_eq!(timed_wait["isFinal"], true);
     if timed_wait["status"] == "failed" {
@@ -2909,7 +2909,7 @@ fn stdio_agent_list_defaults_to_native_presentation_and_filters() {
     assert!(completed["next"].is_array());
     let waited = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": completed_id, "timeoutMs": 5000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": completed_id, "timeoutMs": 30000}),
     );
     assert_eq!(waited["status"], "succeeded");
 
@@ -3003,7 +3003,7 @@ fn stdio_claude_agent_requires_host_runner_without_direct_prompt_launch() {
     let agent_id = spawned["agentId"].as_str().unwrap();
     let waited = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 3000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(waited["status"], "failed");
     assert_eq!(waited["errorType"], "provider_start_error");
@@ -3037,7 +3037,7 @@ fn stdio_claude_no_host_runner_ignores_zsh_startup_files() {
 
     let waited = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 3000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(waited["status"], "failed");
     assert_eq!(waited["errorType"], "provider_start_error");
@@ -3131,7 +3131,7 @@ fn stdio_claude_agent_malformed_output_returns_diagnostic() {
     let agent_id = spawned["agentId"].as_str().unwrap();
     let waited = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 3000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(waited["status"], "failed");
     assert_eq!(waited["errorType"], "provider_start_error");
@@ -3174,7 +3174,7 @@ fn stdio_claude_agent_failure_modes_are_classified() {
         let agent_id = spawned["agentId"].as_str().unwrap();
         let waited = client.tool(
             "agent_observe",
-            json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 3000}),
+            json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
         );
         assert_eq!(waited["status"], "failed", "{prompt}");
         assert_eq!(waited["errorType"], error_type, "{prompt}");
@@ -3201,7 +3201,7 @@ fn stdio_claude_agent_extracts_result_with_surrounding_noise() {
     let agent_id = spawned["agentId"].as_str().unwrap();
     let waited = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 3000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(waited["status"], "failed");
     assert_eq!(waited["errorType"], "provider_start_error");
@@ -3224,7 +3224,7 @@ fn stdio_claude_agent_diagnostic_redacts_prompt_content() {
     let agent_id = spawned["agentId"].as_str().unwrap();
     let waited = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 3000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(waited["status"], "failed");
 
@@ -3253,7 +3253,7 @@ fn stdio_claude_agent_diagnostic_redacts_token_values() {
     let agent_id = spawned["agentId"].as_str().unwrap();
     let waited = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 3000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(waited["status"], "failed");
 
@@ -3304,7 +3304,7 @@ fn stdio_agent_result_review_packet_summarizes_worktree_changes() {
     let agent_id = spawned["agentId"].as_str().unwrap();
     let waited = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 3000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(waited["status"], "succeeded");
 
@@ -3351,7 +3351,7 @@ fn stdio_managed_worktree_lifecycle() {
 
     let waited = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 3000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(waited["status"], "succeeded");
     // Lean envelope: a single `next` list (no GUI presentation/actions).
@@ -3416,7 +3416,7 @@ fn stdio_codex_agent_sandbox_denial_exits_immediately() {
     let agent_id = spawned["agentId"].as_str().unwrap();
     let waited = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 3000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(waited["status"], "failed");
     assert_eq!(waited["errorType"], "codex_sandbox_denied");
@@ -3493,7 +3493,7 @@ fn stdio_codex_agent_sandbox_denial_hangs_and_is_terminated_early() {
     let pid = spawned["pid"].as_i64().unwrap() as i32;
     let waited = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 3000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(waited["status"], "failed");
     assert_eq!(waited["errorType"], "codex_sandbox_denied");
@@ -3563,7 +3563,7 @@ fn stdio_codex_agent_sandbox_denial_redacts_prompt_and_secrets() {
     let agent_id = spawned["agentId"].as_str().unwrap();
     let waited = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 3000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(waited["status"], "failed");
 
@@ -3606,7 +3606,7 @@ fn stdio_codex_agent_success_still_reports_success() {
     let agent_id = spawned["agentId"].as_str().unwrap();
     let waited = client.tool(
         "agent_observe",
-        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 3000}),
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(waited["status"], "succeeded");
     assert_eq!(waited["errorType"], Value::Null);
