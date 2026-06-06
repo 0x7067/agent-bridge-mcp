@@ -2,7 +2,9 @@
 name = "agent-bridge-mcp"
 version = "0.1.0"
 edition = "2024"
-license = "UNLICENSED"
+license = "MIT"
+description = "Rust stdio MCP server for delegating bounded tasks to local provider agents"
+repository = "https://github.com/0x7067/agent-bridge-mcp"
 publish = false
 
 [[bin]]

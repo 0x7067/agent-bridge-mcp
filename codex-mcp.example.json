@@ -4,7 +4,8 @@
       "command": "agent-bridge-mcp",
       "args": [],
       "env": {
-        "AGENT_BRIDGE_WORKSPACES": "/Users/pedro/Development"
+        "AGENT_BRIDGE_WORKSPACES": "/path/to/workspaces",
+        "AGENT_BRIDGE_STATE_DIR": "~/.agent-bridge-mcp/state"
       }
     }
   }

@@ -1,2 +1,24 @@
 .DS_Store
 target/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+
+# Local runtime/debug state
+.agent-bridge-mcp/
+*.log
+*.tmp
+tmp/
+dist/
+
+# Editor and OS noise
+.vscode/
+.idea/
