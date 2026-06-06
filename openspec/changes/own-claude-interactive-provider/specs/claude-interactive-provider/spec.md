@@ -26,18 +26,23 @@ The system SHALL run interactive Claude in a real pseudo-terminal and handle the
 - **THEN** the owned runner injects the rendered task prompt as terminal input without exposing the prompt in process argv.
 
 ### Requirement: Claude runner captures completion through transcript data
-The system SHALL detect Claude task completion through runner-owned Stop-hook/transcript handling and convert the final assistant output into the existing task result surfaces.
+The system SHALL detect Claude task completion through runner-owned lifecycle/transcript handling and convert the final assistant output into the existing task result surfaces.
 
-#### Scenario: Stop hook reports transcript path
-- **WHEN** Claude finishes and the Stop hook payload contains a transcript path
+#### Scenario: Lifecycle metadata reports transcript path
+- **WHEN** Claude finishes and runner-owned lifecycle metadata contains a transcript path
 - **THEN** the runner reads the transcript, extracts the final assistant result, and returns provider output compatible with existing task result parsing.
+
+#### Scenario: Stop hook signals completion
+- **WHEN** Claude invokes the runner-owned Stop hook
+- **THEN** the hook helper relays a completion signal without waiting for Stop stdin to close.
+- **AND** the runner uses the transcript path captured from lifecycle metadata for final result parsing when the Stop payload does not include one.
 
 #### Scenario: Transcript path is unsafe
 - **WHEN** a Stop hook payload reports a transcript path that is not an absolute regular readable file path accepted by the runner's transcript policy
 - **THEN** the runner rejects that transcript path, records a bounded diagnostic, and falls back to Stop-hook `last_assistant_message` only when available.
 
 #### Scenario: Transcript is missing or malformed
-- **WHEN** Claude exits without a usable Stop-hook payload or transcript result
+- **WHEN** Claude exits without a usable lifecycle payload or transcript result
 - **THEN** the task fails with `provider_output_error` and bounded diagnostics.
 
 #### Scenario: Stop hook fires before transcript flush completes
@@ -90,8 +95,9 @@ The system SHALL use runner-owned temporary Claude settings for automation hooks
 
 #### Scenario: Runner starts a Claude session
 - **WHEN** the owned runner starts Claude
-- **THEN** it supplies temporary settings needed for prompt injection and Stop-hook capture.
+- **THEN** it supplies temporary settings needed for prompt injection, transcript discovery, and StopFailure capture.
 - **AND** it does not permanently edit `~/.claude` or project configuration files.
+- **AND** it disables durable user/project settings sources for the automated provider session so ambient hooks cannot block runner-owned completion.
 
 #### Scenario: Runner creates temporary settings
 - **WHEN** the owned runner writes temporary settings for a Claude session
@@ -100,12 +106,12 @@ The system SHALL use runner-owned temporary Claude settings for automation hooks
 
 #### Scenario: SessionStart hook runs
 - **WHEN** a runner-owned `SessionStart` hook receives a lifecycle payload
-- **THEN** it may relay startup metadata to the runner-owned FIFO.
+- **THEN** it may relay startup metadata to the runner-owned event log.
 - **AND** it must not inject user-visible text into Claude context unless the runner explicitly uses it as part of prompt injection.
 
 #### Scenario: Runner hook command runs
 - **WHEN** a runner-owned hook command receives a lifecycle payload
-- **THEN** it writes only to the runner-owned FIFO relay channel.
+- **THEN** it writes only to the runner-owned event-log relay channel.
 - **AND** it avoids stdout that would be injected into Claude context unless explicitly intended by the runner.
 
 #### Scenario: Runner exits

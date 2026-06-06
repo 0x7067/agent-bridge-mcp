@@ -603,18 +603,6 @@ fn prompt_strategy(profile: LaunchProfile) -> &'static str {
     }
 }
 
-fn claude_profile_flags(profile: LaunchProfile) -> Vec<String> {
-    match profile {
-        LaunchProfile::Bridge => Vec::new(),
-        LaunchProfile::Bare => vec![
-            "--system-prompt".to_string(),
-            "You are a delegated provider task. Follow the user instruction exactly.".to_string(),
-            "--setting-sources".to_string(),
-            "project,local".to_string(),
-        ],
-    }
-}
-
 fn codex_profile_flags(profile: LaunchProfile) -> Vec<String> {
     match profile {
         LaunchProfile::Bridge => Vec::new(),

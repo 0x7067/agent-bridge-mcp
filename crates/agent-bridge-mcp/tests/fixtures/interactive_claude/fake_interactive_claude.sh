@@ -45,6 +45,7 @@ case "$scenario" in
     printf '\033[c\033[>c\033[6n\033[>q\033[18t'
     ;;
   prompt-entry)
+    printf 'prompt-entry-ready\n'
     capture_prompt
     printf 'prompt captured\n'
     ;;
@@ -54,6 +55,14 @@ case "$scenario" in
     emit_session_start "$transcript_path"
     capture_prompt
     emit_stop "$transcript_path"
+    ;;
+  stop-stays-open)
+    transcript_path="$tmp_root/success.jsonl"
+    cp "$fixture_dir/transcripts/success.jsonl" "$transcript_path"
+    emit_session_start "$transcript_path"
+    capture_prompt
+    emit_stop "$transcript_path"
+    sleep 30
     ;;
   malformed-transcript)
     transcript_path="$tmp_root/malformed.jsonl"

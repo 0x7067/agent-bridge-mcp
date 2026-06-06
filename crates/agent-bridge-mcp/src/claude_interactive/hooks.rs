@@ -1,17 +1,14 @@
 use serde_json::{Value, json};
-use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 #[cfg(unix)]
-use std::os::unix::ffi::OsStrExt;
-#[cfg(unix)]
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 const HOOK_TIMEOUT_SECONDS: u64 = 5;
 const MAX_HOOK_EVENT_LINE_BYTES: usize = 1024 * 1024;
-pub const HOOK_FIFO_ENV: &str = "AGENT_BRIDGE_CLAUDE_HOOK_FIFO";
+pub const HOOK_EVENT_LOG_ENV: &str = "AGENT_BRIDGE_CLAUDE_HOOK_EVENT_LOG";
 pub const HOOK_RUN_ID_ENV: &str = "AGENT_BRIDGE_CLAUDE_RUN_ID";
 
 pub struct HookSettings {
@@ -20,7 +17,7 @@ pub struct HookSettings {
 
 pub struct HookRelay {
     pub run_dir: PathBuf,
-    pub fifo_path: PathBuf,
+    pub event_log_path: PathBuf,
     pub helper_path: PathBuf,
     pub run_id: String,
 }
@@ -35,32 +32,27 @@ impl HookRelay {
     pub fn prepare(run_dir: &Path) -> io::Result<Self> {
         fs::create_dir_all(run_dir)?;
         set_owner_only_dir(run_dir)?;
-        let fifo_path = run_dir.join("events.fifo");
+        let event_log_path = run_dir.join("events.log");
         let helper_path = run_dir.join("hook-relay");
-        create_fifo(&fifo_path)?;
+        create_event_log(&event_log_path)?;
         write_hook_helper(&helper_path)?;
         Ok(Self {
             run_dir: run_dir.to_path_buf(),
-            fifo_path,
+            event_log_path,
             helper_path,
             run_id: Uuid::new_v4().to_string(),
         })
     }
 
-    #[cfg(unix)]
     pub fn open_reader(&self) -> io::Result<File> {
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(&self.fifo_path)
+        OpenOptions::new().read(true).open(&self.event_log_path)
     }
 
     pub fn env(&self) -> [(String, String); 2] {
         [
             (
-                HOOK_FIFO_ENV.to_string(),
-                self.fifo_path.display().to_string(),
+                HOOK_EVENT_LOG_ENV.to_string(),
+                self.event_log_path.display().to_string(),
             ),
             (HOOK_RUN_ID_ENV.to_string(), self.run_id.clone()),
         ]
@@ -157,23 +149,24 @@ pub fn parse_event_line(line: &[u8]) -> io::Result<HookRelayEvent> {
     })
 }
 
-#[cfg(unix)]
-fn create_fifo(path: &Path) -> io::Result<()> {
-    let c_path = CString::new(path.as_os_str().as_bytes()).map_err(io::Error::other)?;
-    let result = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
-    if result != 0 {
-        return Err(io::Error::last_os_error());
-    }
+fn create_event_log(path: &Path) -> io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(path)?;
     let metadata = fs::metadata(path)?;
-    if !metadata.file_type().is_fifo() {
-        return Err(io::Error::other("hook relay path is not a FIFO"));
+    if !metadata.is_file() {
+        return Err(io::Error::other("hook relay path is not a regular file"));
     }
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn create_fifo(_path: &Path) -> io::Result<()> {
-    Err(io::Error::other("hook relay FIFO requires Unix"))
+    #[cfg(unix)]
+    {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(())
+    }
 }
 
 fn write_hook_helper(path: &Path) -> io::Result<()> {
@@ -181,11 +174,15 @@ fn write_hook_helper(path: &Path) -> io::Result<()> {
         r#"#!/bin/sh
 set -eu
 event="${{1:?event}}"
-fifo="${{{fifo_env}:?fifo}}"
-payload="$(cat)"
-printf '%s\t%s\n' "$event" "$payload" > "$fifo"
+event_log="${{{event_log_env}:?event_log}}"
+if [ "$event" = "Stop" ]; then
+  payload='{{"hook_event_name":"Stop"}}'
+else
+  payload="$(cat)"
+fi
+printf '%s\t%s\n' "$event" "$payload" >> "$event_log"
 "#,
-        fifo_env = HOOK_FIFO_ENV
+        event_log_env = HOOK_EVENT_LOG_ENV
     );
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(true);
@@ -261,7 +258,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn hook_relay_helper_writes_fifo_events_without_stdout() {
+    fn hook_relay_helper_writes_event_log_events_without_stdout() {
         let run_dir = temp_path("relay");
         let relay = HookRelay::prepare(&run_dir).unwrap();
         let mut reader = relay.open_reader().unwrap();
@@ -284,19 +281,23 @@ mod tests {
         assert!(output.status.success(), "{output:?}");
         assert!(output.stdout.is_empty());
 
-        let line = read_fifo_line(&mut reader, Duration::from_secs(2)).unwrap();
+        let line = read_relay_line(&mut reader, Duration::from_secs(2)).unwrap();
         let event = parse_event_line(&line).unwrap();
         assert_eq!(event.event_name, "Stop");
         assert_eq!(event.payload["hook_event_name"], "Stop");
-        assert_eq!(event.payload["transcript_path"], "/tmp/t.jsonl");
+        assert!(event.payload.get("transcript_path").is_none());
 
-        let fifo_mode = fs::metadata(&relay.fifo_path).unwrap().permissions().mode() & 0o777;
+        let event_log_mode = fs::metadata(&relay.event_log_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         let helper_mode = fs::metadata(&relay.helper_path)
             .unwrap()
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(fifo_mode, 0o600);
+        assert_eq!(event_log_mode, 0o600);
         assert_eq!(helper_mode, 0o700);
         relay.cleanup().unwrap();
         assert!(!run_dir.exists());
@@ -309,7 +310,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn read_fifo_line(reader: &mut File, duration: Duration) -> io::Result<Vec<u8>> {
+    fn read_relay_line(reader: &mut File, duration: Duration) -> io::Result<Vec<u8>> {
         let started = Instant::now();
         let mut line = Vec::new();
         let mut byte = [0_u8; 1];

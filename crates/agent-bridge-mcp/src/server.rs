@@ -2323,15 +2323,16 @@ fn host_probe_result(response: crate::claude_host::HostResponse, duration_ms: u6
         };
     }
     match response.result {
-        Some(crate::claude_host::HostResult::Run {
-            exit_code,
-            signal,
-            failure_category,
-            result,
-            pty_output_excerpt,
-            duration_ms,
-            ..
-        }) => {
+        Some(crate::claude_host::HostResult::Run(run)) => {
+            let crate::claude_host::HostRunResult {
+                exit_code,
+                signal,
+                failure_category,
+                result,
+                pty_output_excerpt,
+                duration_ms,
+                ..
+            } = *run;
             let success_text = result
                 .as_ref()
                 .map(|result| result.final_text.clone())

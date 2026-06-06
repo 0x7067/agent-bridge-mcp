@@ -900,7 +900,18 @@ async fn complete_host_response(
     task_dir: PathBuf,
     response: crate::claude_host::HostResponse,
 ) -> TaskCompletion {
-    let Some(crate::claude_host::HostResult::Run {
+    let Some(crate::claude_host::HostResult::Run(run)) = response.result else {
+        return TaskCompletion {
+            task_id,
+            status: TaskStatus::Failed,
+            exit_code: None,
+            signal: None,
+            error: Some("host runner returned unexpected response".to_string()),
+            error_type: Some(ErrorType::ProviderOutputError),
+            diagnostic: None,
+        };
+    };
+    let crate::claude_host::HostRunResult {
         status,
         exit_code,
         signal,
@@ -912,18 +923,7 @@ async fn complete_host_response(
         stop,
         stop_failure,
         ..
-    }) = response.result
-    else {
-        return TaskCompletion {
-            task_id,
-            status: TaskStatus::Failed,
-            exit_code: None,
-            signal: None,
-            error: Some("host runner returned unexpected response".to_string()),
-            error_type: Some(ErrorType::ProviderOutputError),
-            diagnostic: None,
-        };
-    };
+    } = *run;
     let stdout_bytes = stdout.as_bytes().to_vec();
     let stderr_bytes = stderr.as_bytes().to_vec();
     let _ = fs::write(task_dir.join("stdout.log"), &stdout_bytes).await;
@@ -1025,10 +1025,6 @@ async fn complete_host_response(
             )),
         }
     }
-}
-
-fn signal_name_from_string(signal: Option<&str>) -> Option<String> {
-    signal.map(str::to_string)
 }
 
 fn codex_denial_detected(command: &ProviderCommand, stderr: &[u8]) -> bool {

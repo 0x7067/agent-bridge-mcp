@@ -89,7 +89,7 @@ The system SHALL make owned host-runner use explicit in configuration, previews,
 
 #### Scenario: Host runner and hook relay are distinct
 - **WHEN** the owned interactive runner creates hook relay IPC
-- **THEN** that runner-internal FIFO is distinct from the MCP-to-host-runner Unix socket.
+- **THEN** that runner-internal event log is distinct from the MCP-to-host-runner Unix socket.
 - **AND** the host-runner socket never accepts hook payloads directly.
 
 ### Requirement: Claude host runner cleans up PTY children

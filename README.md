@@ -243,7 +243,7 @@ supported targets.
 - Prompts are capped at 100 KiB UTF-8.
 - Task stdout/stderr, git status, and git diff are capped at 1 MiB each.
 - Provider processes use ignored stdin unless a provider requires stdin prompt transport. Most providers receive a restricted environment allowlist.
-- Claude provider tasks and smoke checks use a local Unix-socket host runner. The runner starts the official interactive `claude` CLI in a PTY, injects prompts through PTY input, installs temporary runner-owned Stop/StopFailure hooks, reads Claude transcript JSONL, and returns a bounded protocol v2 result. Prompt text is not placed in process argv.
+- Claude provider tasks and smoke checks use a local Unix-socket host runner. The runner starts the official interactive `claude` CLI in a PTY, injects prompts through PTY input, loads temporary runner-owned settings with durable user/project settings sources disabled, discovers the transcript through runner-owned lifecycle metadata, uses a non-blocking Stop hook as the completion signal, captures StopFailure when available, reads Claude transcript JSONL, and returns a bounded protocol v2 result. Prompt text is not placed in process argv.
 - Claude provider receives a focused CLI environment allowlist so Claude Code can find auth/config without inheriting unrelated host secrets. The bridge strips injected `ANTHROPIC_BASE_URL` values that can point Claude at Codex-local proxy endpoints.
 - Codex provider passes `--config shell_environment_policy.inherit="all"` to `codex exec` so delegated Codex shell commands see the same tool `PATH` as the provider process.
 - Active task state is persisted under `AGENT_BRIDGE_STATE_DIR`, defaulting to:

@@ -53,18 +53,22 @@ The port must include the mechanics Agent Bridge needs:
 - start `claude` under a PTY using the user's login shell environment,
 - answer known Claude Code terminal startup probes that otherwise block the TUI,
 - inject the rendered prompt without putting prompt text in argv,
-- install runner-owned temporary `--settings` JSON that registers `SessionStart` and `Stop` hooks while avoiding durable edits to user/project settings,
-- read the transcript path and final-message fallback from the Stop hook payload,
+- install runner-owned temporary `--settings` JSON that registers `SessionStart`, non-blocking `Stop`, and `StopFailure` hooks while avoiding durable edits to user/project settings,
+- restrict durable Claude settings sources for owned provider runs so ambient user/project hooks cannot block runner-owned Stop/transcript capture,
+- read the transcript path from SessionStart metadata, and treat Stop as the completion signal without blocking on Stop stdin payload delivery,
 - classify StopFailure hook payloads as provider/API failures instead of malformed transcript output,
 - extract final assistant/result information into the existing provider output parser,
 - clean up temporary settings and child processes on success, timeout, disconnect, and shutdown.
 
-The hook relay should be bridge-owned IPC, not hook stdout. V1 should use a runner-owned FIFO in a `0700` temporary directory, with hook helper commands writing newline-delimited JSON payloads only to that FIFO. Hook stdout must stay empty unless the runner intentionally wants to inject text into Claude context.
+The hook relay should be bridge-owned IPC, not hook stdout. V1 should use a runner-owned append-only event log in a `0700` temporary directory, with hook helper commands writing newline-delimited JSON payloads only to that event log. Hook stdout must stay empty unless the runner intentionally wants to inject text into Claude context.
 
 The hook relay details are specified in `hook-relay-contract.md`. The runner
 uses Agent Bridge environment names, registers `SessionStart`, `Stop`, and
 `StopFailure`, and opens the relay before spawning Claude so hook helpers cannot
-block indefinitely waiting for a reader.
+block indefinitely waiting for a reader. The Stop helper does not read stdin in
+the success path because current interactive Claude can leave Stop hook stdin
+open; normal completion parses the transcript path learned from `SessionStart`
+after the Stop signal arrives.
 
 Startup sequencing is specified in `startup-sequencing.md`: start readers
 before prompt injection, respond to terminal probes, wait for `SessionStart`

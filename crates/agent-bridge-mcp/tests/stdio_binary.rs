@@ -844,7 +844,7 @@ fn stdio_tools_call_accepts_codex_meta_envelope() {
     let preview = client.tool_with_meta(
         "agent_preview",
         json!({
-            "provider": "codex",
+            "provider": "cursor",
             "mode": "review",
             "prompt": "secret prompt",
             "cwd": env.root
@@ -1331,24 +1331,23 @@ fn stdio_agent_transcript_handles_provider_output_fixtures() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
-    for provider in ["cursor"] {
-        let task = client.tool(
-            "agent_spawn",
-            json!({
-                "provider": provider,
-                "mode": "review",
-                "prompt": "AGENT_BRIDGE_PROVIDER_SMOKE_OK",
-                "cwd": env.root,
-                "timeoutSeconds": 5
-            }),
-        );
-        let task_id = task["taskId"].as_str().unwrap().to_string();
-        let completed = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
-        assert_eq!(completed["status"], "succeeded", "{provider}");
-        let result = client.tool("agent_result", json!({"taskId": task_id}));
-        assert_eq!(result["finalResultDetected"], true, "{provider}");
-        assert_eq!(result["partialResultDetected"], false, "{provider}");
-    }
+    let provider = "cursor";
+    let task = client.tool(
+        "agent_spawn",
+        json!({
+            "provider": provider,
+            "mode": "review",
+            "prompt": "AGENT_BRIDGE_PROVIDER_SMOKE_OK",
+            "cwd": env.root,
+            "timeoutSeconds": 5
+        }),
+    );
+    let task_id = task["taskId"].as_str().unwrap().to_string();
+    let completed = client.tool("agent_wait", json!({"taskId": task_id, "timeoutMs": 5000}));
+    assert_eq!(completed["status"], "succeeded", "{provider}");
+    let result = client.tool("agent_result", json!({"taskId": task_id}));
+    assert_eq!(result["finalResultDetected"], true, "{provider}");
+    assert_eq!(result["partialResultDetected"], false, "{provider}");
 
     let task = client.tool(
         "agent_spawn",

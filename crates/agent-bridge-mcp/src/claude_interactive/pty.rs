@@ -31,13 +31,13 @@ impl PtySession {
     #[cfg(unix)]
     pub async fn terminate_with_grace(&mut self, grace: Duration) -> io::Result<ExitStatus> {
         if let Some(pid) = self.pid {
-            terminate_process_group(pid, libc::SIGTERM);
+            terminate_process_tree(pid, libc::SIGTERM);
         }
         match timeout(grace, self.child.wait()).await {
             Ok(status) => status,
             Err(_) => {
                 if let Some(pid) = self.pid {
-                    terminate_process_group(pid, libc::SIGKILL);
+                    terminate_process_tree(pid, libc::SIGKILL);
                 }
                 self.child.wait().await
             }
@@ -68,9 +68,10 @@ pub fn spawn(spec: PtySpawn) -> io::Result<PtySession> {
 }
 
 #[cfg(unix)]
-pub fn terminate_process_group(pid: u32, signal: libc::c_int) {
+pub fn terminate_process_tree(pid: u32, signal: libc::c_int) {
     unsafe {
         libc::killpg(pid as libc::pid_t, signal);
+        libc::kill(pid as libc::pid_t, signal);
     }
 }
 

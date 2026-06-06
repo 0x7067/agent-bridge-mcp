@@ -11,14 +11,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
+#[cfg(test)]
 use tokio::process::Command;
 use tokio::sync::oneshot;
 use tokio::time::{Duration, timeout};
 
 pub const PROTOCOL_VERSION: u32 = 2;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+#[cfg(test)]
 const MAX_STREAM_BYTES: usize = 1024 * 1024;
-const CHILD_SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaudeHostCommand {
@@ -90,36 +91,39 @@ pub enum HostResult {
         ready: bool,
     },
     #[serde(rename = "claude_interactive_result")]
-    Run {
-        status: String,
-        #[serde(rename = "exitCode")]
-        exit_code: Option<i32>,
-        signal: Option<String>,
-        #[serde(rename = "durationMs")]
-        duration_ms: u64,
-        #[serde(rename = "failureCategory")]
-        failure_category: Option<String>,
-        #[serde(rename = "ptyOutputExcerpt")]
-        pty_output_excerpt: String,
-        #[serde(rename = "ptyOutputTruncated")]
-        pty_output_truncated: bool,
-        #[serde(rename = "redactionsApplied")]
-        redactions_applied: Vec<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        result: Option<ClaudeInteractiveSuccess>,
-        stop: Option<Value>,
-        #[serde(rename = "stopFailure")]
-        stop_failure: Option<Value>,
-        transcript: Value,
-        // Temporary compatibility fields while tasks 3.2-3.5 migrate task and
-        // readiness consumers to the structured v2 result.
-        stdout: String,
-        stderr: String,
-        #[serde(rename = "stdoutTruncated")]
-        stdout_truncated: bool,
-        #[serde(rename = "stderrTruncated")]
-        stderr_truncated: bool,
-    },
+    Run(Box<HostRunResult>),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HostRunResult {
+    pub status: String,
+    #[serde(rename = "exitCode")]
+    pub exit_code: Option<i32>,
+    pub signal: Option<String>,
+    #[serde(rename = "durationMs")]
+    pub duration_ms: u64,
+    #[serde(rename = "failureCategory")]
+    pub failure_category: Option<String>,
+    #[serde(rename = "ptyOutputExcerpt")]
+    pub pty_output_excerpt: String,
+    #[serde(rename = "ptyOutputTruncated")]
+    pub pty_output_truncated: bool,
+    #[serde(rename = "redactionsApplied")]
+    pub redactions_applied: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<ClaudeInteractiveSuccess>,
+    pub stop: Option<Value>,
+    #[serde(rename = "stopFailure")]
+    pub stop_failure: Option<Value>,
+    pub transcript: Value,
+    // Temporary compatibility fields while tasks 3.2-3.5 migrate task and
+    // readiness consumers to the structured v2 result.
+    pub stdout: String,
+    pub stderr: String,
+    #[serde(rename = "stdoutTruncated")]
+    pub stdout_truncated: bool,
+    #[serde(rename = "stderrTruncated")]
+    pub stderr_truncated: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -303,31 +307,8 @@ async fn handle_connection(
             return Ok(());
         }
     };
-    let monitor_disconnect = matches!(request.kind, HostRequestKind::RunClaude { .. });
-    if monitor_disconnect {
-        let (mut read_half, mut write_half) = stream.into_split();
-        let (disconnect_tx, disconnect_rx) = oneshot::channel();
-        let disconnect_task = tokio::spawn(async move {
-            let mut byte = [0u8; 1];
-            if !matches!(read_half.read(&mut byte).await, Ok(1)) {
-                let _ = disconnect_tx.send(());
-            }
-        });
-        let response = handle_request(
-            request,
-            &roots,
-            &workspace_policy_id,
-            active_pids,
-            Some(disconnect_rx),
-        )
-        .await;
-        disconnect_task.abort();
-        write_response(&mut write_half, &response).await
-    } else {
-        let response =
-            handle_request(request, &roots, &workspace_policy_id, active_pids, None).await;
-        write_response(&mut stream, &response).await
-    }
+    let response = handle_request(request, &roots, &workspace_policy_id, active_pids, None).await;
+    write_response(&mut stream, &response).await
 }
 
 async fn handle_request(
@@ -408,7 +389,7 @@ async fn handle_request(
                     HostResponse {
                         version: PROTOCOL_VERSION,
                         ok: true,
-                        result: Some(HostResult::Run {
+                        result: Some(HostResult::Run(Box::new(HostRunResult {
                             status: if success {
                                 "success".to_string()
                             } else {
@@ -433,7 +414,7 @@ async fn handle_request(
                             stderr,
                             stdout_truncated: false,
                             stderr_truncated: result.pty_output_truncated,
-                        }),
+                        }))),
                         error: None,
                     }
                 }
@@ -542,6 +523,7 @@ fn resolve_claude_bin() -> Result<PathBuf, String> {
     Ok(PathBuf::from("claude"))
 }
 
+#[cfg(test)]
 async fn read_stream_capped(mut reader: impl tokio::io::AsyncRead + Unpin) -> (Vec<u8>, bool) {
     let mut bytes = Vec::new();
     let mut truncated = false;
@@ -703,7 +685,7 @@ fn is_inside(candidate: &Path, root: &Path) -> bool {
     candidate == root || candidate.strip_prefix(root).is_ok()
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 fn configure_child_process_group(command: &mut Command) {
     unsafe {
         command.pre_exec(|| {
@@ -716,7 +698,7 @@ fn configure_child_process_group(command: &mut Command) {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(all(test, not(unix)))]
 fn configure_child_process_group(_command: &mut Command) {}
 
 #[cfg(unix)]
@@ -737,23 +719,6 @@ fn terminate_active_children(active_pids: &Arc<Mutex<Vec<u32>>>, signal: i32) {
             terminate_child_tree(Some(pid), signal);
         }
     }
-}
-
-#[cfg(unix)]
-fn signal_name(status: Option<&std::process::ExitStatus>) -> Option<String> {
-    use std::os::unix::process::ExitStatusExt;
-    status.and_then(|status| {
-        status.signal().map(|signal| match signal {
-            libc::SIGTERM => "SIGTERM".to_string(),
-            libc::SIGKILL => "SIGKILL".to_string(),
-            other => format!("SIG{other}"),
-        })
-    })
-}
-
-#[cfg(not(unix))]
-fn signal_name(_status: Option<&std::process::ExitStatus>) -> Option<String> {
-    None
 }
 
 #[cfg(unix)]
@@ -1022,7 +987,7 @@ mod tests {
         let response = HostResponse {
             version: PROTOCOL_VERSION,
             ok: true,
-            result: Some(HostResult::Run {
+            result: Some(HostResult::Run(Box::new(HostRunResult {
                 status: "success".to_string(),
                 exit_code: Some(0),
                 signal: None,
@@ -1043,7 +1008,7 @@ mod tests {
                 stderr: String::new(),
                 stdout_truncated: false,
                 stderr_truncated: false,
-            }),
+            }))),
             error: None,
         };
         let response_json = serde_json::to_value(&response).unwrap();

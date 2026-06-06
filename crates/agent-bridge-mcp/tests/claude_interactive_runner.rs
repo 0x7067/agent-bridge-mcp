@@ -4,6 +4,7 @@ use agent_bridge_mcp::claude_interactive::runner::{
 use agent_bridge_mcp::domain::TaskMode;
 use std::collections::BTreeMap;
 use std::io;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,6 +26,7 @@ async fn claude_runner_spawns_interactive_binary_through_login_shell_pty() -> io
         model: None,
         effort: None,
         settings_path: None,
+        debug_file: None,
         extra_env: BTreeMap::from([(
             "FAKE_CLAUDE_SCENARIO".to_string(),
             "terminal-probes".to_string(),
@@ -64,24 +66,26 @@ async fn claude_runner_injects_prompt_through_pty_not_argv() -> io::Result<()> {
     let fixture_dir = Path::new(FIXTURE_DIR);
     let temp = spike_temp_dir("runner-prompt")?;
     let prompt_log = temp.join("prompt.txt");
+    let wrapper = temp.join("fake_prompt_entry.sh");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nFAKE_CLAUDE_SCENARIO=prompt-entry AGENT_BRIDGE_FAKE_CLAUDE_PROMPT_LOG='{}' exec '{}' \"$@\"\n",
+            prompt_log.display(),
+            fixture_dir.join("fake_interactive_claude.sh").display()
+        ),
+    )?;
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700))?;
     let prompt = "secret prompt that must not be argv";
     let request = ClaudeRunnerRequest {
-        claude_bin: fixture_dir.join("fake_interactive_claude.sh"),
+        claude_bin: wrapper,
         cwd: fixture_dir.to_path_buf(),
         mode: TaskMode::Research,
         model: None,
         effort: None,
         settings_path: None,
-        extra_env: BTreeMap::from([
-            (
-                "FAKE_CLAUDE_SCENARIO".to_string(),
-                "prompt-entry".to_string(),
-            ),
-            (
-                "AGENT_BRIDGE_FAKE_CLAUDE_PROMPT_LOG".to_string(),
-                prompt_log.display().to_string(),
-            ),
-        ]),
+        debug_file: None,
+        extra_env: BTreeMap::new(),
     };
     let spawn = build_pty_spawn(ClaudeRunnerRequest {
         claude_bin: request.claude_bin.clone(),
@@ -90,6 +94,7 @@ async fn claude_runner_injects_prompt_through_pty_not_argv() -> io::Result<()> {
         model: request.model.clone(),
         effort: request.effort.clone(),
         settings_path: request.settings_path.clone(),
+        debug_file: request.debug_file.clone(),
         extra_env: request.extra_env.clone(),
     });
     assert!(
@@ -99,8 +104,56 @@ async fn claude_runner_injects_prompt_through_pty_not_argv() -> io::Result<()> {
     );
 
     let mut session = spawn_claude(request)?;
+    let mut ready_output = Vec::new();
+    let mut buffer = [0_u8; 256];
+    let ready = timeout(Duration::from_secs(2), async {
+        loop {
+            let count = match session.reader.read(&mut buffer).await {
+                Ok(count) => count,
+                Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            ready_output.extend_from_slice(&buffer[..count]);
+            if ready_output
+                .windows("prompt-entry-ready".len())
+                .any(|window| window == b"prompt-entry-ready")
+            {
+                return Ok::<(), io::Error>(());
+            }
+        }
+    })
+    .await;
+    match ready {
+        Ok(result) => result?,
+        Err(error) => {
+            panic!(
+                "timed out waiting for fake Claude readiness after reading: {:?}: {error}",
+                String::from_utf8_lossy(&ready_output)
+            );
+        }
+    }
     inject_prompt(&mut session.writer, prompt).await?;
-    let status = timeout(Duration::from_secs(2), session.child.wait()).await??;
+    let mut post_prompt_output = Vec::new();
+    let status = timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(status) = session.child.try_wait()? {
+                return Ok::<_, io::Error>(status);
+            }
+            match session.reader.read(&mut buffer).await {
+                Ok(0) => {}
+                Ok(count) => post_prompt_output.extend_from_slice(&buffer[..count]),
+                Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
+                Err(error) if error.raw_os_error() == Some(libc::EIO) => {}
+                Err(error) => return Err(error),
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .map_err(io::Error::other)??;
     assert!(status.success(), "fake Claude exited with {status}");
     assert_eq!(tokio::fs::read_to_string(prompt_log).await?, prompt);
 

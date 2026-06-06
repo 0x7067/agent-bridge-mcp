@@ -11,7 +11,7 @@ use crate::provider;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::Arc;
@@ -28,6 +28,7 @@ const LOGIN_SHELL_ARG0: &str = "agent-bridge-claude";
 const PROMPT_ENTER_DELAY: Duration = Duration::from_millis(100);
 const TRANSCRIPT_RETRY_BUDGET: Duration = Duration::from_secs(2);
 const PTY_EXCERPT_LIMIT: usize = 64 * 1024;
+const STOP_EVENT_GRACE: Duration = Duration::from_secs(12);
 
 pub struct ClaudeRunnerRequest {
     pub claude_bin: PathBuf,
@@ -36,6 +37,7 @@ pub struct ClaudeRunnerRequest {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub settings_path: Option<PathBuf>,
+    pub debug_file: Option<PathBuf>,
     pub extra_env: BTreeMap<String, String>,
 }
 
@@ -76,14 +78,19 @@ pub async fn run_interactive(
 ) -> io::Result<ClaudeInteractiveRunResult> {
     let started = std::time::Instant::now();
     let run_dir = std::env::temp_dir().join(format!("agent-bridge-claude-run-{}", Uuid::new_v4()));
+    let debug_enabled = std::env::var("AGENT_BRIDGE_CLAUDE_RUNNER_DEBUG")
+        .ok()
+        .as_deref()
+        == Some("1");
+    let debug_file = debug_enabled.then(|| run_dir.join("claude-debug.log"));
     let relay = HookRelay::prepare(&run_dir)?;
-    let relay_reader = relay.open_reader()?;
     let settings = write_temporary_settings(&run_dir, &relay.helper_path)?;
     let (event_tx, mut event_rx) = mpsc::channel(16);
     let relay_stop = Arc::new(AtomicBool::new(false));
     let relay_stop_task = Arc::clone(&relay_stop);
+    let relay_event_log = relay.event_log_path.clone();
     let relay_task = tokio::task::spawn_blocking(move || {
-        read_relay_events(relay_reader, event_tx, relay_stop_task)
+        read_relay_events(relay_event_log, event_tx, relay_stop_task)
     });
     let mut extra_env = request.extra_env;
     extra_env.extend(relay.env());
@@ -91,7 +98,7 @@ pub async fn run_interactive(
     // events directly to this sink. The real Claude CLI ignores this variable.
     extra_env.insert(
         "AGENT_BRIDGE_FAKE_CLAUDE_HOOK_SINK".to_string(),
-        relay.fifo_path.display().to_string(),
+        relay.event_log_path.display().to_string(),
     );
     let mut session = spawn_claude(ClaudeRunnerRequest {
         claude_bin: request.claude_bin,
@@ -100,6 +107,7 @@ pub async fn run_interactive(
         model: request.model,
         effort: request.effort,
         settings_path: Some(settings.settings_path.clone()),
+        debug_file: debug_file.clone(),
         extra_env,
     })?;
 
@@ -109,7 +117,8 @@ pub async fn run_interactive(
     let mut buffer = [0_u8; 4096];
     let mut stop = None;
     let mut stop_failure = None;
-    let mut exit_status = None;
+    let mut session_start = None;
+    let mut exit_status: Option<ExitStatus>;
     let mut prompt_injected = false;
     let mut disconnect = request.disconnect;
     let timeout_sleep = tokio::time::sleep(Duration::from_secs(request.timeout_seconds as u64));
@@ -127,16 +136,25 @@ pub async fn run_interactive(
             }
             event = event_rx.recv() => {
                 match event {
-                    Some(event) if event.event_name == "SessionStart" && !prompt_injected => {
-                        inject_prompt(&mut session.writer, &request.prompt).await?;
-                        prompt_injected = true;
+                    Some(event) if event.event_name == "SessionStart" => {
+                        if session_start.is_none() {
+                            session_start = Some(event.payload);
+                        }
+                        if !prompt_injected {
+                            inject_prompt(&mut session.writer, &request.prompt).await?;
+                            prompt_injected = true;
+                        }
                     }
                     Some(event) if event.event_name == "Stop" => {
                         stop = Some(event.payload);
+                        exit_status =
+                            Some(session.terminate_with_grace(Duration::from_secs(3)).await?);
                         break None;
                     }
                     Some(event) if event.event_name == "StopFailure" => {
                         stop_failure = Some(event.payload);
+                        exit_status =
+                            Some(session.terminate_with_grace(Duration::from_secs(3)).await?);
                         break Some("claude_api_error".to_string());
                     }
                     Some(_) => {}
@@ -145,7 +163,18 @@ pub async fn run_interactive(
             }
             read = session.reader.read(&mut buffer) => {
                 match read {
-                    Ok(0) => {}
+                    Ok(0) => {
+                        if let Some((status, category)) = finish_if_child_exited(
+                            &mut session,
+                            &mut event_rx,
+                            &mut stop,
+                            &mut stop_failure,
+                        ).await? {
+                            exit_status = Some(status);
+                            break category;
+                        }
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
                     Ok(count) => {
                         let chunk = terminal.process(&buffer[..count]);
                         for response in chunk.responses {
@@ -159,17 +188,33 @@ pub async fn run_interactive(
                         }
                         append_excerpt(&mut pty_excerpt, &mut pty_truncated, &chunk.output, &request.prompt);
                     }
-                    Err(error) if error.raw_os_error() == Some(libc::EIO) => {}
+                    Err(error) if error.raw_os_error() == Some(libc::EIO) => {
+                        if let Some((status, category)) = finish_if_child_exited(
+                            &mut session,
+                            &mut event_rx,
+                            &mut stop,
+                            &mut stop_failure,
+                        ).await? {
+                            exit_status = Some(status);
+                            break category;
+                        }
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
                     Err(error) => return Err(error),
                 }
             }
             _ = tokio::time::sleep(Duration::from_millis(25)) => {
-                if let Some(status) = session.child.try_wait()? {
+                if let Some((status, category)) = finish_if_child_exited(
+                    &mut session,
+                    &mut event_rx,
+                    &mut stop,
+                    &mut stop_failure,
+                ).await? {
                     exit_status = Some(status);
-                    if stop.is_none() && stop_failure.is_none() {
-                        break Some("provider_output_error".to_string());
-                    }
-                    break None;
+                    break category;
                 }
             }
         }
@@ -181,7 +226,14 @@ pub async fn run_interactive(
             .and_then(Result::ok);
     }
     relay_stop.store(true, Ordering::Relaxed);
-    let _ = relay.cleanup();
+    if debug_enabled {
+        eprintln!(
+            "agent-bridge claude runner debug artifacts kept at {}",
+            relay.run_dir.display()
+        );
+    } else {
+        let _ = relay.cleanup();
+    }
     let _ = tokio::time::timeout(Duration::from_secs(1), relay_task).await;
 
     let mut final_text = None;
@@ -201,8 +253,10 @@ pub async fn run_interactive(
         } else {
             failure_category
         }
-    } else if let Some(stop_payload) = stop.as_ref() {
-        match resolve_stop_result(stop_payload, TRANSCRIPT_RETRY_BUDGET).await {
+    } else if let Some(completion_payload) =
+        completion_payload(stop.as_ref(), session_start.as_ref())
+    {
+        match resolve_stop_result(completion_payload, TRANSCRIPT_RETRY_BUDGET).await {
             Ok(result) => {
                 final_text = Some(result.final_text);
                 final_text_source = Some(match result.source {
@@ -249,11 +303,50 @@ pub async fn run_interactive(
 }
 
 pub async fn inject_prompt(writer: &mut (impl AsyncWrite + Unpin), prompt: &str) -> io::Result<()> {
-    writer.write_all(prompt.as_bytes()).await?;
-    writer.flush().await?;
+    write_all_retrying_timed_out(writer, prompt.as_bytes()).await?;
+    flush_retrying_timed_out(writer).await?;
     tokio::time::sleep(PROMPT_ENTER_DELAY).await;
-    writer.write_all(b"\r").await?;
-    writer.flush().await
+    write_all_retrying_timed_out(writer, b"\r\n").await?;
+    flush_retrying_timed_out(writer).await
+}
+
+async fn write_all_retrying_timed_out(
+    writer: &mut (impl AsyncWrite + Unpin),
+    bytes: &[u8],
+) -> io::Result<()> {
+    let mut written = 0;
+    while written < bytes.len() {
+        match writer.write(&bytes[written..]).await {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(count) => written += count,
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+async fn flush_retrying_timed_out(writer: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
+    loop {
+        match writer.flush().await {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn completion_payload<'a>(
+    stop: Option<&'a serde_json::Value>,
+    session_start: Option<&'a serde_json::Value>,
+) -> Option<&'a serde_json::Value> {
+    stop.filter(|payload| payload.get("transcript_path").is_some())
+        .or(session_start)
+        .or(stop)
 }
 
 async fn wait_for_disconnect(disconnect: &mut Option<oneshot::Receiver<()>>) {
@@ -265,25 +358,91 @@ async fn wait_for_disconnect(disconnect: &mut Option<oneshot::Receiver<()>>) {
     }
 }
 
-fn read_relay_events(mut reader: File, tx: mpsc::Sender<HookRelayEvent>, stop: Arc<AtomicBool>) {
-    let mut line = Vec::new();
-    let mut byte = [0_u8; 1];
-    while !stop.load(Ordering::Relaxed) {
-        match reader.read(&mut byte) {
-            Ok(0) => std::thread::sleep(Duration::from_millis(10)),
-            Ok(_) => {
-                line.push(byte[0]);
-                if byte[0] == b'\n' {
-                    if let Ok(event) = parse_event_line(&line)
-                        && tx.blocking_send(event).is_err()
-                    {
-                        return;
-                    }
-                    line.clear();
-                }
+async fn finish_if_child_exited(
+    session: &mut PtySession,
+    event_rx: &mut mpsc::Receiver<HookRelayEvent>,
+    stop: &mut Option<serde_json::Value>,
+    stop_failure: &mut Option<serde_json::Value>,
+) -> io::Result<Option<(ExitStatus, Option<String>)>> {
+    let Some(status) = session.child.try_wait()? else {
+        return Ok(None);
+    };
+    if stop.is_none() && stop_failure.is_none() {
+        // Claude can finish rendering the final response before its Stop hooks
+        // complete. Treat child exit as the start of a bounded hook-drain window,
+        // not immediate proof that no transcript result will arrive.
+        match wait_for_completion_event(event_rx, STOP_EVENT_GRACE).await {
+            Some(event) if event.event_name == "Stop" => {
+                *stop = Some(event.payload);
+                return Ok(Some((status, None)));
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            Some(event) if event.event_name == "StopFailure" => {
+                *stop_failure = Some(event.payload);
+                return Ok(Some((status, Some("claude_api_error".to_string()))));
+            }
+            _ => {
+                return Ok(Some((status, Some("provider_output_error".to_string()))));
+            }
+        }
+    }
+    let category = if stop_failure.is_some() {
+        Some("claude_api_error".to_string())
+    } else {
+        None
+    };
+    Ok(Some((status, category)))
+}
+
+async fn wait_for_completion_event(
+    event_rx: &mut mpsc::Receiver<HookRelayEvent>,
+    duration: Duration,
+) -> Option<HookRelayEvent> {
+    let deadline = tokio::time::sleep(duration);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => return None,
+            event = event_rx.recv() => match event {
+                Some(event) if matches!(event.event_name.as_str(), "Stop" | "StopFailure") => {
+                    return Some(event);
+                }
+                Some(_) => {}
+                None => return None,
+            }
+        }
+    }
+}
+
+fn read_relay_events(path: PathBuf, tx: mpsc::Sender<HookRelayEvent>, stop: Arc<AtomicBool>) {
+    let mut line = Vec::new();
+    let mut offset = 0;
+    while !stop.load(Ordering::Relaxed) {
+        let mut reader = match File::open(&path) {
+            Ok(reader) => reader,
+            Err(_) => {
                 std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+        };
+        if reader.seek(SeekFrom::Start(offset)).is_err() {
+            return;
+        }
+        let mut bytes = Vec::new();
+        match reader.read_to_end(&mut bytes) {
+            Ok(0) => std::thread::sleep(Duration::from_millis(10)),
+            Ok(count) => {
+                offset += count as u64;
+                for byte in bytes {
+                    line.push(byte);
+                    if byte == b'\n' {
+                        if let Ok(event) = parse_event_line(&line)
+                            && tx.blocking_send(event).is_err()
+                        {
+                            return;
+                        }
+                        line.clear();
+                    }
+                }
             }
             Err(_) => return,
         }
@@ -332,12 +491,22 @@ pub fn build_pty_spawn(request: ClaudeRunnerRequest) -> PtySpawn {
         LOGIN_SHELL_BOOTSTRAP.to_string(),
         LOGIN_SHELL_ARG0.to_string(),
         request.claude_bin.display().to_string(),
+        "--setting-sources".to_string(),
+        "local".to_string(),
     ];
     args.extend(mode_flags(request.mode));
     if let Some(settings_path) = request.settings_path {
         args.extend([
             "--settings".to_string(),
             settings_path.display().to_string(),
+        ]);
+    }
+    if let Some(debug_file) = request.debug_file {
+        args.extend([
+            "--debug".to_string(),
+            "hooks".to_string(),
+            "--debug-file".to_string(),
+            debug_file.display().to_string(),
         ]);
     }
     if let Some(model) = request.model {
@@ -400,6 +569,7 @@ mod tests {
             model: Some("sonnet".to_string()),
             effort: Some("high".to_string()),
             settings_path: Some(PathBuf::from("/tmp/settings.json")),
+            debug_file: Some(PathBuf::from("/tmp/claude-debug.log")),
             extra_env: BTreeMap::new(),
         });
 
@@ -408,12 +578,18 @@ mod tests {
         assert_eq!(spawn.args[1], LOGIN_SHELL_BOOTSTRAP);
         assert_eq!(spawn.args[2], LOGIN_SHELL_ARG0);
         assert_eq!(spawn.args[3], "/usr/local/bin/claude");
+        assert!(spawn.args.contains(&"--setting-sources".to_string()));
+        assert!(spawn.args.contains(&"local".to_string()));
         assert!(spawn.args.contains(&"--permission-mode".to_string()));
         assert!(spawn.args.contains(&"dontAsk".to_string()));
         assert!(spawn.args.contains(&"--tools".to_string()));
         assert!(spawn.args.contains(&"Read,Grep,Glob".to_string()));
         assert!(spawn.args.contains(&"--settings".to_string()));
         assert!(spawn.args.contains(&"/tmp/settings.json".to_string()));
+        assert!(spawn.args.contains(&"--debug".to_string()));
+        assert!(spawn.args.contains(&"hooks".to_string()));
+        assert!(spawn.args.contains(&"--debug-file".to_string()));
+        assert!(spawn.args.contains(&"/tmp/claude-debug.log".to_string()));
         assert!(spawn.args.contains(&"--model".to_string()));
         assert!(spawn.args.contains(&"sonnet".to_string()));
         assert!(spawn.args.contains(&"--effort".to_string()));
@@ -448,6 +624,34 @@ mod tests {
         assert_eq!(result.final_text_source.as_deref(), Some("transcript"));
         assert_eq!(result.transcript["parseStatus"], "ok");
         assert!(!result.pty_output_excerpt.contains("runner prompt"));
+    }
+
+    #[tokio::test]
+    async fn owned_runner_terminates_repl_after_stop_event() {
+        let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("interactive_claude");
+        let result = run_interactive(ClaudeInteractiveRunRequest {
+            claude_bin: fixture_dir.join("fake_interactive_claude.sh"),
+            cwd: fixture_dir,
+            timeout_seconds: 10,
+            mode: TaskMode::Research,
+            prompt: "runner prompt".to_string(),
+            model: None,
+            effort: None,
+            extra_env: BTreeMap::from([(
+                "FAKE_CLAUDE_SCENARIO".to_string(),
+                "stop-stays-open".to_string(),
+            )]),
+            disconnect: None,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(result.failure_category, None);
+        assert_eq!(result.final_text.as_deref(), Some("fixture final response"));
+        assert_eq!(result.transcript["parseStatus"], "ok");
     }
 
     #[tokio::test]
