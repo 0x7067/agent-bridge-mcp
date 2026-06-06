@@ -73,6 +73,27 @@ pub fn spawn_claude(request: ClaudeRunnerRequest) -> io::Result<PtySession> {
     spawn(build_pty_spawn(request))
 }
 
+/// Keeps the spawned child's pid in the process-global active-pid registry for
+/// the lifetime of a run, removing it on drop so no stale entries remain.
+struct ActivePidGuard(Option<u32>);
+
+impl ActivePidGuard {
+    fn register(pid: Option<u32>) -> Self {
+        if let Some(pid) = pid {
+            crate::task::register_active_pid(pid);
+        }
+        Self(pid)
+    }
+}
+
+impl Drop for ActivePidGuard {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            crate::task::unregister_active_pid(pid);
+        }
+    }
+}
+
 pub async fn run_interactive(
     request: ClaudeInteractiveRunRequest,
 ) -> io::Result<ClaudeInteractiveRunResult> {
@@ -110,6 +131,10 @@ pub async fn run_interactive(
         debug_file: debug_file.clone(),
         extra_env,
     })?;
+    // Register the spawned child in the process-global registry so the panic
+    // hook and host shutdown path can signal it. The guard removes it on every
+    // exit path (including early `?` returns).
+    let _pid_guard = ActivePidGuard::register(session.pid);
 
     let mut terminal = TerminalProbeHandler::new();
     let mut pty_excerpt = Vec::new();

@@ -231,34 +231,7 @@ fn reduced_configuration(provider: ProviderKind) -> Value {
 }
 
 pub fn validate_options(task: &ProviderTask<'_>) -> Result<(), String> {
-    if task.provider == ProviderKind::Cursor && task.mode == TaskMode::Command {
-        return Err("cursor does not support mode: command".to_string());
-    }
-    if let Some(effort) = task.effort {
-        let allowed = ["low", "medium", "high", "xhigh", "max"];
-        if task.provider != ProviderKind::Claude || !allowed.contains(&effort) {
-            return Err("effort is only supported for claude and must be one of: low, medium, high, xhigh, max".to_string());
-        }
-    }
-    if let Some(thinking) = task.thinking {
-        let allowed = match task.provider {
-            ProviderKind::Kimi => &["off", "minimal", "low", "medium", "high", "xhigh"][..],
-            ProviderKind::Codex => &["low", "medium", "high", "xhigh"][..],
-            _ => {
-                return Err(format!(
-                    "thinking is not supported for {}",
-                    task.provider.as_str()
-                ));
-            }
-        };
-        if !allowed.contains(&thinking) {
-            return Err(format!(
-                "thinking is not supported for {}",
-                task.provider.as_str()
-            ));
-        }
-    }
-    Ok(())
+    adapter_for(task.provider).validate(task)
 }
 
 pub fn version_command(provider: ProviderKind) -> ProviderCommand {
@@ -401,9 +374,167 @@ pub fn smoke_command(
 pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String> {
     validate_options(task)?;
     let rendered_prompt = render_task_prompt(task);
-    let command = match task.provider {
-        ProviderKind::Claude => build_claude_command(task, rendered_prompt),
-        ProviderKind::Cursor => ProviderCommand {
+    Ok(adapter_for(task.provider).build_command(task, rendered_prompt))
+}
+
+/// Per-provider behavior behind a single interface, so core code dispatches
+/// command construction generically instead of branching on `ProviderKind`.
+/// Each provider's CLI contract lives in its own implementation.
+pub trait ProviderAdapter: Sync {
+    fn build_command(&self, task: &ProviderTask<'_>, rendered_prompt: String) -> ProviderCommand;
+
+    /// Modes this provider accepts. Defaults to accepting every mode.
+    fn supports_mode(&self, _mode: TaskMode) -> bool {
+        true
+    }
+
+    /// Allowed `effort` values; empty means the provider rejects `effort`.
+    fn supported_effort(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Allowed `thinking` values; empty means the provider rejects `thinking`.
+    fn supported_thinking(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Whether this provider's stderr should be polled during execution for an
+    /// early fatal-denial signal. Defaults to no.
+    fn polls_stderr_for_denial(&self) -> bool {
+        false
+    }
+
+    /// Whether the provider's stderr indicates a fatal denial that should fail
+    /// the task even on a zero exit code. Defaults to never.
+    fn detects_fatal_denial(&self, _stderr: &[u8]) -> bool {
+        false
+    }
+
+    /// Whether a successful exit still requires an output-parseability check.
+    /// Defaults to no.
+    fn enforces_output_parseable(&self) -> bool {
+        false
+    }
+
+    /// Whether the provider's stdout is acceptable. Defaults to always.
+    fn output_is_acceptable(&self, _stdout: &[u8]) -> bool {
+        true
+    }
+
+    /// Validate task options against this provider's declared capabilities.
+    /// Shared across providers so the rules (and their messages) stay identical.
+    fn validate(&self, task: &ProviderTask<'_>) -> Result<(), String> {
+        if !self.supports_mode(task.mode) {
+            return Err(format!(
+                "{} does not support mode: {}",
+                task.provider.as_str(),
+                task.mode.as_str()
+            ));
+        }
+        if let Some(effort) = task.effort
+            && !self.supported_effort().contains(&effort)
+        {
+            return Err("effort is only supported for claude and must be one of: low, medium, high, xhigh, max".to_string());
+        }
+        if let Some(thinking) = task.thinking
+            && !self.supported_thinking().contains(&thinking)
+        {
+            return Err(format!(
+                "thinking is not supported for {}",
+                task.provider.as_str()
+            ));
+        }
+        Ok(())
+    }
+}
+
+struct ClaudeAdapter;
+struct CursorAdapter;
+struct KimiAdapter;
+struct CodexAdapter;
+struct AntigravityAdapter;
+
+/// Resolve the adapter for a provider. The set of providers is closed
+/// (`ProviderKind` is a fixed enum), so every variant maps to a `'static`
+/// adapter instance.
+pub fn adapter_for(provider: ProviderKind) -> &'static dyn ProviderAdapter {
+    match provider {
+        ProviderKind::Claude => &ClaudeAdapter,
+        ProviderKind::Cursor => &CursorAdapter,
+        ProviderKind::Kimi => &KimiAdapter,
+        ProviderKind::Codex => &CodexAdapter,
+        ProviderKind::Antigravity => &AntigravityAdapter,
+    }
+}
+
+impl ProviderAdapter for ClaudeAdapter {
+    fn supported_effort(&self) -> &'static [&'static str] {
+        &["low", "medium", "high", "xhigh", "max"]
+    }
+
+    fn enforces_output_parseable(&self) -> bool {
+        true
+    }
+
+    fn output_is_acceptable(&self, stdout: &[u8]) -> bool {
+        claude_output_is_parseable(stdout)
+    }
+
+    fn build_command(&self, task: &ProviderTask<'_>, rendered_prompt: String) -> ProviderCommand {
+        build_claude_command(task, rendered_prompt)
+    }
+}
+
+/// A successful Claude run must emit at least one JSON line carrying a non-empty
+/// `result` field; otherwise the output is treated as unparseable.
+fn claude_output_is_parseable(stdout: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(stdout);
+    text.lines().any(|line| {
+        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+            return false;
+        };
+        value
+            .get("result")
+            .and_then(Value::as_str)
+            .is_some_and(|result| !result.is_empty())
+    })
+}
+
+/// Codex can exit zero while reporting a fatal sandbox/approval/patch denial in
+/// its stderr; these specific phrases identify that case.
+fn codex_denial_text(stderr: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    let mentions_patch_rejection = text.contains("patch rejected");
+    let mentions_outside_workspace = text.contains("outside of the project")
+        || text.contains("outside the project")
+        || text.contains("outside of the workspace")
+        || text.contains("outside the workspace")
+        || text.contains("out-of-workspace");
+    let mentions_sandbox_denial = text.contains("sandbox denied")
+        || text.contains("sandbox denial")
+        || text.contains("sandbox permission")
+        || text.contains("sandbox permissions")
+        || text.contains("sandbox policy");
+    let mentions_approval_denial = text.contains("approval denied")
+        || text.contains("approval denial")
+        || text.contains("rejected by approval")
+        || text.contains("rejected by user approval")
+        || text.contains("user approval settings")
+        || text.contains("user denied approval");
+
+    mentions_patch_rejection
+        || mentions_outside_workspace
+        || mentions_sandbox_denial
+        || mentions_approval_denial
+}
+
+impl ProviderAdapter for CursorAdapter {
+    fn supports_mode(&self, mode: TaskMode) -> bool {
+        mode != TaskMode::Command
+    }
+
+    fn build_command(&self, task: &ProviderTask<'_>, rendered_prompt: String) -> ProviderCommand {
+        ProviderCommand {
             provider: task.provider,
             command_kind: None,
             claude_host: None,
@@ -429,8 +560,17 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
             profile: task.profile,
             prompt_strategy: prompt_strategy(task.profile).to_string(),
             profile_diagnostics: profile_diagnostics(task.provider, task.profile),
-        },
-        ProviderKind::Kimi => ProviderCommand {
+        }
+    }
+}
+
+impl ProviderAdapter for KimiAdapter {
+    fn supported_thinking(&self) -> &'static [&'static str] {
+        &["off", "minimal", "low", "medium", "high", "xhigh"]
+    }
+
+    fn build_command(&self, task: &ProviderTask<'_>, rendered_prompt: String) -> ProviderCommand {
+        ProviderCommand {
             provider: task.provider,
             command_kind: None,
             claude_host: None,
@@ -457,8 +597,25 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
             profile: task.profile,
             prompt_strategy: prompt_strategy(task.profile).to_string(),
             profile_diagnostics: profile_diagnostics(task.provider, task.profile),
-        },
-        ProviderKind::Codex => ProviderCommand {
+        }
+    }
+}
+
+impl ProviderAdapter for CodexAdapter {
+    fn supported_thinking(&self) -> &'static [&'static str] {
+        &["low", "medium", "high", "xhigh"]
+    }
+
+    fn polls_stderr_for_denial(&self) -> bool {
+        true
+    }
+
+    fn detects_fatal_denial(&self, stderr: &[u8]) -> bool {
+        codex_denial_text(stderr)
+    }
+
+    fn build_command(&self, task: &ProviderTask<'_>, rendered_prompt: String) -> ProviderCommand {
+        ProviderCommand {
             provider: task.provider,
             command_kind: None,
             claude_host: None,
@@ -495,8 +652,13 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
             profile: task.profile,
             prompt_strategy: prompt_strategy(task.profile).to_string(),
             profile_diagnostics: profile_diagnostics(task.provider, task.profile),
-        },
-        ProviderKind::Antigravity => ProviderCommand {
+        }
+    }
+}
+
+impl ProviderAdapter for AntigravityAdapter {
+    fn build_command(&self, task: &ProviderTask<'_>, rendered_prompt: String) -> ProviderCommand {
+        ProviderCommand {
             provider: task.provider,
             command_kind: None,
             claude_host: None,
@@ -510,9 +672,8 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
             profile: task.profile,
             prompt_strategy: prompt_strategy(task.profile).to_string(),
             profile_diagnostics: profile_diagnostics(task.provider, task.profile),
-        },
-    };
-    Ok(command)
+        }
+    }
 }
 
 pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
@@ -810,4 +971,128 @@ fn optional_arg(flag: &str, value: Option<&str>) -> Vec<String> {
 
 fn env_or(name: &str, fallback: &str) -> String {
     env::var(name).unwrap_or_else(|_| fallback.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(provider: ProviderKind, mode: TaskMode) -> ProviderTask<'static> {
+        ProviderTask {
+            provider,
+            mode,
+            prompt: "do the thing",
+            title: None,
+            cwd: "/tmp/work",
+            timeout_seconds: 30,
+            model: None,
+            effort: None,
+            thinking: None,
+            profile: LaunchProfile::Bridge,
+        }
+    }
+
+    #[test]
+    fn build_command_dispatches_to_each_provider() {
+        let cases = [
+            (ProviderKind::Cursor, "cursor-agent"),
+            (ProviderKind::Kimi, "pi"),
+            (ProviderKind::Codex, "codex"),
+            (ProviderKind::Antigravity, "agy"),
+        ];
+        for (provider, expected) in cases {
+            let command = build_command(&task(provider, TaskMode::Research)).unwrap();
+            assert_eq!(command.provider, provider);
+            assert_eq!(command.command, expected);
+        }
+        // Claude routes through the owned interactive host runner.
+        let claude = build_command(&task(ProviderKind::Claude, TaskMode::Research)).unwrap();
+        assert_eq!(
+            claude.command_kind.as_deref(),
+            Some("owned-interactive-claude")
+        );
+    }
+
+    #[test]
+    fn codex_build_command_carries_sandbox_and_thinking() {
+        let mut t = task(ProviderKind::Codex, TaskMode::Implement);
+        t.thinking = Some("high");
+        let command = build_command(&t).unwrap();
+        assert!(command.args.iter().any(|arg| arg == "exec"));
+        assert!(command.args.iter().any(|arg| arg == "workspace-write"));
+        assert!(
+            command
+                .args
+                .iter()
+                .any(|arg| arg == "model_reasoning_effort=\"high\"")
+        );
+    }
+
+    #[test]
+    fn validate_options_enforces_provider_rules() {
+        // Cursor rejects command mode.
+        assert!(validate_options(&task(ProviderKind::Cursor, TaskMode::Command)).is_err());
+        // effort only for claude.
+        let mut codex = task(ProviderKind::Codex, TaskMode::Research);
+        codex.effort = Some("high");
+        assert!(validate_options(&codex).is_err());
+        let mut claude = task(ProviderKind::Claude, TaskMode::Research);
+        claude.effort = Some("high");
+        assert!(validate_options(&claude).is_ok());
+        // thinking rules per provider.
+        let mut kimi = task(ProviderKind::Kimi, TaskMode::Research);
+        kimi.thinking = Some("off");
+        assert!(validate_options(&kimi).is_ok());
+        kimi.thinking = Some("nonsense");
+        assert!(validate_options(&kimi).is_err());
+        let mut cursor = task(ProviderKind::Cursor, TaskMode::Research);
+        cursor.thinking = Some("low");
+        assert!(validate_options(&cursor).is_err());
+    }
+
+    #[test]
+    fn codex_adapter_detects_fatal_denial_via_trait() {
+        let adapter = adapter_for(ProviderKind::Codex);
+        assert!(adapter.polls_stderr_for_denial());
+        for stderr in [
+            "patch rejected",
+            "Patch rejected: file is outside the workspace",
+            "write outside of the project",
+            "sandbox denied",
+            "sandbox permission blocked command",
+            "approval denied",
+            "rejected by user approval settings",
+        ] {
+            assert!(
+                adapter.detects_fatal_denial(stderr.as_bytes()),
+                "expected fatal Codex denial for: {stderr}"
+            );
+        }
+        for stderr in [
+            "sandbox connection denied by proxy",
+            "permission denied while reading cache",
+            "approval requested",
+            "patch failed to apply cleanly",
+        ] {
+            assert!(
+                !adapter.detects_fatal_denial(stderr.as_bytes()),
+                "unexpected fatal Codex denial for: {stderr}"
+            );
+        }
+        // Non-Codex providers never poll or detect denial.
+        assert!(!adapter_for(ProviderKind::Kimi).polls_stderr_for_denial());
+        assert!(!adapter_for(ProviderKind::Kimi).detects_fatal_denial(b"patch rejected"));
+    }
+
+    #[test]
+    fn claude_adapter_enforces_output_parseability_via_trait() {
+        let adapter = adapter_for(ProviderKind::Claude);
+        assert!(adapter.enforces_output_parseable());
+        assert!(adapter.output_is_acceptable(b"{\"result\":\"done\"}"));
+        assert!(!adapter.output_is_acceptable(b"not json"));
+        assert!(!adapter.output_is_acceptable(b"{\"result\":\"\"}"));
+        // Other providers do not enforce parseability.
+        assert!(!adapter_for(ProviderKind::Codex).enforces_output_parseable());
+        assert!(adapter_for(ProviderKind::Codex).output_is_acceptable(b"anything"));
+    }
 }

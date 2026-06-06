@@ -245,6 +245,9 @@ pub async fn run_server(socket_path: PathBuf) -> Result<(), String> {
             }
             _ = shutdown_signal() => {
                 terminate_active_children(&active_pids, libc::SIGTERM);
+                // Child PIDs are tracked in the process-global registry; signal
+                // those too so in-flight provider children are terminated.
+                crate::task::terminate_all_active_pids(libc::SIGTERM);
                 return Ok(());
             }
         }
@@ -483,6 +486,10 @@ async fn run_claude_child_with_executable(
     active_pids: Arc<Mutex<Vec<u32>>>,
     disconnect: Option<oneshot::Receiver<()>>,
 ) -> Result<ClaudeInteractiveRunResult, String> {
+    // The spawned child is tracked in the process-global active-pid registry
+    // (see `crate::task::register_active_pid`), which both the host shutdown path
+    // and the panic hook consult. This per-connection handle is retained for
+    // API/test compatibility.
     let _ = active_pids;
     run_interactive(ClaudeInteractiveRunRequest {
         claude_bin,

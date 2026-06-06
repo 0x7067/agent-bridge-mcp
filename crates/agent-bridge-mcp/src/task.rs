@@ -27,8 +27,53 @@ const MAX_OBSERVE_EVENTS: usize = 500;
 const PROGRESS_TRANSCRIPT_TAIL_BYTES: u64 = 64 * 1024;
 const ACTOR_BUFFER: usize = 128;
 const CHILD_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+/// Hard upper bound on how long to wait for a child to be reaped after SIGKILL.
+/// A process the OS cannot reap within this window is reported, never waited on
+/// indefinitely.
+const SIGKILL_REAP_GRACE: Duration = Duration::from_secs(1);
+/// Default ceiling on concurrently active tasks; overridable via
+/// `AGENT_BRIDGE_MAX_ACTIVE_TASKS`.
+const DEFAULT_MAX_ACTIVE_TASKS: usize = 16;
 
 static MANAGER: OnceCell<TaskManagerHandle> = OnceCell::const_new();
+
+/// Process-group ids of all live provider children, kept in a global registry so
+/// the panic hook (which has no access to the actor) can still signal them on an
+/// abnormal exit. Registered when a child is spawned, removed when it is reaped.
+static ACTIVE_PIDS: std::sync::Mutex<std::collections::BTreeSet<u32>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+pub(crate) fn register_active_pid(pid: u32) {
+    if let Ok(mut pids) = ACTIVE_PIDS.lock() {
+        pids.insert(pid);
+    }
+}
+
+pub(crate) fn unregister_active_pid(pid: u32) {
+    if let Ok(mut pids) = ACTIVE_PIDS.lock() {
+        pids.remove(&pid);
+    }
+}
+
+/// Best-effort termination of every tracked child process group. Safe to call
+/// from the panic hook: it only takes a lock and issues signals.
+pub(crate) fn terminate_all_active_pids(signal: i32) {
+    let pids: Vec<u32> = ACTIVE_PIDS
+        .lock()
+        .map(|pids| pids.iter().copied().collect())
+        .unwrap_or_default();
+    for pid in pids {
+        terminate_child_tree(pid, signal);
+    }
+}
+
+fn max_active_tasks() -> usize {
+    env::var("AGENT_BRIDGE_MAX_ACTIVE_TASKS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MAX_ACTIVE_TASKS)
+}
 
 #[derive(Clone)]
 pub struct TaskManagerHandle {
@@ -56,6 +101,10 @@ impl TaskManagerHandle {
             .map_err(|error| error.to_string())?;
         let mut registry = load_registry(&state_dir).await?;
         let mut changed = false;
+        // Any provider child died when the previous server process exited, so a
+        // crash leaves Queued/Running records and their managed worktrees
+        // orphaned. Reconcile them: mark the record stale and reclaim the
+        // worktree.
         for task in registry.tasks.values_mut() {
             if matches!(task.status, TaskStatus::Queued | TaskStatus::Running) {
                 transition_status(task, TaskStatus::FailedStale)?;
@@ -65,6 +114,29 @@ impl TaskManagerHandle {
                 );
                 task.error_type = Some(ErrorType::Stale);
                 task.updated_at = now_iso();
+                if task.worktree_managed
+                    && let Some(worktree_path) = task.worktree_path.clone()
+                {
+                    let cleanup_cwd = task
+                        .original_cwd
+                        .clone()
+                        .unwrap_or_else(|| task.cwd.clone());
+                    match run_git(&["worktree", "remove", "-f", &worktree_path], &cleanup_cwd).await
+                    {
+                        Ok(_) => {
+                            task.worktree_managed = false;
+                        }
+                        Err(cleanup_error) => {
+                            task.diagnostic = Some(json!({
+                                "failureCategory": "worktree_reclaim_failed",
+                                "message": format!(
+                                    "failed to reclaim orphaned worktree on restart: {cleanup_error}"
+                                ),
+                                "worktreePath": worktree_path,
+                            }));
+                        }
+                    }
+                }
                 changed = true;
             }
         }
@@ -478,6 +550,14 @@ impl TaskActor {
 
     async fn spawn(&mut self, arguments: Value) -> Result<Value, String> {
         let input = validate_spawn_arguments(arguments)?;
+        let limit = max_active_tasks();
+        if self.active.len() >= limit {
+            return Err(format!(
+                "too many active tasks: {} of {} slots in use. Wait for a task to finish or stop one (agent_stop) before spawning. Raise the ceiling with AGENT_BRIDGE_MAX_ACTIVE_TASKS.",
+                self.active.len(),
+                limit
+            ));
+        }
         let agent_id = self.next_agent_id();
         let created_at = now_iso();
         let agent_dir = self.state_dir.join("tasks").join(&agent_id);
@@ -569,6 +649,26 @@ impl TaskActor {
                 record.error_type = Some(ErrorType::ProviderStartError);
                 record.completed_at = Some(now_iso());
                 record.updated_at = record.completed_at.clone().unwrap();
+                // The worktree was created before the launch attempt; a failed
+                // launch must not leave it orphaned.
+                if record.worktree_managed
+                    && let Some(worktree_path) = record.worktree_path.clone()
+                {
+                    match run_git(&["worktree", "remove", "-f", &worktree_path], &cwd).await {
+                        Ok(_) => {
+                            record.worktree_managed = false;
+                        }
+                        Err(cleanup_error) => {
+                            record.diagnostic = Some(json!({
+                                "failureCategory": "worktree_cleanup_failed",
+                                "message": format!(
+                                    "failed to remove worktree after launch failure: {cleanup_error}"
+                                ),
+                                "worktreePath": worktree_path,
+                            }));
+                        }
+                    }
+                }
             }
         }
         self.registry.tasks.insert(agent_id.clone(), record);
@@ -644,10 +744,21 @@ impl TaskActor {
             run_git(&["worktree", "remove", "-f", &worktree_path], &cleanup_cwd).await?;
         }
         let agent_dir = task.agent_dir.clone();
+        // Remove the agent directory before persisting the terminal state so a
+        // failure is recorded on the task record (and remains discoverable in the
+        // on-disk registry for the reconciliation sweep) rather than silently
+        // orphaning the directory.
+        let dir_removal = fs::remove_dir_all(&agent_dir).await;
+        if let Err(error) = &dir_removal {
+            task.diagnostic = Some(json!({
+                "failureCategory": "agent_dir_cleanup_failed",
+                "message": format!("failed to remove agent directory: {error}"),
+                "agentDir": agent_dir,
+            }));
+        }
         transition_status(task, TaskStatus::Removed)?;
         task.updated_at = now_iso();
         self.save().await?;
-        let _ = fs::remove_dir_all(agent_dir).await;
         Ok(json!({ "agentId": agent_id, "status": "removed" }))
     }
 
@@ -936,6 +1047,7 @@ async fn launch_task(
     let pid = child
         .id()
         .ok_or_else(|| "provider process did not expose a pid".to_string())?;
+    register_active_pid(pid);
     append_transcript_event(
         &transcript_path,
         command.provider,
@@ -980,6 +1092,7 @@ async fn launch_task(
             drains,
         )
         .await;
+        unregister_active_pid(pid);
         if tx.send(ActorCommand::Complete(completion)).await.is_err() {
             eprintln!("[agent-bridge] task manager dropped completion message");
             std::process::abort();
@@ -1174,39 +1287,6 @@ async fn complete_host_response(
     }
 }
 
-fn codex_denial_detected(command: &ProviderCommand, stderr: &[u8]) -> bool {
-    if command_provider_hint(command) != ProviderKind::Codex {
-        return false;
-    }
-    codex_denial_text(stderr)
-}
-
-fn codex_denial_text(stderr: &[u8]) -> bool {
-    let text = String::from_utf8_lossy(stderr).to_ascii_lowercase();
-    let mentions_patch_rejection = text.contains("patch rejected");
-    let mentions_outside_workspace = text.contains("outside of the project")
-        || text.contains("outside the project")
-        || text.contains("outside of the workspace")
-        || text.contains("outside the workspace")
-        || text.contains("out-of-workspace");
-    let mentions_sandbox_denial = text.contains("sandbox denied")
-        || text.contains("sandbox denial")
-        || text.contains("sandbox permission")
-        || text.contains("sandbox permissions")
-        || text.contains("sandbox policy");
-    let mentions_approval_denial = text.contains("approval denied")
-        || text.contains("approval denial")
-        || text.contains("rejected by approval")
-        || text.contains("rejected by user approval")
-        || text.contains("user approval settings")
-        || text.contains("user denied approval");
-
-    mentions_patch_rejection
-        || mentions_outside_workspace
-        || mentions_sandbox_denial
-        || mentions_approval_denial
-}
-
 async fn wait_for_child(
     agent_id: String,
     pid: u32,
@@ -1232,17 +1312,22 @@ async fn wait_for_child(
                 timed_out = true;
                 terminate_child_tree(pid, libc::SIGTERM);
                 break match timeout(CHILD_SHUTDOWN_GRACE, &mut wait).await {
-                    Ok(result) => result,
+                    Ok(result) => result.map_err(|error| error.to_string()),
                     Err(_) => {
                         terminate_child_tree(pid, libc::SIGKILL);
-                        (&mut wait).await
+                        match timeout(SIGKILL_REAP_GRACE, &mut wait).await {
+                            Ok(result) => result.map_err(|error| error.to_string()),
+                            Err(_) => Err(format!(
+                                "child process group {pid} did not exit within {}s after SIGKILL; reporting best-effort status",
+                                SIGKILL_REAP_GRACE.as_secs()
+                            )),
+                        }
                     }
-                }
-                .map_err(|error| error.to_string());
+                };
             }
-            _ = sleep(Duration::from_millis(50)), if command_provider_hint(&command) == ProviderKind::Codex => {
+            _ = sleep(Duration::from_millis(50)), if provider::adapter_for(command.provider).polls_stderr_for_denial() => {
                 let stderr = fs::read(&stderr_path).await.unwrap_or_default();
-                if codex_denial_text(&stderr) {
+                if provider::adapter_for(command.provider).detects_fatal_denial(&stderr) {
                     fatal_denial = true;
                     terminate_child_tree(pid, libc::SIGTERM);
                     break match timeout(CHILD_SHUTDOWN_GRACE, &mut wait).await {
@@ -1298,10 +1383,11 @@ async fn wait_for_child(
     .await;
     match output {
         Ok(status) if status.success() => {
-            if command_provider_hint(&command) == ProviderKind::Codex || fatal_denial {
+            let adapter = provider::adapter_for(command.provider);
+            if adapter.polls_stderr_for_denial() || fatal_denial {
                 let stdout = std::fs::read(agent_dir.join("stdout.log")).unwrap_or_default();
                 let stderr = std::fs::read(agent_dir.join("stderr.log")).unwrap_or_default();
-                if fatal_denial || codex_denial_detected(&command, &stderr) {
+                if fatal_denial || adapter.detects_fatal_denial(&stderr) {
                     return codex_denial_completion(
                         agent_id,
                         &command,
@@ -1313,10 +1399,10 @@ async fn wait_for_child(
                     );
                 }
             }
-            if command_provider_hint(&command) == ProviderKind::Claude {
+            if adapter.enforces_output_parseable() {
                 let stdout = std::fs::read(agent_dir.join("stdout.log")).unwrap_or_default();
                 let stderr = std::fs::read(agent_dir.join("stderr.log")).unwrap_or_default();
-                if !claude_output_is_parseable(&stdout) {
+                if !adapter.output_is_acceptable(&stdout) {
                     return TaskCompletion {
                         agent_id,
                         status: TaskStatus::Failed,
@@ -1350,7 +1436,8 @@ async fn wait_for_child(
             let signal = signal_name(&status);
             let stdout = std::fs::read(agent_dir.join("stdout.log")).unwrap_or_default();
             let stderr = std::fs::read(agent_dir.join("stderr.log")).unwrap_or_default();
-            if fatal_denial || codex_denial_detected(&command, &stderr) {
+            if fatal_denial || provider::adapter_for(command.provider).detects_fatal_denial(&stderr)
+            {
                 return codex_denial_completion(
                     agent_id,
                     &command,
@@ -1432,19 +1519,6 @@ fn codex_denial_completion(
             stderr,
         )),
     }
-}
-
-fn claude_output_is_parseable(stdout: &[u8]) -> bool {
-    let text = String::from_utf8_lossy(stdout);
-    text.lines().any(|line| {
-        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
-            return false;
-        };
-        value
-            .get("result")
-            .and_then(Value::as_str)
-            .is_some_and(|result| !result.is_empty())
-    })
 }
 
 fn agent_diagnostic(
@@ -3029,39 +3103,6 @@ mod tests {
         assert!(error.contains("failed to parse registry.json"));
     }
 
-    #[test]
-    fn codex_denial_text_matches_specific_fatal_denial_phrases() {
-        for stderr in [
-            "patch rejected",
-            "Patch rejected: file is outside the workspace",
-            "write outside of the project",
-            "sandbox denied",
-            "sandbox permission blocked command",
-            "approval denied",
-            "rejected by user approval settings",
-        ] {
-            assert!(
-                codex_denial_text(stderr.as_bytes()),
-                "expected fatal Codex denial for: {stderr}"
-            );
-        }
-    }
-
-    #[test]
-    fn codex_denial_text_avoids_broad_sandbox_false_positives() {
-        for stderr in [
-            "sandbox connection denied by proxy",
-            "permission denied while reading cache",
-            "approval requested",
-            "patch failed to apply cleanly",
-        ] {
-            assert!(
-                !codex_denial_text(stderr.as_bytes()),
-                "unexpected fatal Codex denial for: {stderr}"
-            );
-        }
-    }
-
     #[tokio::test]
     async fn terminate_child_tree_sends_sigterm_to_unix_process_group() {
         let mut command = ProcessCommand::new("/bin/sleep");
@@ -3081,5 +3122,27 @@ mod tests {
             .unwrap();
 
         assert_eq!(signal_name(&status).as_deref(), Some("SIGTERM"));
+    }
+
+    #[test]
+    fn active_pid_registry_tracks_and_clears() {
+        // Use a sentinel pid that will not collide with a real child; assert only
+        // this entry's bookkeeping so the test is safe under parallel execution.
+        // Actual signal delivery is covered by
+        // `terminate_child_tree_sends_sigterm_to_unix_process_group`; calling the
+        // process-global `terminate_all_active_pids` here would kill other tests'
+        // children.
+        let sentinel = 0x00AB_CDEFu32;
+        register_active_pid(sentinel);
+        assert!(ACTIVE_PIDS.lock().unwrap().contains(&sentinel));
+        unregister_active_pid(sentinel);
+        assert!(!ACTIVE_PIDS.lock().unwrap().contains(&sentinel));
+    }
+
+    #[test]
+    fn max_active_tasks_defaults_when_unset() {
+        // Exercises the default branch; env-driven overrides are validated by the
+        // parsing logic (positive integers only).
+        assert!(max_active_tasks() >= 1);
     }
 }

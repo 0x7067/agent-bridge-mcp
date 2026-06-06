@@ -95,5 +95,9 @@ async fn write_response(stdout: &mut io::Stdout, response: &JsonRpcResponse) -> 
 fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         eprintln!("[agent-bridge] panic {info}");
+        // Best-effort: terminate any tracked provider children so a panic does
+        // not leave orphaned processes behind.
+        #[cfg(unix)]
+        crate::task::terminate_all_active_pids(libc::SIGTERM);
     }));
 }
