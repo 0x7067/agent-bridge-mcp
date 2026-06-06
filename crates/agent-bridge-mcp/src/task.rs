@@ -37,35 +37,11 @@ const DEFAULT_MAX_ACTIVE_TASKS: usize = 16;
 
 static MANAGER: OnceCell<TaskManagerHandle> = OnceCell::const_new();
 
-/// Process-group ids of all live provider children, kept in a global registry so
-/// the panic hook (which has no access to the actor) can still signal them on an
-/// abnormal exit. Registered when a child is spawned, removed when it is reaped.
-static ACTIVE_PIDS: std::sync::Mutex<std::collections::BTreeSet<u32>> =
-    std::sync::Mutex::new(std::collections::BTreeSet::new());
-
-pub(crate) fn register_active_pid(pid: u32) {
-    if let Ok(mut pids) = ACTIVE_PIDS.lock() {
-        pids.insert(pid);
-    }
-}
-
-pub(crate) fn unregister_active_pid(pid: u32) {
-    if let Ok(mut pids) = ACTIVE_PIDS.lock() {
-        pids.remove(&pid);
-    }
-}
-
-/// Best-effort termination of every tracked child process group. Safe to call
-/// from the panic hook: it only takes a lock and issues signals.
-pub(crate) fn terminate_all_active_pids(signal: i32) {
-    let pids: Vec<u32> = ACTIVE_PIDS
-        .lock()
-        .map(|pids| pids.iter().copied().collect())
-        .unwrap_or_default();
-    for pid in pids {
-        terminate_child_tree(pid, signal);
-    }
-}
+mod supervision;
+pub(crate) use supervision::{
+    configure_child_process_group, register_active_pid, signal_name, terminate_all_active_pids,
+    terminate_child_tree, unregister_active_pid,
+};
 
 fn max_active_tasks() -> usize {
     env::var("AGENT_BRIDGE_MAX_ACTIVE_TASKS")
@@ -2729,47 +2705,6 @@ fn expand_home(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
-#[cfg(unix)]
-fn configure_child_process_group(command: &mut ProcessCommand) {
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setpgid(0, 0) == 0 {
-                Ok(())
-            } else {
-                Err(std::io::Error::last_os_error())
-            }
-        });
-    }
-}
-
-#[cfg(not(unix))]
-fn configure_child_process_group(_command: &mut ProcessCommand) {}
-
-#[cfg(unix)]
-fn terminate_child_tree(pid: u32, signal: i32) {
-    unsafe {
-        libc::killpg(pid as libc::pid_t, signal);
-    }
-}
-
-#[cfg(not(unix))]
-fn terminate_child_tree(_pid: u32, _signal: i32) {}
-
-#[cfg(unix)]
-fn signal_name(status: &std::process::ExitStatus) -> Option<String> {
-    use std::os::unix::process::ExitStatusExt;
-    status.signal().map(|signal| match signal {
-        libc::SIGTERM => "SIGTERM".to_string(),
-        libc::SIGKILL => "SIGKILL".to_string(),
-        other => format!("SIG{other}"),
-    })
-}
-
-#[cfg(not(unix))]
-fn signal_name(_status: &std::process::ExitStatus) -> Option<String> {
-    None
-}
-
 fn command_provider_hint(command: &ProviderCommand) -> ProviderKind {
     command.provider
 }
@@ -2777,7 +2712,6 @@ fn command_provider_hint(command: &ProviderCommand) -> ProviderKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Stdio;
 
     fn temp_dir(name: &str) -> PathBuf {
         let path = env::temp_dir().join(format!(
@@ -3103,41 +3037,7 @@ mod tests {
         assert!(error.contains("failed to parse registry.json"));
     }
 
-    #[tokio::test]
-    async fn terminate_child_tree_sends_sigterm_to_unix_process_group() {
-        let mut command = ProcessCommand::new("/bin/sleep");
-        command
-            .arg("30")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        configure_child_process_group(&mut command);
-        let mut child = command.spawn().unwrap();
-        let pid = child.id().unwrap();
-
-        terminate_child_tree(pid, libc::SIGTERM);
-        let status = timeout(Duration::from_secs(3), child.wait())
-            .await
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(signal_name(&status).as_deref(), Some("SIGTERM"));
-    }
-
-    #[test]
-    fn active_pid_registry_tracks_and_clears() {
-        // Use a sentinel pid that will not collide with a real child; assert only
-        // this entry's bookkeeping so the test is safe under parallel execution.
-        // Actual signal delivery is covered by
-        // `terminate_child_tree_sends_sigterm_to_unix_process_group`; calling the
-        // process-global `terminate_all_active_pids` here would kill other tests'
-        // children.
-        let sentinel = 0x00AB_CDEFu32;
-        register_active_pid(sentinel);
-        assert!(ACTIVE_PIDS.lock().unwrap().contains(&sentinel));
-        unregister_active_pid(sentinel);
-        assert!(!ACTIVE_PIDS.lock().unwrap().contains(&sentinel));
-    }
+    // Supervision registry/signal tests live in `task::supervision`.
 
     #[test]
     fn max_active_tasks_defaults_when_unset() {

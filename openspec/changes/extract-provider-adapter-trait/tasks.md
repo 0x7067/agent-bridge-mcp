@@ -22,7 +22,7 @@
 
 - [x] 4.1 Extract doctor/readiness helpers from `server.rs` into a module. (Consolidated with 4.2 into `server/diagnostics.rs`; doctor + providers helpers are mutually coupled, so one cohesive module is cleaner than two. `server.rs`: 3056 → 1175 lines.)
 - [x] 4.2 Extract provider-smoke/check helpers from `server.rs` into a module. (See 4.1 — same `server/diagnostics.rs`.)
-- [ ] 4.3 Extract child-supervision/cleanup helpers from `task.rs` into a focused module. (Deferred: supervision helpers are interwoven with the task actor and directly unit-tested in-file; extraction needs the same pub(super)+test-relocation dance for limited gain. Tracked for a follow-up.)
+- [x] 4.3 Extract child-supervision/cleanup helpers from `task.rs` into a focused module. (Moved to `task/supervision.rs`; the PID registry is redesigned as a testable `ActivePids` value — the process-global is one instance, tests use isolated instances — which removes the cross-test signal hazard and restores real signal-delivery coverage.)
 
 ## 5. Verification
 
