@@ -2438,12 +2438,43 @@ async fn load_registry(state_dir: &Path) -> Result<Registry, String> {
     cleanup_registry_temps(state_dir).await?;
     let path = state_dir.join("registry.json");
     match fs::read_to_string(&path).await {
-        Ok(text) => serde_json::from_str(&text)
-            .map_err(|error| format!("failed to parse registry.json: {error}")),
+        Ok(text) => parse_registry_text(&text),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Registry {
             tasks: BTreeMap::new(),
         }),
         Err(error) => Err(error.to_string()),
+    }
+}
+
+pub(crate) fn validate_registry_text(text: &str) -> Result<(), String> {
+    parse_registry_text(text).map(|_| ())
+}
+
+fn parse_registry_text(text: &str) -> Result<Registry, String> {
+    let mut value: Value = serde_json::from_str(text)
+        .map_err(|error| format!("failed to parse registry.json: {error}"))?;
+    normalize_legacy_registry_fields(&mut value);
+    serde_json::from_value(value).map_err(|error| format!("failed to parse registry.json: {error}"))
+}
+
+fn normalize_legacy_registry_fields(value: &mut Value) {
+    let Some(tasks) = value.get_mut("tasks").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for task in tasks.values_mut() {
+        let Some(record) = task.as_object_mut() else {
+            continue;
+        };
+        if !record.contains_key("agentId")
+            && let Some(task_id) = record.get("taskId").cloned()
+        {
+            record.insert("agentId".to_string(), task_id);
+        }
+        if !record.contains_key("agentDir")
+            && let Some(task_dir) = record.get("taskDir").cloned()
+        {
+            record.insert("agentDir".to_string(), task_dir);
+        }
     }
 }
 
@@ -2989,6 +3020,40 @@ mod tests {
 
         assert!(registry.tasks.is_empty());
         assert!(!tmp.exists());
+    }
+
+    #[tokio::test]
+    async fn load_registry_accepts_legacy_task_id_records() {
+        let dir = temp_dir("registry-legacy");
+        let legacy_dir = dir.join("tasks").join("task_legacy");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        let mut task = serde_json::to_value(sample_task(TaskStatus::Succeeded)).unwrap();
+        let object = task.as_object_mut().unwrap();
+        object.insert("taskId".to_string(), json!("task_legacy"));
+        object.insert(
+            "taskDir".to_string(),
+            json!(legacy_dir.display().to_string()),
+        );
+        object.remove("agentId");
+        object.remove("agentDir");
+        fs::write(
+            dir.join("registry.json"),
+            serde_json::to_vec_pretty(&json!({
+                "tasks": {
+                    "task_legacy": task
+                }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let registry = load_registry(&dir).await.unwrap();
+
+        let loaded = registry.tasks.get("task_legacy").unwrap();
+        assert_eq!(loaded.agent_id, "task_legacy");
+        assert_eq!(loaded.agent_dir, legacy_dir.display().to_string());
+        assert_eq!(loaded.status, TaskStatus::Succeeded);
     }
 
     #[tokio::test]

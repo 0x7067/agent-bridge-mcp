@@ -86,6 +86,22 @@ pub fn capabilities() -> Value {
             "outputCadence": output_cadence(ProviderKind::Codex),
             "readiness": default_readiness(),
             "reducedConfiguration": reduced_configuration(ProviderKind::Codex)
+        },
+        "antigravity": {
+            "modes": ["research", "review", "implement", "command"],
+            "supportsReply": false,
+            "supportsResume": false,
+            "supportsWorktreeIsolation": true,
+            "launchProfiles": ["bridge", "bare"],
+            "presentationActions": presentation_actions(),
+            "outputCadence": output_cadence(ProviderKind::Antigravity),
+            "readiness": default_readiness(),
+            "reducedConfiguration": reduced_configuration(ProviderKind::Antigravity),
+            "readOnlyEnforcement": {
+                "research": "prompt_enforced",
+                "review": "prompt_enforced",
+                "note": "Antigravity --sandbox is used for non-mutating modes, but Agent Bridge does not claim verified read-only filesystem enforcement."
+            }
         }
     })
 }
@@ -143,6 +159,15 @@ pub fn output_cadence(provider: ProviderKind) -> Value {
             "advisory": true,
             "note": "Codex output cadence is provider-dependent."
         }),
+        ProviderKind::Antigravity => json!({
+            "cadence": "provider_dependent",
+            "firstOutputExpected": "intermittent",
+            "recommendedPollMs": 30000,
+            "recommendedSilentBudgetMs": 120000,
+            "fallbackAfterMs": 180000,
+            "advisory": true,
+            "note": "Antigravity print-mode output cadence is provider-dependent."
+        }),
     }
 }
 
@@ -192,6 +217,15 @@ fn reduced_configuration(provider: ProviderKind) -> Value {
             "configIsolation": "supported",
             "memorySession": "supported",
             "contextFiles": "supported"
+        }),
+        ProviderKind::Antigravity => json!({
+            "compactPrompt": "supported",
+            "customSystemPrompt": "unsupported",
+            "hooks": "unsupported",
+            "skills": "unsupported",
+            "configIsolation": "best_effort",
+            "memorySession": "best_effort",
+            "contextFiles": "best_effort"
         }),
     }
 }
@@ -345,6 +379,21 @@ pub fn smoke_command(
             prompt_strategy: "minimal".to_string(),
             profile_diagnostics: profile_diagnostics(task.provider, task.profile),
         },
+        ProviderKind::Antigravity => ProviderCommand {
+            provider: task.provider,
+            command_kind: None,
+            claude_host: None,
+            command: env_or("AGY_BIN", "agy"),
+            args: antigravity_args(&task, PROVIDER_SMOKE_PROMPT.to_string()),
+            stdin: None,
+            redactions: vec![PROVIDER_SMOKE_PROMPT.to_string()],
+            cwd: task.cwd.to_string(),
+            timeout_seconds: task.timeout_seconds,
+            env: BTreeMap::new(),
+            profile: task.profile,
+            prompt_strategy: "minimal".to_string(),
+            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
+        },
     };
     Ok((command, "minimal"))
 }
@@ -447,6 +496,21 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
             prompt_strategy: prompt_strategy(task.profile).to_string(),
             profile_diagnostics: profile_diagnostics(task.provider, task.profile),
         },
+        ProviderKind::Antigravity => ProviderCommand {
+            provider: task.provider,
+            command_kind: None,
+            claude_host: None,
+            command: env_or("AGY_BIN", "agy"),
+            args: antigravity_args(task, rendered_prompt.clone()),
+            stdin: None,
+            redactions: vec![rendered_prompt, task.prompt.to_string()],
+            cwd: task.cwd.to_string(),
+            timeout_seconds: task.timeout_seconds,
+            env: BTreeMap::new(),
+            profile: task.profile,
+            prompt_strategy: prompt_strategy(task.profile).to_string(),
+            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
+        },
     };
     Ok(command)
 }
@@ -511,6 +575,7 @@ pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
             "OPENAI_BASE_URL",
             "CODEX_BIN",
             "CODEX_HOME",
+            "AGY_BIN",
             "OPENAI_API_KEY",
             "AGENT_BRIDGE_WORKSPACES",
             "AGENT_BRIDGE_STATE_DIR",
@@ -564,6 +629,7 @@ fn resolve_command(provider: ProviderKind) -> String {
         ProviderKind::Cursor => env_or("CURSOR_AGENT_BIN", "cursor-agent"),
         ProviderKind::Kimi => env_or("PI_BIN", "pi"),
         ProviderKind::Codex => env_or("CODEX_BIN", "codex"),
+        ProviderKind::Antigravity => env_or("AGY_BIN", "agy"),
     }
 }
 
@@ -672,6 +738,14 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
             "bestEffortReductions": ["disable_skills", "config_isolation", "context_files"],
             "note": "cursor-agent exposes limited reduced-configuration flags"
         }),
+        ProviderKind::Antigravity => json!({
+            "profile": "bare",
+            "promptStrategy": "compact",
+            "appliedReductions": ["compact_prompt"],
+            "unsupportedReductions": ["custom_system_prompt", "disable_hooks", "disable_skills"],
+            "bestEffortReductions": ["config_isolation", "memory_session", "context_files"],
+            "note": "antigravity bare uses compact prompting; CLI help does not expose reliable print-mode flags for disabling ambient settings"
+        }),
     }
 }
 
@@ -705,6 +779,26 @@ fn codex_sandbox(mode: TaskMode) -> &'static str {
     match mode {
         TaskMode::Research | TaskMode::Review => "read-only",
         _ => "workspace-write",
+    }
+}
+
+fn antigravity_args(task: &ProviderTask<'_>, prompt: String) -> Vec<String> {
+    [
+        vec![
+            "--print-timeout".to_string(),
+            format!("{}s", task.timeout_seconds),
+        ],
+        optional_arg("--model", task.model),
+        antigravity_sandbox_flags(task.mode),
+        vec!["--print".to_string(), prompt],
+    ]
+    .concat()
+}
+
+fn antigravity_sandbox_flags(mode: TaskMode) -> Vec<String> {
+    match mode {
+        TaskMode::Research | TaskMode::Review => vec!["--sandbox".to_string()],
+        TaskMode::Implement | TaskMode::Command => Vec::new(),
     }
 }
 

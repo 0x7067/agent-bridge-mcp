@@ -88,6 +88,7 @@ impl McpClient {
             .env("CURSOR_AGENT_BIN", &env.fake_provider)
             .env("PI_BIN", &env.fake_provider)
             .env("CODEX_BIN", &env.fake_provider)
+            .env("AGY_BIN", &env.fake_provider)
             .env("ANTHROPIC_API_KEY", "test-key")
             .env("ANTHROPIC_AUTH_TOKEN", "test-auth-token")
             .env("CLAUDE_CODE_OAUTH_TOKEN", "test-code-oauth-token")
@@ -471,7 +472,7 @@ fn stdio_protocol_and_tool_schema_smoke() {
         .unwrap();
     assert_eq!(
         providers_check["inputSchema"]["properties"]["providers"]["items"]["enum"],
-        json!(["claude", "cursor", "kimi", "codex"])
+        json!(["claude", "cursor", "kimi", "codex", "antigravity"])
     );
     assert_eq!(
         providers_check["inputSchema"]["properties"]["aggregateTimeoutMs"]["maximum"],
@@ -485,7 +486,7 @@ fn stdio_protocol_and_tool_schema_smoke() {
     assert_eq!(doctor["inputSchema"]["required"], json!([]));
     assert_eq!(
         doctor["inputSchema"]["properties"]["providers"]["items"]["enum"],
-        json!(["claude", "cursor", "kimi", "codex"])
+        json!(["claude", "cursor", "kimi", "codex", "antigravity"])
     );
     assert_eq!(
         doctor["outputSchema"]["properties"]["launchReadiness"]["type"],
@@ -493,7 +494,7 @@ fn stdio_protocol_and_tool_schema_smoke() {
     );
     assert_eq!(
         agent_preview["inputSchema"]["properties"]["provider"]["enum"],
-        json!(["claude", "cursor", "kimi", "codex"])
+        json!(["claude", "cursor", "kimi", "codex", "antigravity"])
     );
     assert_eq!(
         agent_preview["inputSchema"]["properties"]["profile"]["enum"],
@@ -885,7 +886,7 @@ fn stdio_tools_call_accepts_codex_meta_envelope() {
             .keys()
             .cloned()
             .collect::<Vec<_>>(),
-        vec!["claude", "cursor", "kimi", "codex"]
+        vec!["claude", "cursor", "kimi", "codex", "antigravity"]
     );
 
     let preview = client.tool_with_meta(
@@ -970,7 +971,7 @@ fn stdio_providers_preview_and_safety_checks() {
             .keys()
             .cloned()
             .collect::<Vec<_>>(),
-        vec!["claude", "cursor", "kimi", "codex"]
+        vec!["claude", "cursor", "kimi", "codex", "antigravity"]
     );
     assert_eq!(
         providers["providers"]["codex"]["launchProfiles"],
@@ -999,6 +1000,14 @@ fn stdio_providers_preview_and_safety_checks() {
     assert_eq!(
         providers["providers"]["cursor"]["reducedConfiguration"]["customSystemPrompt"],
         "unsupported"
+    );
+    assert_eq!(
+        providers["providers"]["antigravity"]["reducedConfiguration"]["hooks"],
+        "unsupported"
+    );
+    assert_eq!(
+        providers["providers"]["antigravity"]["readOnlyEnforcement"]["review"],
+        "prompt_enforced"
     );
 
     let checks = client.tool("providers_check", json!({"smoke": true, "timeoutMs": 5000}));
@@ -1091,6 +1100,60 @@ fn stdio_providers_preview_and_safety_checks() {
             .unwrap()
             .iter()
             .any(|key| key == "CLAUDE_CODE_OAUTH_TOKEN")
+    );
+
+    let antigravity_preview = client.tool(
+        "agent_preview",
+        json!({
+            "provider": "antigravity",
+            "mode": "review",
+            "prompt": "secret antigravity prompt",
+            "cwd": env.root,
+            "model": "gemini-test",
+            "profile": "bare",
+            "timeoutSeconds": 7
+        }),
+    );
+    assert_eq!(
+        antigravity_preview["command"].as_str().unwrap(),
+        env.fake_provider.to_string_lossy()
+    );
+    assert_eq!(antigravity_preview["timeoutSeconds"], 7);
+    assert_eq!(antigravity_preview["profile"], "bare");
+    let antigravity_args = antigravity_preview["args"].as_array().unwrap();
+    for expected in [
+        "--sandbox",
+        "--print-timeout",
+        "7s",
+        "--model",
+        "gemini-test",
+        "--print",
+        "<prompt redacted>",
+    ] {
+        assert!(
+            antigravity_args.contains(&json!(expected)),
+            "missing Antigravity arg {expected}: {antigravity_args:?}"
+        );
+    }
+    assert_eq!(
+        antigravity_preview["profileDiagnostics"]["unsupportedReductions"],
+        json!(["custom_system_prompt", "disable_hooks", "disable_skills"])
+    );
+
+    let antigravity_implement = client.tool(
+        "agent_preview",
+        json!({
+            "provider": "antigravity",
+            "mode": "implement",
+            "prompt": "implement prompt",
+            "cwd": env.root
+        }),
+    );
+    assert!(
+        !antigravity_implement["args"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("--sandbox"))
     );
 
     let outside = temp_dir("agent-bridge-outside");
@@ -1836,6 +1899,28 @@ fn stdio_doctor_reports_state_dir_creation_and_registry_errors() {
             .unwrap()
             .contains("registry")
     );
+
+    std::fs::write(
+        env.state_dir.join("registry.json"),
+        serde_json::to_string(&json!({
+            "tasks": {
+                "agent_missing_fields": {
+                    "agentId": "agent_missing_fields"
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut typed_invalid_client = McpClient::start(&env);
+    let typed_invalid = typed_invalid_client.tool("doctor", json!({"cwd": env.root}));
+    assert_eq!(typed_invalid["state"]["status"], "error");
+    assert!(
+        typed_invalid["state"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("missing field")
+    );
 }
 
 #[test]
@@ -1885,6 +1970,24 @@ fn stdio_doctor_orders_recommendations_from_blockers_to_followups() {
 fn stdio_doctor_reuses_provider_readiness_controls() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
+
+    let antigravity = client.tool(
+        "doctor",
+        json!({"cwd": env.root, "providers": ["antigravity"]}),
+    );
+    assert_eq!(
+        provider_keys(&json!({"providers": antigravity["providers"]})),
+        vec!["antigravity"]
+    );
+    assert_eq!(
+        antigravity["providers"]["antigravity"]["version"],
+        "fake-provider 1.0.0"
+    );
+    assert_eq!(
+        antigravity["server"]["environment"]["AGY_BIN"]["present"],
+        true
+    );
+    assert_eq!(antigravity["summary"]["status"], "ok");
 
     let default = client.tool("doctor", json!({"cwd": env.root, "providers": ["codex"]}));
     assert_eq!(
@@ -2085,6 +2188,50 @@ fn stdio_providers_check_filters_and_validates_readiness_inputs() {
 }
 
 #[test]
+fn stdio_antigravity_smoke_auth_failure_preserves_version_availability() {
+    let env = fixture_env();
+    write_fake_provider(
+        &env,
+        &[
+            "#!/bin/sh",
+            "if [ \"$1\" = \"--version\" ]; then",
+            "  echo agy 1.0.0",
+            "  exit 0",
+            "fi",
+            "printf 'Authentication required. Please visit the URL to log in.\\n' >&2",
+            "exit 1",
+            "",
+        ],
+    );
+    let mut client = McpClient::start(&env);
+
+    let checks = client.tool(
+        "providers_check",
+        json!({
+            "smoke": true,
+            "providers": ["antigravity"],
+            "providerTimeoutMs": {"antigravity": 1000}
+        }),
+    );
+    let antigravity = &checks["providers"]["antigravity"];
+    assert_eq!(antigravity["available"], true);
+    assert_eq!(antigravity["version"], "agy 1.0.0");
+    assert_eq!(antigravity["startupVerified"], false);
+    assert_eq!(antigravity["launchable"], false);
+    assert_eq!(antigravity["readiness"]["state"], "failed");
+    assert_eq!(
+        antigravity["diagnostic"]["failureCategory"],
+        "provider_exit_error"
+    );
+    assert!(
+        antigravity["diagnostic"]["stderrExcerpt"]
+            .as_str()
+            .unwrap()
+            .contains("Authentication required")
+    );
+}
+
+#[test]
 fn stdio_providers_check_uses_provider_budgets_and_concurrency() {
     let env = fixture_env();
     write_fake_provider(
@@ -2178,17 +2325,18 @@ fn stdio_providers_check_all_provider_smoke_is_batched_not_sequential() {
                 "claude": 3000,
                 "cursor": 3000,
                 "kimi": 3000,
-                "codex": 3000
+                "codex": 3000,
+                "antigravity": 3000
             }
         }),
     );
 
     assert_eq!(
         sorted_provider_keys(&checks),
-        vec!["claude", "codex", "cursor", "kimi"]
+        vec!["antigravity", "claude", "codex", "cursor", "kimi"]
     );
     assert_eq!(checks["providers"]["claude"]["startupVerified"], false);
-    for provider in ["cursor", "kimi", "codex"] {
+    for provider in ["cursor", "kimi", "codex", "antigravity"] {
         assert_eq!(checks["providers"][provider]["startupVerified"], true);
     }
     assert!(
@@ -2551,6 +2699,65 @@ fn stdio_agent_lifecycle_stop_timeout_and_logs() {
     if timed_wait["status"] == "failed" {
         assert_eq!(timed_wait["errorType"], "timeout");
     }
+}
+
+#[test]
+fn stdio_loads_legacy_registry_records_without_public_task_id_alias() {
+    let env = fixture_env();
+    let legacy_id = "task_legacyregistry000000000000000001";
+    let legacy_dir = env.state_dir.join("tasks").join(legacy_id);
+    std::fs::create_dir_all(&legacy_dir).unwrap();
+    std::fs::write(legacy_dir.join("stdout.log"), "legacy stdout\n").unwrap();
+    std::fs::write(legacy_dir.join("stderr.log"), "legacy stderr\n").unwrap();
+    std::fs::write(
+        env.state_dir.join("registry.json"),
+        serde_json::to_vec_pretty(&json!({
+            "tasks": {
+                legacy_id: {
+                    "taskId": legacy_id,
+                    "provider": "codex",
+                    "mode": "review",
+                    "title": "Legacy registry record",
+                    "status": "succeeded",
+                    "cwd": env.root,
+                    "isolation": "none",
+                    "taskDir": legacy_dir,
+                    "command": "codex",
+                    "args": [],
+                    "timeoutSeconds": 1,
+                    "profile": "bridge",
+                    "promptStrategy": "bridge",
+                    "createdAt": "2026-06-01T00:00:00.000Z",
+                    "updatedAt": "2026-06-01T00:01:00.000Z",
+                    "startedAt": "2026-06-01T00:00:00.000Z",
+                    "completedAt": "2026-06-01T00:01:00.000Z",
+                    "exitCode": 0
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut client = McpClient::start(&env);
+
+    let doctor = client.tool("doctor", json!({"cwd": env.root}));
+    assert_eq!(doctor["state"]["status"], "ok");
+
+    let listed = client.tool("agent_list", json!({}));
+    assert_no_task_id_key(&listed);
+    assert_eq!(listed["agents"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["agents"][0]["agentId"], legacy_id);
+    assert_eq!(listed["agents"][0]["status"], "succeeded");
+
+    let legacy_input_error = client.tool_error("agent_status", json!({"taskId": legacy_id}));
+    assert!(legacy_input_error.contains("Unknown argument for agent_status: taskId"));
+
+    let result = client.tool("agent_result", json!({"agentId": legacy_id}));
+    assert_no_task_id_key(&result);
+    assert_eq!(result["agentId"], legacy_id);
+    assert!(result["stdout"].as_str().unwrap().contains("legacy stdout"));
+    assert!(result["stderr"].as_str().unwrap().contains("legacy stderr"));
+    assert_eq!(result["reviewPacket"]["isFinal"], true);
 }
 
 #[test]

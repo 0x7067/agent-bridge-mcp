@@ -17,10 +17,18 @@ pub enum ProviderKind {
     Kimi,
     #[serde(rename = "codex")]
     Codex,
+    #[serde(rename = "antigravity")]
+    Antigravity,
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 4] = [Self::Claude, Self::Cursor, Self::Kimi, Self::Codex];
+    pub const ALL: [Self; 5] = [
+        Self::Claude,
+        Self::Cursor,
+        Self::Kimi,
+        Self::Codex,
+        Self::Antigravity,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -28,6 +36,7 @@ impl ProviderKind {
             Self::Cursor => "cursor",
             Self::Kimi => "kimi",
             Self::Codex => "codex",
+            Self::Antigravity => "antigravity",
         }
     }
 }
@@ -41,6 +50,7 @@ impl FromStr for ProviderKind {
             "cursor" => Ok(Self::Cursor),
             "kimi" => Ok(Self::Kimi),
             "codex" => Ok(Self::Codex),
+            "antigravity" => Ok(Self::Antigravity),
             _ => Err(format!(
                 "provider must be one of: {}",
                 join_provider_names()

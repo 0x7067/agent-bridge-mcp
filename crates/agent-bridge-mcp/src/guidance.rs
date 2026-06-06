@@ -308,6 +308,7 @@ First-class providers:
 - `cursor`: local Cursor Agent through `cursor-agent -p`.
 - `kimi`: local Pi/Kimi through `pi -p`.
 - `codex`: local Codex through `codex exec`. Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms should be investigated with `agent_wait`, `agent_logs`, `agent_status`, final `agent_result`, `agent_preview`, cwd, workspace policy, prompt scope, and isolation strategy before retrying.
+- `antigravity`: local Google Antigravity CLI through `agy --print`. `AGY_BIN` may point at a specific `agy` binary. Version checks prove binary availability only; smoke checks may fail until Antigravity auth is available through the local OS keyring or browser OAuth flow.
 
 Supported modes:
 - `research`: read/analyze only.
@@ -316,6 +317,8 @@ Supported modes:
 - `command`: bounded command-oriented work.
 
 Use `providers_list` for the authoritative runtime provider summary, including launch profiles and reduced-configuration metadata. Use `providers_check` for availability and startup checks. Do not loosen Codex sandbox permissions as a reflex or repeat an unchanged request after denial diagnostics.
+
+Antigravity `research` and `review` modes pass `--sandbox`, but Agent Bridge does not claim verified read-only filesystem enforcement for Antigravity. Treat those modes as prompt-enforced unless local implementation evidence proves stronger sandbox behavior.
 
 Native-client presentation:
 - `providers_list` reports `supportsReply`, `supportsResume`, and `presentationActions` so clients can render supported and unsupported controls without trial-and-error task calls.

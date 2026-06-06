@@ -2,7 +2,7 @@ use crate::domain::{Isolation, ProviderKind, TimeoutSeconds, WorktreeName};
 use crate::guidance;
 use crate::mcp::{JsonRpcId, JsonRpcRequest, JsonRpcResponse};
 use crate::provider::{self, ProviderTask};
-use crate::task::TaskManagerHandle;
+use crate::task::{TaskManagerHandle, validate_registry_text};
 use crate::tools::{TaskPreviewInput, ToolCallParams, ToolName, tool_definitions};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -710,6 +710,7 @@ fn doctor_environment() -> Value {
         "CODEX_BIN",
         "CURSOR_AGENT_BIN",
         "PI_BIN",
+        "AGY_BIN",
         "CLAUDE_BIN",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
@@ -1519,8 +1520,7 @@ fn doctor_state() -> Value {
 fn doctor_registry_status(state_dir: &Path) -> Result<(), String> {
     let registry_path = state_dir.join("registry.json");
     match std::fs::read_to_string(&registry_path) {
-        Ok(contents) => serde_json::from_str::<Value>(&contents)
-            .map(|_| ())
+        Ok(contents) => validate_registry_text(&contents)
             .map_err(|error| format!("registry parse error: {error}")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("registry read error: {error}")),
@@ -1973,6 +1973,7 @@ fn default_provider_smoke_timeout_ms(provider: ProviderKind) -> u64 {
         ProviderKind::Claude => 60_000,
         ProviderKind::Kimi => 45_000,
         ProviderKind::Cursor => 60_000,
+        ProviderKind::Antigravity => 60_000,
     }
 }
 
@@ -2021,7 +2022,9 @@ async fn run_smoke_checks(
         }
     }
     for (provider, mut value) in pending {
-        value["available"] = json!(false);
+        if provider != ProviderKind::Antigravity {
+            value["available"] = json!(false);
+        }
         value["startupVerified"] = json!(false);
         value["launchable"] = json!(false);
         value["checkedAt"] = json!(checked_at_iso());
@@ -2092,7 +2095,9 @@ async fn smoke_one_provider(
                 }
                 _ => {
                     let mut value = base_value;
-                    value["available"] = json!(false);
+                    if provider != ProviderKind::Antigravity {
+                        value["available"] = json!(false);
+                    }
                     value["startupVerified"] = json!(false);
                     value["launchable"] = json!(false);
                     value["checkedAt"] = json!(checked_at_iso());
@@ -2493,7 +2498,9 @@ fn smoke_output_is_accepted(provider: ProviderKind, stdout: &[u8]) -> bool {
                 .is_some_and(|result| result.contains(provider::PROVIDER_SMOKE_TOKEN))
                 || line.contains(provider::PROVIDER_SMOKE_TOKEN)
         }),
-        ProviderKind::Cursor | ProviderKind::Kimi => text.contains(provider::PROVIDER_SMOKE_TOKEN),
+        ProviderKind::Cursor | ProviderKind::Kimi | ProviderKind::Antigravity => {
+            text.contains(provider::PROVIDER_SMOKE_TOKEN)
+        }
     }
 }
 
