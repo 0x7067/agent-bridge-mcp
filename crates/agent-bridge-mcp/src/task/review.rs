@@ -576,6 +576,20 @@ pub(super) fn next_actions(task: &TaskRecord, progress: &Value) -> Value {
                 "safe",
             ));
         }
+        if !task.partial_results.is_empty() {
+            let mut rerun_args = task.spawn_input.clone();
+            if let Some(obj) = rerun_args.as_object_mut() {
+                obj.remove("dryRun");
+            }
+            actions.push(next_action(
+                "continue_rerun",
+                Some("agent_spawn"),
+                rerun_args,
+                "available",
+                "Partial results were collected before the task ended. Consider rerunning with the same or narrowed parameters.",
+                "safe",
+            ));
+        }
     } else {
         actions.push(next_action(
             "verify_project",
@@ -660,6 +674,7 @@ pub(super) fn review_packet(
         "stdoutTruncated": stdout_truncated,
         "stderrTruncated": stderr_truncated,
         "progress": progress,
+        "partialResults": task.partial_results,
         "recommendedActions": recommended_actions(task, has_changes)
     })
 }
@@ -691,6 +706,9 @@ pub(super) fn recommended_actions(task: &TaskRecord, has_changes: bool) -> Vec<&
     }
     if has_changes {
         actions.push("Inspect gitStatus, gitDiff, and changedFiles before verification.");
+    }
+    if !task.partial_results.is_empty() {
+        actions.push("Partial results were detected: inspect them and consider rerunning or continuing the task.");
     }
     if task.error_type.is_some()
         || matches!(task.status, TaskStatus::Failed | TaskStatus::FailedStale)

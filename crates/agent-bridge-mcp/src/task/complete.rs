@@ -1,7 +1,7 @@
 use super::registry::{cap_string, now_iso};
 use super::supervision::{append_stream_transcript, signal_name};
 use super::{MAX_LOG_BYTES, TaskCompletion};
-use crate::domain::{ErrorType, FailureCategory, ProviderKind, TaskStatus};
+use crate::domain::{ErrorType, FailureCategory, PartialResult, ProviderKind, TaskStatus};
 use crate::provider::{self, ProviderCommand};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -568,6 +568,155 @@ pub(super) async fn git_command(args: &[&str], cwd: &str) -> Result<std::process
     }
 }
 
+/// Scans the last 1,024 lines of `transcript.jsonl` for `provider_event`
+/// entries when no definitive `provider_result` is present in that tail.
+/// Returns `PartialResult` structs in chronological order. Used during
+/// finalization when `partial_result_detected` is true but
+/// `final_result_detected` is false.
+pub(super) fn scan_partial_results(agent_dir: &str) -> Vec<PartialResult> {
+    let path = PathBuf::from(agent_dir).join("transcript.jsonl");
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(_) => return Vec::new(),
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let tail_start = lines.len().saturating_sub(1024);
+    let tail = &lines[tail_start..];
+    // If any provider_result sits in the tail, the task achieved a final
+    // conclusion and nothing in the tail counts as "partial".
+    for line in tail.iter() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let is_provider_result = value.get("type").and_then(Value::as_str) == Some("result")
+            && value.get("result").and_then(Value::as_str).is_some();
+        if is_provider_result {
+            return Vec::new();
+        }
+    }
+    let mut results = Vec::new();
+    for line in tail.iter() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let source = value
+            .get("source")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        if !matches!(source.as_str(), "stdout" | "stderr" | "provider") {
+            continue;
+        }
+        let timestamp = value
+            .get("ts")
+            .or_else(|| value.get("timestamp"))
+            .or_else(|| value.get("at"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let kind = value
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("provider_event")
+            .to_string();
+        let summary = value
+            .get("raw")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| value.get("parsed").map(|v| v.to_string()))
+            .unwrap_or_default();
+        let trimmed_summary = summary.chars().take(512).collect::<String>();
+        results.push(PartialResult {
+            timestamp,
+            source,
+            kind,
+            summary: trimmed_summary,
+        });
+    }
+    results
+}
+
 pub(super) fn command_provider_hint(command: &ProviderCommand) -> ProviderKind {
     command.provider
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn temp_agent_dir() -> String {
+        let path = std::env::temp_dir().join(format!(
+            "abr-complete-tests-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    fn write_transcript(agent_dir: &str, lines: &[&str]) {
+        let path = PathBuf::from(agent_dir).join("transcript.jsonl");
+        let mut file = std::fs::File::create(path).unwrap();
+        for line in lines {
+            writeln!(file, "{line}").unwrap();
+        }
+    }
+
+    #[test]
+    fn scan_partial_results_final_result_dominates() {
+        let agent_dir = temp_agent_dir();
+        write_transcript(
+            &agent_dir,
+            &[
+                r#"{"ts":"1","source":"stdout","provider":"codex","kind":"provider_event","raw":"hello","parsed":{},"redacted":false}"#,
+                r#"{"ts":"2","source":"provider","provider":"codex","kind":"provider_result","type":"result","result":"done","raw":"","parsed":{},"redacted":false}"#,
+            ],
+        );
+        let results = scan_partial_results(&agent_dir);
+        assert!(
+            results.is_empty(),
+            "final result should suppress partial events"
+        );
+    }
+
+    #[test]
+    fn scan_partial_results_emerges_when_no_final_result() {
+        let agent_dir = temp_agent_dir();
+        write_transcript(
+            &agent_dir,
+            &[
+                r#"{"ts":"1","source":"lifecycle","provider":"codex","kind":"lifecycle","raw":"spawned","parsed":{"phase":"spawned"},"redacted":false}"#,
+                r#"{"ts":"2","source":"stdout","provider":"codex","kind":"provider_event","raw":"step 1","parsed":{},"redacted":false}"#,
+                r#"{"ts":"3","source":"stderr","provider":"codex","kind":"provider_event","raw":"warn","parsed":{},"redacted":false}"#,
+            ],
+        );
+        let results = scan_partial_results(&agent_dir);
+        assert_eq!(results.len(), 2, "expected two provider events");
+        assert_eq!(results[0].summary, "step 1");
+        assert_eq!(results[0].source, "stdout");
+        assert_eq!(results[1].summary, "warn");
+        assert_eq!(results[1].source, "stderr");
+    }
+
+    #[test]
+    fn scan_partial_results_empty_when_no_result_at_all() {
+        let agent_dir = temp_agent_dir();
+        write_transcript(
+            &agent_dir,
+            &[
+                r#"{"ts":"1","source":"lifecycle","provider":"codex","kind":"lifecycle","raw":"spawned","parsed":{"phase":"spawned"},"redacted":false}"#,
+            ],
+        );
+        let results = scan_partial_results(&agent_dir);
+        assert!(
+            results.is_empty(),
+            "lifecycle-only transcript yields no partial results"
+        );
+    }
 }

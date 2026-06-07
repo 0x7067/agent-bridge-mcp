@@ -1,6 +1,6 @@
 use crate::domain::{
-    ErrorType, FailureCategory, Isolation, LaunchProfile, ProviderKind, RetryPolicy, TaskStatus,
-    TimeoutSeconds,
+    ErrorType, FailureCategory, Isolation, LaunchProfile, PartialResult, ProviderKind, RetryPolicy,
+    TaskStatus, TimeoutSeconds,
 };
 use crate::provider::{self, ProviderTask};
 use serde::{Deserialize, Serialize};
@@ -576,6 +576,7 @@ impl TaskActor {
             attempt_count: 0,
             parent_agent_id: None,
             spawn_input,
+            partial_results: Vec::new(),
         };
 
         let outcome = launch_task(agent_id.clone(), command, agent_dir, self.tx.clone()).await;
@@ -736,6 +737,9 @@ impl TaskActor {
             task.transcript_available = transcript_available;
             task.final_result_detected = final_result_detected;
             task.partial_result_detected = partial_result_detected;
+            if partial_result_detected && !final_result_detected {
+                task.partial_results = crate::task::complete::scan_partial_results(&task.agent_dir);
+            }
             task.transcript_diagnostic = if transcript_available {
                 None
             } else {
@@ -990,6 +994,8 @@ pub struct TaskRecord {
     pub parent_agent_id: Option<String>,
     #[serde(default)]
     pub spawn_input: Value,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub partial_results: Vec<PartialResult>,
 }
 struct ActiveTask {
     pid: Option<u32>,
@@ -1059,6 +1065,7 @@ mod tests {
             attempt_count: 0,
             parent_agent_id: None,
             spawn_input: Value::Null,
+            partial_results: Vec::new(),
         }
     }
 

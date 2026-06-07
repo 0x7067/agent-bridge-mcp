@@ -46,12 +46,12 @@
 
 ## 5. Partial Result Surfacing
 
-- [ ] 5.1 Implement `scan_partial_results` in `task/complete.rs` that reads the last 1,024 lines of `transcript.jsonl` for `provider_event` entries without a `provider_result`
-- [ ] 5.2 Populate `partial_results: Vec<PartialResult>` on `TaskRecord` during finalization when `partial_result_detected` is true and `final_result_detected` is false
-- [ ] 5.3 Include `partialResults` in `agent_result` payload in `task/review.rs`
-- [ ] 5.4 Update `next_actions` in `task/review.rs` to suggest continuation/rerun when `partialResults` is non-empty
-- [ ] 5.5 Add unit tests for partial result scanning with fixtures: (a) final result dominates, (b) partial result emerges, (c) no result at all
-- [ ] 5.6 Run `scripts/quality.sh` and verify no new warnings or machete hits
+- [x] 5.1 Implement `scan_partial_results` in `task/complete.rs` that reads the last 1,024 lines of `transcript.jsonl` for `provider_event` entries without a `provider_result`
+- [x] 5.2 Populate `partial_results: Vec<PartialResult>` on `TaskRecord` during finalization when `partial_result_detected` is true and `final_result_detected` is false
+- [x] 5.3 Include `partialResults` in `agent_result` payload in `task/review.rs`
+- [x] 5.4 Update `next_actions` in `task/review.rs` to suggest continuation/rerun when `partialResults` is non-empty
+- [x] 5.5 Add unit tests for partial result scanning with fixtures: (a) final result dominates, (b) partial result emerges, (c) no result at all
+- [x] 5.6 Run `scripts/quality.sh` and verify no new warnings or machete hits
 
 ## 6. Regression & Enablement
 

@@ -141,6 +141,16 @@ pub struct RetryPolicy {
     pub backoff_ms: u64,
 }
 
+/// An individual partial result extracted from the transcript tail when a
+/// provider emits output events without ever producing a final `provider_result`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartialResult {
+    pub timestamp: String,
+    pub source: String,
+    pub kind: String,
+    pub summary: String,
+}
+
 /// Strongly typed failure categories used across provider probes, task
 /// lifecycle diagnostics, and the host-runner wire format. Serialized as
 /// kebab-case at the JSON boundary.
