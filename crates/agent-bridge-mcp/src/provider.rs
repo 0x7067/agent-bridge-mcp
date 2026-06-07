@@ -980,8 +980,7 @@ mod tests {
     #[test]
     fn minimal_smoke_command_fills_shared_boilerplate() {
         let t = task(ProviderKind::Codex, TaskMode::Research);
-        let command =
-            minimal_smoke_command(&t, "mybin".to_string(), vec!["exec".to_string()]);
+        let command = minimal_smoke_command(&t, "mybin".to_string(), vec!["exec".to_string()]);
 
         assert_eq!(command.provider, ProviderKind::Codex);
         assert_eq!(command.command, "mybin");

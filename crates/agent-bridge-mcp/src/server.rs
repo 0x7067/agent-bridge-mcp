@@ -179,7 +179,13 @@ async fn handle_agent_result(arguments: Value) -> Value {
         (Ok(agent_id), Ok(manager)) => tool_result(
             manager
                 .result(
-                    agent_id, sections, max_bytes, stdout_line, stderr_line, cursor, limit,
+                    agent_id,
+                    sections,
+                    max_bytes,
+                    stdout_line,
+                    stderr_line,
+                    cursor,
+                    limit,
                     detailed,
                 )
                 .await,
@@ -374,7 +380,11 @@ async fn await_probe_exit(
     provider: ProviderKind,
     phase: &'static str,
     started: Instant,
-) -> (Option<std::process::ExitStatus>, Option<&'static str>, Option<String>) {
+) -> (
+    Option<std::process::ExitStatus>,
+    Option<&'static str>,
+    Option<String>,
+) {
     match timeout(Duration::from_millis(timeout_ms), child.wait()).await {
         Ok(Ok(status)) => {
             let failure_category = if status.success() {

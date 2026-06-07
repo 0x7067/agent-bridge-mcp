@@ -1122,8 +1122,16 @@ async fn append_stream_transcript(
 ) {
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
         let (kind, parsed) = parse_transcript_line(line);
-        append_transcript_event(transcript_path, provider, stream, kind, line, parsed, redactions)
-            .await;
+        append_transcript_event(
+            transcript_path,
+            provider,
+            stream,
+            kind,
+            line,
+            parsed,
+            redactions,
+        )
+        .await;
     }
 }
 
@@ -1197,10 +1205,22 @@ async fn complete_host_response(
         )
         .await;
     }
-    append_stream_transcript(&transcript_path, command.provider, "stdout", &stdout, &redactions)
-        .await;
-    append_stream_transcript(&transcript_path, command.provider, "stderr", &stderr, &redactions)
-        .await;
+    append_stream_transcript(
+        &transcript_path,
+        command.provider,
+        "stdout",
+        &stdout,
+        &redactions,
+    )
+    .await;
+    append_stream_transcript(
+        &transcript_path,
+        command.provider,
+        "stderr",
+        &stderr,
+        &redactions,
+    )
+    .await;
     host_completion(
         agent_id,
         &command,
@@ -1395,9 +1415,14 @@ fn classify_completion(
     fatal_denial: bool,
 ) -> TaskCompletion {
     match output {
-        Ok(status) if status.success() => {
-            classify_success_exit(agent_id, command, agent_dir, timeout_seconds, status, fatal_denial)
-        }
+        Ok(status) if status.success() => classify_success_exit(
+            agent_id,
+            command,
+            agent_dir,
+            timeout_seconds,
+            status,
+            fatal_denial,
+        ),
         Ok(status) => classify_failure_exit(
             agent_id,
             command,
@@ -2991,7 +3016,13 @@ mod tests {
 
         // neither changed_files nor diff requested -> only reviewPacket.
         let mut bare = json!({});
-        insert_evidence_fields(&mut bare, &task, &ResultSections::default_sections(), false, false);
+        insert_evidence_fields(
+            &mut bare,
+            &task,
+            &ResultSections::default_sections(),
+            false,
+            false,
+        );
         assert!(bare["reviewPacket"].is_object());
         // default_sections has changed_files=true, so assert diff is omitted instead.
         assert!(bare.get("gitDiff").is_none());

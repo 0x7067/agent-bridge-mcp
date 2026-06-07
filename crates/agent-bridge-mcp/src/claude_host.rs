@@ -829,7 +829,10 @@ mod tests {
         serde_json::from_slice(&line).unwrap()
     }
 
-    fn run_result(final_text: Option<&str>, failure_category: Option<&str>) -> ClaudeInteractiveRunResult {
+    fn run_result(
+        final_text: Option<&str>,
+        failure_category: Option<&str>,
+    ) -> ClaudeInteractiveRunResult {
         ClaudeInteractiveRunResult {
             exit_code: Some(0),
             signal: None,
