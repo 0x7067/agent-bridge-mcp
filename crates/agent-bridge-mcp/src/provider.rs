@@ -255,6 +255,31 @@ pub fn version_command(provider: ProviderKind) -> ProviderCommand {
     }
 }
 
+/// Builds a non-Claude smoke `ProviderCommand`, filling the boilerplate that is
+/// identical across providers (minimal prompt strategy, smoke-prompt redaction,
+/// empty env, no stdin) so each provider arm only supplies `command` and `args`.
+fn minimal_smoke_command(
+    task: &ProviderTask,
+    command: String,
+    args: Vec<String>,
+) -> ProviderCommand {
+    ProviderCommand {
+        provider: task.provider,
+        command_kind: None,
+        claude_host: None,
+        command,
+        args,
+        stdin: None,
+        redactions: vec![PROVIDER_SMOKE_PROMPT.to_string()],
+        cwd: task.cwd.to_string(),
+        timeout_seconds: task.timeout_seconds,
+        env: BTreeMap::new(),
+        profile: task.profile,
+        prompt_strategy: "minimal".to_string(),
+        profile_diagnostics: profile_diagnostics(task.provider, task.profile),
+    }
+}
+
 pub fn smoke_command(
     provider: ProviderKind,
     cwd: &str,
@@ -275,12 +300,10 @@ pub fn smoke_command(
     validate_options(&task)?;
     let command = match provider {
         ProviderKind::Claude => build_claude_command(&task, PROVIDER_SMOKE_PROMPT.to_string()),
-        ProviderKind::Cursor => ProviderCommand {
-            provider: task.provider,
-            command_kind: None,
-            claude_host: None,
-            command: env_or("CURSOR_AGENT_BIN", "cursor-agent"),
-            args: [
+        ProviderKind::Cursor => minimal_smoke_command(
+            &task,
+            env_or("CURSOR_AGENT_BIN", "cursor-agent"),
+            [
                 vec![
                     "-p".to_string(),
                     "--output-format".to_string(),
@@ -296,21 +319,11 @@ pub fn smoke_command(
                 ],
             ]
             .concat(),
-            stdin: None,
-            redactions: vec![PROVIDER_SMOKE_PROMPT.to_string()],
-            cwd: task.cwd.to_string(),
-            timeout_seconds: task.timeout_seconds,
-            env: BTreeMap::new(),
-            profile: task.profile,
-            prompt_strategy: "minimal".to_string(),
-            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
-        },
-        ProviderKind::Kimi => ProviderCommand {
-            provider: task.provider,
-            command_kind: None,
-            claude_host: None,
-            command: env_or("PI_BIN", "pi"),
-            args: vec![
+        ),
+        ProviderKind::Kimi => minimal_smoke_command(
+            &task,
+            env_or("PI_BIN", "pi"),
+            vec![
                 "-p".to_string(),
                 "--no-session".to_string(),
                 "--no-context-files".to_string(),
@@ -318,21 +331,11 @@ pub fn smoke_command(
                 kimi_tools(task.mode).to_string(),
                 PROVIDER_SMOKE_PROMPT.to_string(),
             ],
-            stdin: None,
-            redactions: vec![PROVIDER_SMOKE_PROMPT.to_string()],
-            cwd: task.cwd.to_string(),
-            timeout_seconds: task.timeout_seconds,
-            env: BTreeMap::new(),
-            profile: task.profile,
-            prompt_strategy: "minimal".to_string(),
-            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
-        },
-        ProviderKind::Codex => ProviderCommand {
-            provider: task.provider,
-            command_kind: None,
-            claude_host: None,
-            command: env_or("CODEX_BIN", "codex"),
-            args: vec![
+        ),
+        ProviderKind::Codex => minimal_smoke_command(
+            &task,
+            env_or("CODEX_BIN", "codex"),
+            vec![
                 "exec".to_string(),
                 "--cd".to_string(),
                 task.cwd.to_string(),
@@ -343,30 +346,12 @@ pub fn smoke_command(
                 "shell_environment_policy.inherit=\"all\"".to_string(),
                 PROVIDER_SMOKE_PROMPT.to_string(),
             ],
-            stdin: None,
-            redactions: vec![PROVIDER_SMOKE_PROMPT.to_string()],
-            cwd: task.cwd.to_string(),
-            timeout_seconds: task.timeout_seconds,
-            env: BTreeMap::new(),
-            profile: task.profile,
-            prompt_strategy: "minimal".to_string(),
-            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
-        },
-        ProviderKind::Antigravity => ProviderCommand {
-            provider: task.provider,
-            command_kind: None,
-            claude_host: None,
-            command: env_or("AGY_BIN", "agy"),
-            args: antigravity_args(&task, PROVIDER_SMOKE_PROMPT.to_string()),
-            stdin: None,
-            redactions: vec![PROVIDER_SMOKE_PROMPT.to_string()],
-            cwd: task.cwd.to_string(),
-            timeout_seconds: task.timeout_seconds,
-            env: BTreeMap::new(),
-            profile: task.profile,
-            prompt_strategy: "minimal".to_string(),
-            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
-        },
+        ),
+        ProviderKind::Antigravity => minimal_smoke_command(
+            &task,
+            env_or("AGY_BIN", "agy"),
+            antigravity_args(&task, PROVIDER_SMOKE_PROMPT.to_string()),
+        ),
     };
     Ok((command, "minimal"))
 }
@@ -990,6 +975,30 @@ mod tests {
             thinking: None,
             profile: LaunchProfile::Bridge,
         }
+    }
+
+    #[test]
+    fn minimal_smoke_command_fills_shared_boilerplate() {
+        let t = task(ProviderKind::Codex, TaskMode::Research);
+        let command =
+            minimal_smoke_command(&t, "mybin".to_string(), vec!["exec".to_string()]);
+
+        assert_eq!(command.provider, ProviderKind::Codex);
+        assert_eq!(command.command, "mybin");
+        assert_eq!(command.args, vec!["exec".to_string()]);
+        assert_eq!(command.prompt_strategy, "minimal");
+        assert_eq!(command.cwd, "/tmp/work");
+        assert_eq!(command.timeout_seconds, 30);
+        assert!(command.env.is_empty());
+        assert!(command.stdin.is_none());
+        assert!(command.command_kind.is_none());
+        assert!(command.claude_host.is_none());
+        assert!(
+            command
+                .redactions
+                .iter()
+                .any(|r| r == PROVIDER_SMOKE_PROMPT)
+        );
     }
 
     #[test]
