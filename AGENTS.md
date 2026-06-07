@@ -1,82 +1,49 @@
 # Agent Bridge MCP
 
-**Generated:** 2026-06-07T12:00:00Z
-**Commit:** latest
+Rust stdio MCP server that delegates bounded work from one agent client to local
+provider agents (Claude Code, Codex, Cursor, Kimi/Pi, Antigravity). Exposes a
+lean eight-tool lifecycle; the calling agent stays responsible for verification.
 
-Rust stdio MCP server that delegates bounded tasks to local provider agents (Claude Code, Codex, Cursor, Kimi/Pi, Antigravity). The caller retains responsibility for verification.
+## Tech Stack
 
-## STRUCTURE
+- Rust 2024 edition, single-crate workspace (`crates/agent-bridge-mcp`)
+- Tokio async runtime; `pty-process` for interactive provider PTYs
+- serde / serde_json (MCP JSON-RPC over stdio), chrono, uuid, libc
+- CI quality gate: rustfmt, clippy `-D warnings`, cargo-machete, jscpd (<5%)
+
+## Key Rules
+
+- Provider/subagent output is **evidence, not proof** — verify locally before claiming done.
+- Clippy runs with `-D warnings`: warnings fail CI. Zero tolerance, including pre-existing.
+- jscpd fails over 5% duplication — extract shared helpers, don't copy-paste.
+- Don't add dependencies casually; cargo-machete fails on unused ones.
+- PTY/interactive tests touch global process state — see guardrails before changing them.
+
+## Workflow
+
+Every task follows four stages. Identify which stage you're in and follow its rules.
 
 ```
-.
-├── crates/
-│   └── agent-bridge-mcp/
-│       ├── src/                 # (AGENTS.md)
-│       │   ├── bin/
-│       │   ├── claude_interactive/   # (AGENTS.md)
-│       │   ├── server/
-│       │   └── task/
-│       └── tests/               # Integration tests + fixtures
-├── docs/agents/                  # Architecture, guardrails, tooling, definition-of-done
-├── scripts/quality.sh             # Local validation mirror
-└── .github/workflows/
-    ├── quality.yml                # Hard gates + informational reporting
-    └── release-rust.yml           # Cross-platform binaries
+Plan → Execute → Validate → Commit
+ ↑                            |
+ └── fix ─────────────────────┘
 ```
 
-## WHERE TO LOOK
+1. **Plan** — Understand the task, research code, design approach. List unresolved questions.
+2. **Execute** — Implement changes AND tests together. No implementation is complete without tests.
+3. **Validate** — ALL checks pass with zero errors before moving on. Run `scripts/quality.sh`.
+   If ANY check fails → return to Execute, fix, re-validate. Pre-existing errors are NOT exempt.
+4. **Commit** — Only after Validate passes. Conventional Commits, atomic. Never push unless asked.
 
-| Task | Location |
-|------|----------|
-| Add/modify an MCP tool | `src/tools.rs` schema, `src/server.rs` dispatch |
-| Spawn/observe/stop a task | `src/task.rs` (~110 kB — heavy), `src/task/supervision.rs` |
-| Define a provider capability | `src/provider.rs` |
-| Interactive PTY logic | `src/claude_interactive/` (AGENTS.md) |
-| Host-runner integration | `src/claude_host.rs` |
-| Protocol framing | `src/mcp.rs` |
-| Diagnostic/reporting text | `src/guidance.rs` (~26 kB) |
-| Binary entry | `src/main.rs` (delegates to `runtime.rs`) |
+## Detailed Guidance
 
-## CONVENTIONS
+When working on tasks involving these topics, read the linked doc:
 
-- Rust 2024 edition, resolver `"3"`, single-member workspace.
-- `serde_json` uses `preserve_order` — keep deterministic field ordering in tool schemas and responses.
-- **Zero tolerance CI**: `clippy -D warnings`, `cargo machete`, `jscpd` <5%. Pre-existing failures are not exempt.
-- New deps must be deliberate; `cargo machete` fails on unused ones.
-- Extend the tool surface via options, not new tools. Current surface is intentionally capped at eight.
-
-## ANTI-PATTERNS
-
-- Print to stdout in the server loop — stdout is the MCP JSON-RPC transport channel. Log to stderr only.
-- Trust provider/subagent output as proof — always verify locally before marking done.
-- Assume parallel PTY tests are safe — they touch global process state and can cross-flake.
-- Add dependencies without checking `cargo machete` impact.
-
-## COMMANDS
-
-```bash
-scripts/quality.sh                     # Run all hard gates locally
-cargo test -- --test-threads=1          # Isolate flaky PTY tests
-cargo run --bin agent-bridge-mcp        # Start the stdio server
-```
-
-## KEY CONFIGS
-
-| Tool | Entry | Notes |
-|------|-------|-------|
-| Cargo | `Cargo.toml` (workspace) + `crates/*/Cargo.toml` | Edition 2024, publish=false |
-| CI hard gates | `.github/workflows/quality.yml` | Fails on fmt, clippy warning, machete, jscpd ≥5% |
-| Release builds | `.github/workflows/release-rust.yml` | Linux x64, macOS x64/arm64 |
-
-## UNIQUE STYLES
-
-- `AGENT_BRIDGE_FORCE_PANIC=1` forces a panic in `main_entry()` for integration-testing the panic hook.
-- Second binary `agent-bridge-mcp-rs` lives in `src/bin/agent-bridge-mcp-rs.rs`; rarely touched.
-- Panic hook attempts SIGTERM termination of all tracked provider children to prevent orphans.
-- No TODO/FIXME/HACK/XXX markers in the codebase — maintain that bar.
-
-## NOTES
-
-- Shutdown handles SIGTERM (exit 143) and Ctrl-C (exit 130).
-- `claude-host-runner` subcommand bypasses the MCP loop and binds to a Unix socket directly.
-- The server writes newline-delimited JSON to stdout; blank input lines are ignored.
+- **Getting started** (`docs/agents/getting-started.md`) — clone, build, run, first PR, environment setup
+- **Tooling & build** (`docs/agents/tooling.md`) — cargo workspace, the two binaries, rustfmt/clippy/machete config
+- **Validation** (`docs/agents/definition-of-done.md`) — `scripts/quality.sh`, the exact gates and thresholds, running tests
+- **Architecture** (`docs/agents/architecture.md`) — module map, the eight MCP tools, provider/task/claude_interactive boundaries
+- **Security** (`docs/agents/security.md`) — threat model, workspace confinement, secret hygiene, isolation
+- **Guardrails** (`docs/agents/guardrails.md`) — PTY/global-state test hazards, MCP protocol contract, secrets
+- **Deep reference** (`docs/INDEX.md`) — full documentation manifest: data model, business context, ADRs, codemaps, workflows
+- Run `/skills` to see available patterns and workflows

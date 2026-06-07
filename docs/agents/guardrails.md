@@ -1,6 +1,14 @@
 # Guardrails
 
-## PTY & global process state in tests
+## At a Glance
+
+- **Never print to stdout** — it's the MCP protocol channel. Use stderr.
+- **Keep the tool surface at eight** — extend via options, not new tools.
+- **Provider output is evidence, not proof** — verify locally before claiming done.
+- **No secrets anywhere** — code, fixtures, commits, logs must stay clean.
+- **PTY tests run single-threaded** — global process state flakes under parallelism.
+
+## PTY & Global Process State in Tests
 
 The interactive provider (`src/claude_interactive/`) spawns real child processes
 through PTYs. Tests exercising it touch **global process state**, so:
@@ -12,7 +20,7 @@ through PTYs. Tests exercising it touch **global process state**, so:
   specific child PID/PGID you own; never broadcast to a shared group.
 - Don't assume timing — drive on observed transcript events, not sleeps.
 
-## MCP protocol contract
+## MCP Protocol Contract
 
 - Transport is JSON-RPC over stdio. **stdout is the protocol channel** — never
   print debug output to stdout; use stderr/logging. A stray println corrupts the framing.
@@ -21,7 +29,7 @@ through PTYs. Tests exercising it touch **global process state**, so:
 - Keep the tool surface at eight tools (see `architecture.md`). Extend via options,
   not new tools, unless there's a strong reason.
 
-## Evidence vs. proof
+## Evidence vs. Proof
 
 Provider/subagent output is **evidence only**. The calling agent owns project
 verification — run `scripts/quality.sh` and the relevant tests before reporting
@@ -33,3 +41,10 @@ in our own work too.
 No secrets, `.env` contents, auth tokens, or proprietary content in code, fixtures,
 commits, or logs. Provider config examples (e.g. `codex-mcp.example.json`) must stay
 example-only with placeholder values.
+
+## Going Deeper
+
+- [Security](security.md) — threat model, workspace confinement, secret hygiene
+- [Testing workflows](../WORKFLOWS/unit-tests.md) — fake scripts, isolated PID registries, protocol tests
+- [Backend workflows](../WORKFLOWS/backend.md) — modifying tools, adding providers, running gates
+

@@ -1,13 +1,18 @@
 # Tooling & Build
 
+## At a Glance
+
+- Single crate workspace, Rust 2024 edition, resolver `"3"`.
+- Two binaries: `agent-bridge-mcp` (primary) and `agent-bridge-mcp-rs` (alternate).
+- Four hard CI gates: rustfmt, clippy `-D warnings`, cargo-machete, jscpd <5%.
+- One-shot install: `cargo install cargo-modules cargo-machete --locked`.
+
 ## Workspace
 
 Cargo workspace, `resolver = "3"`, single member `crates/agent-bridge-mcp`
 (Rust 2024 edition). All cargo commands run from the repo root.
 
 ## Binaries
-
-Two binary targets in the one crate:
 
 - `agent-bridge-mcp` — `src/main.rs`, the primary stdio MCP server.
 - `agent-bridge-mcp-rs` — `src/bin/agent-bridge-mcp-rs.rs`, alternate entrypoint.
@@ -32,9 +37,17 @@ cargo run --bin agent-bridge-mcp  # run the stdio server
 - Complexity lints (`cognitive_complexity`, `too_many_lines`, `too_many_arguments`)
   run informationally; recent history shows active refactoring to keep functions small.
 
-## One-time tool install
+## One-Time Tool Install
 
 ```bash
 cargo install cargo-modules cargo-machete --locked
 # jscpd is fetched on demand via npx (Node >= 18)
 ```
+
+## Going Deeper
+
+- [Getting started](getting-started.md) — clone, build, run, first PR
+- [Definition of Done](definition-of-done.md) — exact gate commands and thresholds
+- [Setup](../SETUP.md) — full environment setup, troubleshooting, Claude host-runner
+- [Deployment](../DEPLOYMENT.md) — release builds, CI pipeline, rollback
+

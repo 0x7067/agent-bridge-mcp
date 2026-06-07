@@ -39,8 +39,11 @@ Plan → Execute → Validate → Commit
 
 When working on tasks involving these topics, read the linked doc:
 
-- Tooling & build (`docs/agents/tooling.md`) — cargo workspace, the two binaries, rustfmt/clippy/machete config
-- Validation (`docs/agents/definition-of-done.md`) — `scripts/quality.sh`, the exact gates and thresholds, running tests
-- Architecture (`docs/agents/architecture.md`) — module map, the eight MCP tools, provider/task/claude_interactive boundaries
-- Guardrails (`docs/agents/guardrails.md`) — PTY/global-state test hazards, MCP protocol contract, secrets
+- **Getting started** (`docs/agents/getting-started.md`) — clone, build, run, first PR, environment setup
+- **Tooling & build** (`docs/agents/tooling.md`) — cargo workspace, the two binaries, rustfmt/clippy/machete config
+- **Validation** (`docs/agents/definition-of-done.md`) — `scripts/quality.sh`, the exact gates and thresholds, running tests
+- **Architecture** (`docs/agents/architecture.md`) — module map, the eight MCP tools, provider/task/claude_interactive boundaries
+- **Security** (`docs/agents/security.md`) — threat model, workspace confinement, secret hygiene, isolation
+- **Guardrails** (`docs/agents/guardrails.md`) — PTY/global-state test hazards, MCP protocol contract, secrets
+- **Deep reference** (`docs/INDEX.md`) — full documentation manifest: data model, business context, ADRs, codemaps, workflows
 - Run `/skills` to see available patterns and workflows

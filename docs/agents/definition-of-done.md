@@ -3,16 +3,15 @@
 A change is done only when every gate below passes with zero errors. Run them
 locally before committing — `scripts/quality.sh` mirrors CI (`.github/workflows/quality.yml`).
 
-## One command
+## At a Glance
 
 ```bash
 scripts/quality.sh
 ```
 
-It exits non-zero if any **hard gate** fails. Complexity and dependency-graph
-sections are reporting-only and never fail.
+Exits non-zero if any **hard gate** fails. Reporting-only sections never fail.
 
-## Hard gates (must pass)
+## Hard Gates (Must Pass)
 
 | Gate | Command | Threshold |
 | --- | --- | --- |
@@ -40,7 +39,14 @@ Notes:
 - cargo runs may pass through a buffering wrapper; redirect output to a file or
   use `--test-threads=1` if piped output looks truncated.
 
-## Reporting-only (review, don't gate)
+## Reporting-Only (Review, Don't Gate)
 
 - Complexity hotspots via clippy `cognitive_complexity` / `too_many_lines` / `too_many_arguments`.
 - Module dependency graph / acyclicity via `cargo modules` (flags benign self-refs).
+
+## Going Deeper
+
+- [Guardrails](guardrails.md) — PTY test hazards, MCP protocol contract, secrets
+- [Testing workflows](../WORKFLOWS/unit-tests.md) — patterns for fake-provider tests, PTY tests, protocol tests
+- [Quality workflow](../WORKFLOWS/backend.md) — running quality gates, interpreting output
+
