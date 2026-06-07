@@ -94,6 +94,13 @@ impl Drop for ActivePidGuard {
     }
 }
 
+// Setup and post-loop resolution are factored out (see `resolve_final_result`),
+// but the body remains long because of the central `tokio::select!` supervision
+// loop. Extracting that loop into a helper was reviewed and rejected: its arms
+// share many `&mut` locals and pinned futures, so moving it would change borrow
+// and cancellation semantics rather than simplify. The remaining length/complexity
+// is intrinsic to the single-loop design, so it is allowed locally.
+#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 pub async fn run_interactive(
     request: ClaudeInteractiveRunRequest,
 ) -> io::Result<ClaudeInteractiveRunResult> {
@@ -283,6 +290,50 @@ pub async fn run_interactive(
     }
     let _ = tokio::time::timeout(Duration::from_secs(1), relay_task).await;
 
+    let resolved = resolve_final_result(
+        stop.as_ref(),
+        stop_failure.as_ref(),
+        session_start.as_ref(),
+        failure_category,
+    )
+    .await;
+
+    Ok(ClaudeInteractiveRunResult {
+        exit_code: exit_status.as_ref().and_then(ExitStatus::code),
+        signal: signal_name(exit_status.as_ref()),
+        final_text: resolved.final_text,
+        final_text_source: resolved.final_text_source,
+        session_id: resolved.session_id,
+        failure_category: resolved.failure_category,
+        pty_output_excerpt: String::from_utf8_lossy(&pty_excerpt).to_string(),
+        pty_output_truncated: pty_truncated,
+        stop,
+        stop_failure,
+        transcript: resolved.transcript,
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+/// The final-text / transcript / failure-category resolution derived after the
+/// supervision loop ends, from the recorded stop / stop-failure / session-start
+/// payloads.
+struct ResolvedRun {
+    final_text: Option<String>,
+    final_text_source: Option<String>,
+    session_id: Option<String>,
+    transcript: serde_json::Value,
+    failure_category: Option<String>,
+}
+
+/// Resolves the final result of a finished interactive run: a stop-failure maps to
+/// its category, otherwise a completion payload is resolved against the transcript
+/// (with retry budget), falling back to the loop's `failure_category`.
+async fn resolve_final_result(
+    stop: Option<&serde_json::Value>,
+    stop_failure: Option<&serde_json::Value>,
+    session_start: Option<&serde_json::Value>,
+    failure_category: Option<String>,
+) -> ResolvedRun {
     let mut final_text = None;
     let mut final_text_source = None;
     let mut session_id = None;
@@ -290,7 +341,7 @@ pub async fn run_interactive(
         "parseStatus": "not_started",
         "fallbackUsed": false
     });
-    let failure_category = if let Some(stop_failure_payload) = stop_failure.as_ref() {
+    let failure_category = if let Some(stop_failure_payload) = stop_failure {
         if let Some(failure) = parse_stop_failure(stop_failure_payload) {
             transcript = serde_json::json!({
                 "parseStatus": "stop_failure",
@@ -300,9 +351,7 @@ pub async fn run_interactive(
         } else {
             failure_category
         }
-    } else if let Some(completion_payload) =
-        completion_payload(stop.as_ref(), session_start.as_ref())
-    {
+    } else if let Some(completion_payload) = completion_payload(stop, session_start) {
         match resolve_stop_result(completion_payload, TRANSCRIPT_RETRY_BUDGET).await {
             Ok(result) => {
                 final_text = Some(result.final_text);
@@ -332,21 +381,13 @@ pub async fn run_interactive(
     } else {
         failure_category
     };
-
-    Ok(ClaudeInteractiveRunResult {
-        exit_code: exit_status.as_ref().and_then(ExitStatus::code),
-        signal: signal_name(exit_status.as_ref()),
+    ResolvedRun {
         final_text,
         final_text_source,
         session_id,
-        failure_category,
-        pty_output_excerpt: String::from_utf8_lossy(&pty_excerpt).to_string(),
-        pty_output_truncated: pty_truncated,
-        stop,
-        stop_failure,
         transcript,
-        duration_ms: started.elapsed().as_millis() as u64,
-    })
+        failure_category,
+    }
 }
 
 pub async fn inject_prompt(writer: &mut (impl AsyncWrite + Unpin), prompt: &str) -> io::Result<()> {
