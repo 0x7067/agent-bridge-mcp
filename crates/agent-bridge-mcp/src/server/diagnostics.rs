@@ -1885,6 +1885,7 @@ async fn smoke_one_provider(
                 .status
                 .as_ref()
                 .is_some_and(|status| status.success())
+                && output.failure_category.is_none()
                 && !smoke_output_is_accepted(provider, &output.stdout)
             {
                 output.failure_category = Some(FailureCategory::ProviderOutputError);

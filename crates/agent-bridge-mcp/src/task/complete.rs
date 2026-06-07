@@ -186,7 +186,7 @@ pub(super) fn classify_completion(
     fatal_denial: bool,
 ) -> TaskCompletion {
     match output {
-        Ok(status) if status.success() => classify_success_exit(
+        Ok(status) if status.success() && !timed_out => classify_success_exit(
             agent_id,
             command,
             agent_dir,
