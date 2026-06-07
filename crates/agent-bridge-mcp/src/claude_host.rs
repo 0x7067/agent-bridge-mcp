@@ -405,55 +405,59 @@ async fn handle_request(
             )
             .await
             {
-                Ok(result) => {
-                    let success = result.failure_category.is_none() && result.final_text.is_some();
-                    let stdout = compatibility_stdout(&result);
-                    let stderr = if success {
-                        String::new()
-                    } else {
-                        result.pty_output_excerpt.clone()
-                    };
-                    let final_text_source = result
-                        .final_text_source
-                        .clone()
-                        .unwrap_or_else(|| "transcript".to_string());
-                    let session_id = result.session_id.clone();
-                    let final_text = result.final_text.clone();
-                    HostResponse {
-                        version: PROTOCOL_VERSION,
-                        ok: true,
-                        result: Some(HostResult::Run(Box::new(HostRunResult {
-                            status: if success {
-                                "success".to_string()
-                            } else {
-                                "failure".to_string()
-                            },
-                            exit_code: result.exit_code,
-                            signal: result.signal,
-                            duration_ms: result.duration_ms,
-                            failure_category: result.failure_category.clone(),
-                            pty_output_excerpt: result.pty_output_excerpt,
-                            pty_output_truncated: result.pty_output_truncated,
-                            redactions_applied: vec!["prompt".to_string(), "secrets".to_string()],
-                            result: final_text.map(|final_text| ClaudeInteractiveSuccess {
-                                final_text,
-                                source: final_text_source,
-                                session_id,
-                            }),
-                            stop: result.stop,
-                            stop_failure: result.stop_failure,
-                            transcript: result.transcript,
-                            stdout,
-                            stderr,
-                            stdout_truncated: false,
-                            stderr_truncated: result.pty_output_truncated,
-                        }))),
-                        error: None,
-                    }
-                }
+                Ok(result) => build_run_response(result),
                 Err(error) => error_response("spawn_failed", &error),
             }
         }
+    }
+}
+
+/// Maps a finished interactive run into the host `RunClaude` response, deciding
+/// success vs. failure and shaping the compatibility stdout/stderr fields.
+fn build_run_response(result: ClaudeInteractiveRunResult) -> HostResponse {
+    let success = result.failure_category.is_none() && result.final_text.is_some();
+    let stdout = compatibility_stdout(&result);
+    let stderr = if success {
+        String::new()
+    } else {
+        result.pty_output_excerpt.clone()
+    };
+    let final_text_source = result
+        .final_text_source
+        .clone()
+        .unwrap_or_else(|| "transcript".to_string());
+    let session_id = result.session_id.clone();
+    let final_text = result.final_text.clone();
+    HostResponse {
+        version: PROTOCOL_VERSION,
+        ok: true,
+        result: Some(HostResult::Run(Box::new(HostRunResult {
+            status: if success {
+                "success".to_string()
+            } else {
+                "failure".to_string()
+            },
+            exit_code: result.exit_code,
+            signal: result.signal,
+            duration_ms: result.duration_ms,
+            failure_category: result.failure_category.clone(),
+            pty_output_excerpt: result.pty_output_excerpt,
+            pty_output_truncated: result.pty_output_truncated,
+            redactions_applied: vec!["prompt".to_string(), "secrets".to_string()],
+            result: final_text.map(|final_text| ClaudeInteractiveSuccess {
+                final_text,
+                source: final_text_source,
+                session_id,
+            }),
+            stop: result.stop,
+            stop_failure: result.stop_failure,
+            transcript: result.transcript,
+            stdout,
+            stderr,
+            stdout_truncated: false,
+            stderr_truncated: result.pty_output_truncated,
+        }))),
+        error: None,
     }
 }
 
@@ -823,6 +827,49 @@ mod tests {
         let line = read_capped_line(&mut client).await.unwrap();
         server_task.await.unwrap();
         serde_json::from_slice(&line).unwrap()
+    }
+
+    fn run_result(final_text: Option<&str>, failure_category: Option<&str>) -> ClaudeInteractiveRunResult {
+        ClaudeInteractiveRunResult {
+            exit_code: Some(0),
+            signal: None,
+            final_text: final_text.map(str::to_string),
+            final_text_source: None,
+            session_id: Some("sess-1".to_string()),
+            failure_category: failure_category.map(str::to_string),
+            pty_output_excerpt: "raw pty".to_string(),
+            pty_output_truncated: false,
+            stop: None,
+            stop_failure: None,
+            transcript: serde_json::json!({"parseStatus": "ok"}),
+            duration_ms: 42,
+        }
+    }
+
+    #[test]
+    fn build_run_response_marks_success_when_final_text_present() {
+        let response = build_run_response(run_result(Some("the answer"), None));
+        assert!(response.ok);
+        let HostResult::Run(run) = response.result.unwrap() else {
+            panic!("expected Run result");
+        };
+        assert_eq!(run.status, "success");
+        assert_eq!(run.stderr, ""); // success suppresses pty excerpt on stderr
+        assert_eq!(run.result.as_ref().unwrap().final_text, "the answer");
+        // unset source falls back to "transcript".
+        assert_eq!(run.result.as_ref().unwrap().source, "transcript");
+    }
+
+    #[test]
+    fn build_run_response_marks_failure_and_surfaces_pty_excerpt() {
+        let response = build_run_response(run_result(None, Some("claude_api_error")));
+        let HostResult::Run(run) = response.result.unwrap() else {
+            panic!("expected Run result");
+        };
+        assert_eq!(run.status, "failure");
+        assert_eq!(run.stderr, "raw pty");
+        assert!(run.result.is_none());
+        assert_eq!(run.failure_category.as_deref(), Some("claude_api_error"));
     }
 
     #[test]
