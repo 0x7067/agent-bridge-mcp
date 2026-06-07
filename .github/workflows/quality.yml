@@ -1,0 +1,54 @@
+name: quality
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  static-intelligence:
+    name: complexity / duplication / cycles / boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust components
+        run: rustup component add clippy rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      # --- Hard gates (fail the build) ---
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Lints (clippy correctness)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Install cargo tools
+        run: cargo install cargo-modules cargo-machete --locked
+
+      - name: Unused dependencies
+        run: cargo machete
+
+      - name: Setup Node (for jscpd)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Code duplication (jscpd, fails over 5% threshold)
+        run: npx --yes jscpd
+
+      # --- Reporting only (informational; never fails the build) ---
+      - name: Complexity hotspots (clippy)
+        run: |
+          cargo clippy --all-targets -- \
+            -W clippy::cognitive_complexity \
+            -W clippy::too_many_lines \
+            -W clippy::too_many_arguments 2>&1 | grep -E "complexity|too many lines|too many arguments|-->" || true
+
+      - name: Module dependency graph (circular deps / arch boundaries review)
+        run: |
+          echo "Acyclic check (informational — note: cargo-modules flags benign type/method self-refs):"
+          cargo modules dependencies --lib --no-externs --acyclic -p agent-bridge-mcp || true
+          echo "Module-level graph (review for boundary violations):"
+          cargo modules dependencies --lib --no-externs --no-fns --no-types --no-traits --no-owns -p agent-bridge-mcp || true

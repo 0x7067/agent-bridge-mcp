@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/kucherenko/jscpd/master/packages/jscpd/schema.json",
+  "path": ["crates"],
+  "pattern": "**/*.rs",
+  "minTokens": 50,
+  "minLines": 10,
+  "reporters": ["consoleFull"],
+  "ignore": ["**/target/**", "**/tests/fixtures/**"],
+  "absolute": false,
+  "gitignore": true,
+  "threshold": 5
+}
