@@ -1396,104 +1396,17 @@ fn classify_completion(
 ) -> TaskCompletion {
     match output {
         Ok(status) if status.success() => {
-            let adapter = provider::adapter_for(command.provider);
-            if adapter.polls_stderr_for_denial() || fatal_denial {
-                let stdout = std::fs::read(agent_dir.join("stdout.log")).unwrap_or_default();
-                let stderr = std::fs::read(agent_dir.join("stderr.log")).unwrap_or_default();
-                if fatal_denial || adapter.detects_fatal_denial(&stderr) {
-                    return codex_denial_completion(
-                        agent_id,
-                        command,
-                        timeout_seconds,
-                        status.code(),
-                        signal_name(&status),
-                        &stdout,
-                        &stderr,
-                    );
-                }
-            }
-            if adapter.enforces_output_parseable() {
-                let stdout = std::fs::read(agent_dir.join("stdout.log")).unwrap_or_default();
-                let stderr = std::fs::read(agent_dir.join("stderr.log")).unwrap_or_default();
-                if !adapter.output_is_acceptable(&stdout) {
-                    return TaskCompletion {
-                        agent_id,
-                        status: TaskStatus::Failed,
-                        exit_code: status.code(),
-                        signal: signal_name(&status),
-                        error: Some("claude provider output was not parseable".to_string()),
-                        error_type: Some(ErrorType::ProviderOutputError),
-                        diagnostic: Some(agent_diagnostic(
-                            command,
-                            "provider_output_error",
-                            timeout_seconds * 1000,
-                            status.code(),
-                            signal_name(&status),
-                            &stdout,
-                            &stderr,
-                        )),
-                    };
-                }
-            }
-            TaskCompletion {
-                agent_id,
-                status: TaskStatus::Succeeded,
-                exit_code: status.code(),
-                signal: signal_name(&status),
-                error: None,
-                error_type: None,
-                diagnostic: None,
-            }
+            classify_success_exit(agent_id, command, agent_dir, timeout_seconds, status, fatal_denial)
         }
-        Ok(status) => {
-            let signal = signal_name(&status);
-            let stdout = std::fs::read(agent_dir.join("stdout.log")).unwrap_or_default();
-            let stderr = std::fs::read(agent_dir.join("stderr.log")).unwrap_or_default();
-            if fatal_denial || provider::adapter_for(command.provider).detects_fatal_denial(&stderr)
-            {
-                return codex_denial_completion(
-                    agent_id,
-                    command,
-                    timeout_seconds,
-                    status.code(),
-                    signal,
-                    &stdout,
-                    &stderr,
-                );
-            }
-            TaskCompletion {
-                agent_id,
-                status: TaskStatus::Failed,
-                exit_code: status.code(),
-                signal: signal.clone(),
-                error: if timed_out {
-                    Some(format!("task timed out after {}ms", timeout_seconds * 1000))
-                } else {
-                    Some(format!(
-                        "command exited with code {}",
-                        status.code().unwrap_or(-1)
-                    ))
-                },
-                error_type: Some(if timed_out {
-                    ErrorType::Timeout
-                } else {
-                    ErrorType::ProviderExitError
-                }),
-                diagnostic: Some(agent_diagnostic(
-                    command,
-                    if timed_out {
-                        "provider_timeout"
-                    } else {
-                        "provider_exit_error"
-                    },
-                    timeout_seconds * 1000,
-                    status.code(),
-                    signal,
-                    &stdout,
-                    &stderr,
-                )),
-            }
-        }
+        Ok(status) => classify_failure_exit(
+            agent_id,
+            command,
+            agent_dir,
+            timeout_seconds,
+            status,
+            timed_out,
+            fatal_denial,
+        ),
         Err(error) => TaskCompletion {
             agent_id,
             status: TaskStatus::Failed,
@@ -1503,6 +1416,125 @@ fn classify_completion(
             error_type: Some(ErrorType::ProviderExitError),
             diagnostic: None,
         },
+    }
+}
+
+/// Classifies a process that exited 0: a fatal denial or unparseable output still
+/// becomes a failure for adapters that enforce those checks; otherwise success.
+fn classify_success_exit(
+    agent_id: String,
+    command: &ProviderCommand,
+    agent_dir: &Path,
+    timeout_seconds: i64,
+    status: std::process::ExitStatus,
+    fatal_denial: bool,
+) -> TaskCompletion {
+    let adapter = provider::adapter_for(command.provider);
+    if adapter.polls_stderr_for_denial() || fatal_denial {
+        let stdout = std::fs::read(agent_dir.join("stdout.log")).unwrap_or_default();
+        let stderr = std::fs::read(agent_dir.join("stderr.log")).unwrap_or_default();
+        if fatal_denial || adapter.detects_fatal_denial(&stderr) {
+            return codex_denial_completion(
+                agent_id,
+                command,
+                timeout_seconds,
+                status.code(),
+                signal_name(&status),
+                &stdout,
+                &stderr,
+            );
+        }
+    }
+    if adapter.enforces_output_parseable() {
+        let stdout = std::fs::read(agent_dir.join("stdout.log")).unwrap_or_default();
+        let stderr = std::fs::read(agent_dir.join("stderr.log")).unwrap_or_default();
+        if !adapter.output_is_acceptable(&stdout) {
+            return TaskCompletion {
+                agent_id,
+                status: TaskStatus::Failed,
+                exit_code: status.code(),
+                signal: signal_name(&status),
+                error: Some("claude provider output was not parseable".to_string()),
+                error_type: Some(ErrorType::ProviderOutputError),
+                diagnostic: Some(agent_diagnostic(
+                    command,
+                    "provider_output_error",
+                    timeout_seconds * 1000,
+                    status.code(),
+                    signal_name(&status),
+                    &stdout,
+                    &stderr,
+                )),
+            };
+        }
+    }
+    TaskCompletion {
+        agent_id,
+        status: TaskStatus::Succeeded,
+        exit_code: status.code(),
+        signal: signal_name(&status),
+        error: None,
+        error_type: None,
+        diagnostic: None,
+    }
+}
+
+/// Classifies a process that exited non-zero: a fatal denial maps to the denial
+/// completion; otherwise a timeout or plain exit failure with a diagnostic.
+fn classify_failure_exit(
+    agent_id: String,
+    command: &ProviderCommand,
+    agent_dir: &Path,
+    timeout_seconds: i64,
+    status: std::process::ExitStatus,
+    timed_out: bool,
+    fatal_denial: bool,
+) -> TaskCompletion {
+    let signal = signal_name(&status);
+    let stdout = std::fs::read(agent_dir.join("stdout.log")).unwrap_or_default();
+    let stderr = std::fs::read(agent_dir.join("stderr.log")).unwrap_or_default();
+    if fatal_denial || provider::adapter_for(command.provider).detects_fatal_denial(&stderr) {
+        return codex_denial_completion(
+            agent_id,
+            command,
+            timeout_seconds,
+            status.code(),
+            signal,
+            &stdout,
+            &stderr,
+        );
+    }
+    TaskCompletion {
+        agent_id,
+        status: TaskStatus::Failed,
+        exit_code: status.code(),
+        signal: signal.clone(),
+        error: if timed_out {
+            Some(format!("task timed out after {}ms", timeout_seconds * 1000))
+        } else {
+            Some(format!(
+                "command exited with code {}",
+                status.code().unwrap_or(-1)
+            ))
+        },
+        error_type: Some(if timed_out {
+            ErrorType::Timeout
+        } else {
+            ErrorType::ProviderExitError
+        }),
+        diagnostic: Some(agent_diagnostic(
+            command,
+            if timed_out {
+                "provider_timeout"
+            } else {
+                "provider_exit_error"
+            },
+            timeout_seconds * 1000,
+            status.code(),
+            signal,
+            &stdout,
+            &stderr,
+        )),
     }
 }
 
