@@ -1371,6 +1371,29 @@ async fn wait_for_child(
         &diagnostic_redactions(&command),
     )
     .await;
+    classify_completion(
+        agent_id,
+        &command,
+        &agent_dir,
+        timeout_seconds,
+        output,
+        timed_out,
+        fatal_denial,
+    )
+}
+
+/// Maps a finished direct-child exit into a `TaskCompletion`, applying adapter
+/// denial/parseability checks on success and shaping timeout/exit failures. Reads
+/// the captured stdout/stderr logs from `agent_dir` as needed.
+fn classify_completion(
+    agent_id: String,
+    command: &ProviderCommand,
+    agent_dir: &Path,
+    timeout_seconds: i64,
+    output: Result<std::process::ExitStatus, String>,
+    timed_out: bool,
+    fatal_denial: bool,
+) -> TaskCompletion {
     match output {
         Ok(status) if status.success() => {
             let adapter = provider::adapter_for(command.provider);
@@ -1380,7 +1403,7 @@ async fn wait_for_child(
                 if fatal_denial || adapter.detects_fatal_denial(&stderr) {
                     return codex_denial_completion(
                         agent_id,
-                        &command,
+                        command,
                         timeout_seconds,
                         status.code(),
                         signal_name(&status),
@@ -1401,7 +1424,7 @@ async fn wait_for_child(
                         error: Some("claude provider output was not parseable".to_string()),
                         error_type: Some(ErrorType::ProviderOutputError),
                         diagnostic: Some(agent_diagnostic(
-                            &command,
+                            command,
                             "provider_output_error",
                             timeout_seconds * 1000,
                             status.code(),
@@ -1430,7 +1453,7 @@ async fn wait_for_child(
             {
                 return codex_denial_completion(
                     agent_id,
-                    &command,
+                    command,
                     timeout_seconds,
                     status.code(),
                     signal,
@@ -1457,7 +1480,7 @@ async fn wait_for_child(
                     ErrorType::ProviderExitError
                 }),
                 diagnostic: Some(agent_diagnostic(
-                    &command,
+                    command,
                     if timed_out {
                         "provider_timeout"
                     } else {
