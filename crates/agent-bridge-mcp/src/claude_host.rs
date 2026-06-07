@@ -569,10 +569,7 @@ async fn read_stream_capped(mut reader: impl tokio::io::AsyncRead + Unpin) -> (V
     let mut bytes = Vec::new();
     let mut truncated = false;
     let mut buffer = [0u8; 8192];
-    loop {
-        let Ok(count) = reader.read(&mut buffer).await else {
-            break;
-        };
+    while let Ok(count) = reader.read(&mut buffer).await {
         if count == 0 {
             break;
         }
