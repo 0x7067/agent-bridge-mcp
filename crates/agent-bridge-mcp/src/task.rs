@@ -557,41 +557,9 @@ impl TaskActor {
             transcript_diagnostic: None,
         };
 
-        match launch_task(agent_id.clone(), command, agent_dir, self.tx.clone()).await {
-            Ok(active) => {
-                record.pid = active.pid;
-                transition_status(&mut record, TaskStatus::Running)?;
-                record.started_at = Some(now_iso());
-                record.updated_at = record.started_at.clone().unwrap();
-                self.active.insert(agent_id.clone(), active);
-            }
-            Err(error) => {
-                transition_status(&mut record, TaskStatus::Failed)?;
-                record.error = Some(error);
-                record.error_type = Some(ErrorType::ProviderStartError);
-                record.completed_at = Some(now_iso());
-                record.updated_at = record.completed_at.clone().unwrap();
-                // The worktree was created before the launch attempt; a failed
-                // launch must not leave it orphaned.
-                if record.worktree_managed
-                    && let Some(worktree_path) = record.worktree_path.clone()
-                {
-                    match run_git(&["worktree", "remove", "-f", &worktree_path], &cwd).await {
-                        Ok(_) => {
-                            record.worktree_managed = false;
-                        }
-                        Err(cleanup_error) => {
-                            record.diagnostic = Some(json!({
-                                "failureCategory": "worktree_cleanup_failed",
-                                "message": format!(
-                                    "failed to remove worktree after launch failure: {cleanup_error}"
-                                ),
-                                "worktreePath": worktree_path,
-                            }));
-                        }
-                    }
-                }
-            }
+        let outcome = launch_task(agent_id.clone(), command, agent_dir, self.tx.clone()).await;
+        if let Some(active) = apply_launch_outcome(&mut record, outcome, &cwd).await? {
+            self.active.insert(agent_id.clone(), active);
         }
         self.registry.tasks.insert(agent_id.clone(), record);
         self.save().await?;
@@ -906,6 +874,52 @@ struct TaskCompletion {
 struct ChildIoDrains {
     stdout: Option<tokio::task::JoinHandle<()>>,
     stderr: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// Applies a `launch_task` outcome to a freshly built record: on success marks it
+/// running and returns the active handle for the caller to track; on failure marks
+/// it failed and removes any worktree created before the launch attempt so it is
+/// not left orphaned. `cwd` is the pre-worktree directory used for git cleanup.
+async fn apply_launch_outcome(
+    record: &mut TaskRecord,
+    outcome: Result<ActiveTask, String>,
+    cwd: &str,
+) -> Result<Option<ActiveTask>, String> {
+    match outcome {
+        Ok(active) => {
+            record.pid = active.pid;
+            transition_status(record, TaskStatus::Running)?;
+            record.started_at = Some(now_iso());
+            record.updated_at = record.started_at.clone().unwrap();
+            Ok(Some(active))
+        }
+        Err(error) => {
+            transition_status(record, TaskStatus::Failed)?;
+            record.error = Some(error);
+            record.error_type = Some(ErrorType::ProviderStartError);
+            record.completed_at = Some(now_iso());
+            record.updated_at = record.completed_at.clone().unwrap();
+            if record.worktree_managed
+                && let Some(worktree_path) = record.worktree_path.clone()
+            {
+                match run_git(&["worktree", "remove", "-f", &worktree_path], cwd).await {
+                    Ok(_) => {
+                        record.worktree_managed = false;
+                    }
+                    Err(cleanup_error) => {
+                        record.diagnostic = Some(json!({
+                            "failureCategory": "worktree_cleanup_failed",
+                            "message": format!(
+                                "failed to remove worktree after launch failure: {cleanup_error}"
+                            ),
+                            "worktreePath": worktree_path,
+                        }));
+                    }
+                }
+            }
+            Ok(None)
+        }
+    }
 }
 
 async fn launch_task(
