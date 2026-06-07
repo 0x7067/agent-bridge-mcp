@@ -922,6 +922,39 @@ async fn apply_launch_outcome(
     }
 }
 
+/// Spawns the Claude owned-host-runner task on the background runtime and returns
+/// a cancellable `ActiveTask`. The spawned task forwards its completion to the
+/// manager, aborting the process if that channel is gone.
+fn launch_host_runner_task(
+    agent_id: String,
+    command: ProviderCommand,
+    claude_command: crate::claude_host::ClaudeHostCommand,
+    socket_path: PathBuf,
+    agent_dir: PathBuf,
+    tx: mpsc::Sender<ActorCommand>,
+) -> ActiveTask {
+    let (cancel_tx, cancel_rx) = oneshot::channel();
+    tokio::spawn(async move {
+        let completion = run_host_task(
+            agent_id,
+            command,
+            claude_command,
+            socket_path,
+            agent_dir,
+            cancel_rx,
+        )
+        .await;
+        if tx.send(ActorCommand::Complete(completion)).await.is_err() {
+            eprintln!("[agent-bridge] task manager dropped completion message");
+            std::process::abort();
+        }
+    });
+    ActiveTask {
+        pid: None,
+        cancel: Some(cancel_tx),
+    }
+}
+
 async fn launch_task(
     agent_id: String,
     command: ProviderCommand,
@@ -934,26 +967,14 @@ async fn launch_task(
             command.claude_host.clone(),
         )
     {
-        let (cancel_tx, cancel_rx) = oneshot::channel();
-        tokio::spawn(async move {
-            let completion = run_host_task(
-                agent_id,
-                command,
-                claude_command,
-                socket_path,
-                agent_dir,
-                cancel_rx,
-            )
-            .await;
-            if tx.send(ActorCommand::Complete(completion)).await.is_err() {
-                eprintln!("[agent-bridge] task manager dropped completion message");
-                std::process::abort();
-            }
-        });
-        return Ok(ActiveTask {
-            pid: None,
-            cancel: Some(cancel_tx),
-        });
+        return Ok(launch_host_runner_task(
+            agent_id,
+            command,
+            claude_command,
+            socket_path,
+            agent_dir,
+            tx,
+        ));
     }
     let stdout_path = agent_dir.join("stdout.log");
     let stderr_path = agent_dir.join("stderr.log");
@@ -1090,6 +1111,22 @@ async fn run_host_task(
     }
 }
 
+/// Appends one transcript event per non-blank line of a host-runner stream
+/// (stdout/stderr), classifying each line via `parse_transcript_line`.
+async fn append_stream_transcript(
+    transcript_path: &Path,
+    provider: ProviderKind,
+    stream: &'static str,
+    text: &str,
+    redactions: &[String],
+) {
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let (kind, parsed) = parse_transcript_line(line);
+        append_transcript_event(transcript_path, provider, stream, kind, line, parsed, redactions)
+            .await;
+    }
+}
+
 async fn complete_host_response(
     agent_id: String,
     command: ProviderCommand,
@@ -1160,35 +1197,53 @@ async fn complete_host_response(
         )
         .await;
     }
-    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
-        let (kind, parsed) = parse_transcript_line(line);
-        append_transcript_event(
-            &transcript_path,
-            command.provider,
-            "stdout",
-            kind,
-            line,
-            parsed,
-            &redactions,
-        )
+    append_stream_transcript(&transcript_path, command.provider, "stdout", &stdout, &redactions)
         .await;
-    }
-    for line in stderr.lines().filter(|line| !line.trim().is_empty()) {
-        let (kind, parsed) = parse_transcript_line(line);
-        append_transcript_event(
-            &transcript_path,
-            command.provider,
-            "stderr",
-            kind,
-            line,
-            parsed,
-            &redactions,
-        )
+    append_stream_transcript(&transcript_path, command.provider, "stderr", &stderr, &redactions)
         .await;
-    }
-    let success = failure_category.is_none() && result.is_some();
-    if success {
-        TaskCompletion {
+    host_completion(
+        agent_id,
+        &command,
+        HostOutcome {
+            failure_category,
+            result_present: result.is_some(),
+            exit_code,
+            signal,
+            stdout_bytes: &stdout_bytes,
+            stderr_bytes: &stderr_bytes,
+        },
+    )
+}
+
+/// The exit evidence from a finished host-runner task, used to build its
+/// `TaskCompletion`.
+struct HostOutcome<'a> {
+    failure_category: Option<String>,
+    result_present: bool,
+    exit_code: Option<i32>,
+    signal: Option<String>,
+    stdout_bytes: &'a [u8],
+    stderr_bytes: &'a [u8],
+}
+
+/// Builds the `TaskCompletion` for a finished host-runner task: success when there
+/// is a result and no failure category, otherwise a failure carrying the category,
+/// error type, and a diagnostic snapshot.
+fn host_completion(
+    agent_id: String,
+    command: &ProviderCommand,
+    outcome: HostOutcome,
+) -> TaskCompletion {
+    let HostOutcome {
+        failure_category,
+        result_present,
+        exit_code,
+        signal,
+        stdout_bytes,
+        stderr_bytes,
+    } = outcome;
+    if failure_category.is_none() && result_present {
+        return TaskCompletion {
             agent_id,
             status: TaskStatus::Succeeded,
             exit_code,
@@ -1196,30 +1251,29 @@ async fn complete_host_response(
             error: None,
             error_type: None,
             diagnostic: None,
-        }
-    } else {
-        let category = failure_category.unwrap_or_else(|| "provider_exit_error".to_string());
-        TaskCompletion {
-            agent_id,
-            status: TaskStatus::Failed,
+        };
+    }
+    let category = failure_category.unwrap_or_else(|| "provider_exit_error".to_string());
+    TaskCompletion {
+        agent_id,
+        status: TaskStatus::Failed,
+        exit_code,
+        signal: signal.clone(),
+        error: Some(category.clone()),
+        error_type: Some(if category == "provider_timeout" {
+            ErrorType::Timeout
+        } else {
+            ErrorType::ProviderExitError
+        }),
+        diagnostic: Some(agent_diagnostic(
+            command,
+            &category,
+            command.timeout_seconds * 1000,
             exit_code,
-            signal: signal.clone(),
-            error: Some(category.clone()),
-            error_type: Some(if category == "provider_timeout" {
-                ErrorType::Timeout
-            } else {
-                ErrorType::ProviderExitError
-            }),
-            diagnostic: Some(agent_diagnostic(
-                &command,
-                &category,
-                command.timeout_seconds * 1000,
-                exit_code,
-                signal,
-                &stdout_bytes,
-                &stderr_bytes,
-            )),
-        }
+            signal,
+            stdout_bytes,
+            stderr_bytes,
+        )),
     }
 }
 
