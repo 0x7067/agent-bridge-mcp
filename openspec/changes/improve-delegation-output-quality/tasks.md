@@ -10,14 +10,14 @@
 
 ## 2. Modularize task.rs
 
-- [ ] 2.1 Create `task/spawn.rs` and move `validate_spawn_arguments`, `create_worktree`, `launch_task`, `apply_launch_outcome`, and `run_host_task` into it
-- [ ] 2.2 Create `task/supervise.rs` and move `wait_for_child`, `ChildIoDrains`, `configure_child_process_group`, and the `tokio::select!` timeout loop into it
-- [ ] 2.3 Create `task/complete.rs` and move `classify_completion`, `classify_success_exit`, `classify_failure_exit`, `codex_denial_completion`, `host_completion`, and `agent_diagnostic` into it
-- [ ] 2.4 Create `task/registry.rs` and move `Registry`, `load_registry`, `save_registry`, `parse_registry_text`, `normalize_legacy_registry_fields`, and `cleanup_registry_temps` into it
-- [ ] 2.5 Create `task/review.rs` and move `public_task`, `review_packet`, `agent_progress`, `next_actions`, `transcript_evidence`, `insert_evidence_fields`, and `insert_detail_fields` into it
-- [ ] 2.6 Reduce `task.rs` to a thin `TaskActor` dispatcher that imports from the five submodules
-- [ ] 2.7 Run `cargo test` after each extraction to isolate breakage; ensure `server_protocol.rs` tests still pass
-- [ ] 2.8 Run `scripts/quality.sh` and verify no new warnings or machete hits
+- [x] 2.1 Create `task/spawn.rs` and move `validate_spawn_arguments`, `create_worktree`, `launch_task`, `apply_launch_outcome`, and `run_host_task` into it
+- [x] 2.2 Create `task/supervise.rs` and move `wait_for_child`, `ChildIoDrains`, `configure_child_process_group`, and the `tokio::select!` timeout loop into it
+- [x] 2.3 Create `task/complete.rs` and move `classify_completion`, `classify_success_exit`, `classify_failure_exit`, `codex_denial_completion`, `host_completion`, and `agent_diagnostic` into it
+- [x] 2.4 Create `task/registry.rs` and move `Registry`, `load_registry`, `save_registry`, `parse_registry_text`, `normalize_legacy_registry_fields`, and `cleanup_registry_temps` into it
+- [x] 2.5 Create `task/review.rs` and move `public_task`, `review_packet`, `agent_progress`, `next_actions`, `transcript_evidence`, `insert_evidence_fields`, and `insert_detail_fields` into it
+- [x] 2.6 Reduce `task.rs` to a thin `TaskActor` dispatcher that imports from the five submodules
+- [x] 2.7 Run `cargo test` after each extraction to isolate breakage; ensure `server_protocol.rs` tests still pass
+- [x] 2.8 Run `scripts/quality.sh` and verify no new warnings or machete hits
 
 ## 3. Universal Output Validation
 

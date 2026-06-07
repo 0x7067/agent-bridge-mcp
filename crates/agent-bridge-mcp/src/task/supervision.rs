@@ -179,3 +179,216 @@ mod tests {
         assert!(registry.is_empty());
     }
 }
+
+use super::complete::{append_transcript_event, diagnostic_redactions};
+use super::review::parse_transcript_line;
+use super::*;
+
+pub(super) struct ChildIoDrains {
+    pub stdout: Option<tokio::task::JoinHandle<()>>,
+    pub stderr: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// Appends one transcript event per non-blank line of a host-runner stream
+/// (stdout/stderr), classifying each line via `parse_transcript_line`.
+pub(super) async fn append_stream_transcript(
+    transcript_path: &Path,
+    provider: ProviderKind,
+    stream: &'static str,
+    text: &str,
+    redactions: &[String],
+) {
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let (kind, parsed) = parse_transcript_line(line);
+        append_transcript_event(
+            transcript_path,
+            provider,
+            stream,
+            kind,
+            line,
+            parsed,
+            redactions,
+        )
+        .await;
+    }
+}
+
+pub(super) async fn wait_for_child(
+    agent_id: String,
+    pid: u32,
+    timeout_seconds: i64,
+    mut child: tokio::process::Child,
+    command: ProviderCommand,
+    agent_dir: PathBuf,
+    drains: ChildIoDrains,
+) -> TaskCompletion {
+    let wait = child.wait();
+    tokio::pin!(wait);
+    let agent_timeout = sleep(Duration::from_secs(timeout_seconds as u64));
+    tokio::pin!(agent_timeout);
+    let mut timed_out = false;
+    let mut fatal_denial = false;
+    let stderr_path = agent_dir.join("stderr.log");
+    let output: Result<std::process::ExitStatus, String> = loop {
+        tokio::select! {
+            wait_result = &mut wait => {
+                break wait_result.map_err(|error| error.to_string());
+            }
+            _ = &mut agent_timeout => {
+                timed_out = true;
+                terminate_child_tree(pid, libc::SIGTERM);
+                break match timeout(CHILD_SHUTDOWN_GRACE, &mut wait).await {
+                    Ok(result) => result.map_err(|error| error.to_string()),
+                    Err(_) => {
+                        terminate_child_tree(pid, libc::SIGKILL);
+                        match timeout(SIGKILL_REAP_GRACE, &mut wait).await {
+                            Ok(result) => result.map_err(|error| error.to_string()),
+                            Err(_) => Err(format!(
+                                "child process group {pid} did not exit within {}s after SIGKILL; reporting best-effort status",
+                                SIGKILL_REAP_GRACE.as_secs()
+                            )),
+                        }
+                    }
+                };
+            }
+            _ = sleep(Duration::from_millis(50)), if provider::adapter_for(command.provider).polls_stderr_for_denial() => {
+                let stderr = fs::read(&stderr_path).await.unwrap_or_default();
+                if provider::adapter_for(command.provider).detects_fatal_denial(&stderr) {
+                    fatal_denial = true;
+                    terminate_child_tree(pid, libc::SIGTERM);
+                    break match timeout(CHILD_SHUTDOWN_GRACE, &mut wait).await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            terminate_child_tree(pid, libc::SIGKILL);
+                            (&mut wait).await
+                        }
+                    }
+                    .map_err(|error| error.to_string());
+                }
+            }
+        }
+    };
+    if let Some(handle) = drains.stdout {
+        let _ = timeout(CHILD_SHUTDOWN_GRACE, handle).await;
+    }
+    if let Some(handle) = drains.stderr {
+        let _ = timeout(CHILD_SHUTDOWN_GRACE, handle).await;
+    }
+    let (exit_code, signal, wait_error) = match &output {
+        Ok(status) => (status.code(), signal_name(status), None),
+        Err(error) => (None, None, Some(error.clone())),
+    };
+    if timed_out {
+        append_transcript_event(
+            &agent_dir.join("transcript.jsonl"),
+            command.provider,
+            "lifecycle",
+            "lifecycle",
+            "",
+            json!({"phase": "timeout", "timeoutSeconds": timeout_seconds, "profile": command.profile}),
+            &diagnostic_redactions(&command),
+        )
+        .await;
+    }
+    append_transcript_event(
+        &agent_dir.join("transcript.jsonl"),
+        command.provider,
+        "lifecycle",
+        "lifecycle",
+        "",
+        json!({
+            "phase": "exited",
+            "exitCode": exit_code,
+            "signal": signal,
+            "error": wait_error,
+            "timedOut": timed_out,
+            "profile": command.profile
+        }),
+        &diagnostic_redactions(&command),
+    )
+    .await;
+    classify_completion(
+        agent_id,
+        &command,
+        &agent_dir,
+        timeout_seconds,
+        output,
+        timed_out,
+        fatal_denial,
+    )
+}
+
+pub(super) async fn drain_log(
+    mut reader: impl tokio::io::AsyncRead + Unpin,
+    path: PathBuf,
+    transcript_path: PathBuf,
+    provider: ProviderKind,
+    source: &'static str,
+    redactions: Vec<String>,
+) {
+    let mut file_bytes = 0usize;
+    let mut saw_output = false;
+    let mut buffer = [0u8; 8192];
+    while let Ok(count) = reader.read(&mut buffer).await {
+        if count == 0 {
+            break;
+        }
+        if file_bytes >= MAX_LOG_BYTES {
+            continue;
+        }
+        let remaining = MAX_LOG_BYTES - file_bytes;
+        let take = remaining.min(count);
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent).await;
+        }
+        if let Ok(mut file) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await
+        {
+            use tokio::io::AsyncWriteExt;
+            let _ = file.write_all(&buffer[..take]).await;
+        }
+        let text = String::from_utf8_lossy(&buffer[..take]).to_string();
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            if !saw_output {
+                append_transcript_event(
+                    &transcript_path,
+                    provider,
+                    "lifecycle",
+                    "lifecycle",
+                    "",
+                    json!({"phase": "first_output", "source": source}),
+                    &redactions,
+                )
+                .await;
+                saw_output = true;
+            }
+            let (kind, parsed) = parse_transcript_line(line);
+            append_transcript_event(
+                &transcript_path,
+                provider,
+                source,
+                kind,
+                line,
+                parsed,
+                &redactions,
+            )
+            .await;
+        }
+        file_bytes += take;
+    }
+    if saw_output {
+        append_transcript_event(
+            &transcript_path,
+            provider,
+            "lifecycle",
+            "lifecycle",
+            "",
+            json!({"phase": "final_output", "source": source}),
+            &redactions,
+        )
+        .await;
+    }
+}
