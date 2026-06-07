@@ -284,21 +284,7 @@ impl TaskManagerHandle {
             .request(|reply| ActorCommand::InspectResult(agent_id.clone(), reply))
             .await?;
         let mut value = public_task(&task);
-        if let Some(object) = value.as_object_mut() {
-            object.insert(
-                "exitCode".to_string(),
-                task.exit_code.map_or(Value::Null, Value::from),
-            );
-            object.insert(
-                "signal".to_string(),
-                task.signal.clone().map_or(Value::Null, Value::from),
-            );
-            object.insert(
-                "error".to_string(),
-                task.error.clone().map_or(Value::Null, Value::from),
-            );
-            object.insert("errorType".to_string(), json!(task.error_type));
-        }
+        insert_outcome_fields(&mut value, &task);
         let (stdout_truncated, stderr_truncated) = if sections.stdout || sections.stderr {
             let logs = self
                 .logs(agent_id.clone(), max_bytes, stdout_line, stderr_line)
@@ -328,35 +314,13 @@ impl TaskManagerHandle {
         } else {
             (false, false)
         };
-        if let Some(object) = value.as_object_mut() {
-            object.insert(
-                "reviewPacket".to_string(),
-                review_packet(&task, stdout_truncated, stderr_truncated),
-            );
-            if sections.changed_files {
-                object.insert(
-                    "changedFiles".to_string(),
-                    Value::Array(
-                        task.changed_files
-                            .clone()
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(Value::String)
-                            .collect(),
-                    ),
-                );
-            }
-            if sections.diff {
-                object.insert(
-                    "gitStatus".to_string(),
-                    Value::String(task.git_status.clone().unwrap_or_default()),
-                );
-                object.insert(
-                    "gitDiff".to_string(),
-                    Value::String(task.git_diff.clone().unwrap_or_default()),
-                );
-            }
-        }
+        insert_evidence_fields(
+            &mut value,
+            &task,
+            &sections,
+            stdout_truncated,
+            stderr_truncated,
+        );
         if sections.transcript {
             let transcript = read_transcript(
                 &task,
@@ -369,25 +333,7 @@ impl TaskManagerHandle {
             }
         }
         if detailed {
-            if let Some(object) = value.as_object_mut() {
-                object.insert(
-                    "diagnostic".to_string(),
-                    task.diagnostic.clone().unwrap_or(Value::Null),
-                );
-                object.insert(
-                    "transcriptAvailable".to_string(),
-                    Value::Bool(task.transcript_available),
-                );
-                object.insert(
-                    "finalResultDetected".to_string(),
-                    Value::Bool(task.final_result_detected),
-                );
-                object.insert(
-                    "partialResultDetected".to_string(),
-                    Value::Bool(task.partial_result_detected),
-                );
-            }
-            add_detail(&mut value, &task);
+            insert_detail_fields(&mut value, &task);
         }
         Ok(value)
     }
@@ -2192,6 +2138,92 @@ fn task_phase(status: TaskStatus) -> TaskPhase {
 }
 
 /// Opt-in (`verbosity: "detailed"`) debug metadata added to lean responses.
+/// Writes the process-outcome fields (exit code, signal, error, error type)
+/// onto a task result object. No-op if `value` is not a JSON object.
+fn insert_outcome_fields(value: &mut Value, task: &TaskRecord) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    object.insert(
+        "exitCode".to_string(),
+        task.exit_code.map_or(Value::Null, Value::from),
+    );
+    object.insert(
+        "signal".to_string(),
+        task.signal.clone().map_or(Value::Null, Value::from),
+    );
+    object.insert(
+        "error".to_string(),
+        task.error.clone().map_or(Value::Null, Value::from),
+    );
+    object.insert("errorType".to_string(), json!(task.error_type));
+}
+
+/// Writes the review packet and, when the matching sections are requested, the
+/// changed-files list and git status/diff. No-op if `value` is not an object.
+fn insert_evidence_fields(
+    value: &mut Value,
+    task: &TaskRecord,
+    sections: &ResultSections,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    object.insert(
+        "reviewPacket".to_string(),
+        review_packet(task, stdout_truncated, stderr_truncated),
+    );
+    if sections.changed_files {
+        object.insert(
+            "changedFiles".to_string(),
+            Value::Array(
+                task.changed_files
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(Value::String)
+                    .collect(),
+            ),
+        );
+    }
+    if sections.diff {
+        object.insert(
+            "gitStatus".to_string(),
+            Value::String(task.git_status.clone().unwrap_or_default()),
+        );
+        object.insert(
+            "gitDiff".to_string(),
+            Value::String(task.git_diff.clone().unwrap_or_default()),
+        );
+    }
+}
+
+/// Writes the verbose diagnostic fields and delegates to `add_detail`. No-op if
+/// `value` is not a JSON object.
+fn insert_detail_fields(value: &mut Value, task: &TaskRecord) {
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "diagnostic".to_string(),
+            task.diagnostic.clone().unwrap_or(Value::Null),
+        );
+        object.insert(
+            "transcriptAvailable".to_string(),
+            Value::Bool(task.transcript_available),
+        );
+        object.insert(
+            "finalResultDetected".to_string(),
+            Value::Bool(task.final_result_detected),
+        );
+        object.insert(
+            "partialResultDetected".to_string(),
+            Value::Bool(task.partial_result_detected),
+        );
+    }
+    add_detail(value, task);
+}
+
 fn add_detail(value: &mut Value, task: &TaskRecord) {
     let Some(object) = value.as_object_mut() else {
         return;
@@ -2782,6 +2814,80 @@ mod tests {
             .iter()
             .find(|item| item["id"] == id)
             .unwrap_or_else(|| panic!("missing next action: {id}"))
+    }
+
+    #[test]
+    fn insert_outcome_fields_writes_exit_signal_error_and_type() {
+        let mut task = sample_task(TaskStatus::Failed);
+        task.exit_code = Some(2);
+        task.signal = Some("SIGKILL".to_string());
+        task.error = Some("boom".to_string());
+        task.error_type = Some(ErrorType::Stale);
+
+        let mut value = json!({});
+        insert_outcome_fields(&mut value, &task);
+
+        assert_eq!(value["exitCode"], json!(2));
+        assert_eq!(value["signal"], json!("SIGKILL"));
+        assert_eq!(value["error"], json!("boom"));
+        assert_eq!(value["errorType"], json!(task.error_type));
+    }
+
+    #[test]
+    fn insert_outcome_fields_writes_nulls_when_absent() {
+        let task = sample_task(TaskStatus::Running);
+        let mut value = json!({});
+        insert_outcome_fields(&mut value, &task);
+
+        assert_eq!(value["exitCode"], Value::Null);
+        assert_eq!(value["signal"], Value::Null);
+        assert_eq!(value["error"], Value::Null);
+    }
+
+    #[test]
+    fn insert_evidence_fields_respects_section_flags() {
+        let mut task = sample_task(TaskStatus::Succeeded);
+        task.changed_files = Some(vec!["README.md".to_string()]);
+        task.git_status = Some(" M README.md".to_string());
+        task.git_diff = Some("diff --git".to_string());
+
+        // changed_files + diff requested, reviewPacket always present.
+        let mut value = json!({});
+        let sections = ResultSections {
+            changed_files: true,
+            stdout: false,
+            stderr: false,
+            diff: true,
+            transcript: false,
+        };
+        insert_evidence_fields(&mut value, &task, &sections, false, false);
+        assert!(value["reviewPacket"].is_object());
+        assert_eq!(value["changedFiles"], json!(["README.md"]));
+        assert_eq!(value["gitStatus"], json!(" M README.md"));
+        assert_eq!(value["gitDiff"], json!("diff --git"));
+
+        // neither changed_files nor diff requested -> only reviewPacket.
+        let mut bare = json!({});
+        insert_evidence_fields(&mut bare, &task, &ResultSections::default_sections(), false, false);
+        assert!(bare["reviewPacket"].is_object());
+        // default_sections has changed_files=true, so assert diff is omitted instead.
+        assert!(bare.get("gitDiff").is_none());
+    }
+
+    #[test]
+    fn insert_detail_fields_writes_detail_flags() {
+        let mut task = sample_task(TaskStatus::Succeeded);
+        task.transcript_available = true;
+        task.final_result_detected = true;
+        task.partial_result_detected = false;
+
+        let mut value = json!({});
+        insert_detail_fields(&mut value, &task);
+
+        assert_eq!(value["transcriptAvailable"], json!(true));
+        assert_eq!(value["finalResultDetected"], json!(true));
+        assert_eq!(value["partialResultDetected"], json!(false));
+        assert!(value.as_object().unwrap().contains_key("diagnostic"));
     }
 
     #[test]
