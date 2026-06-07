@@ -310,8 +310,38 @@ async fn handle_connection(
             return Ok(());
         }
     };
-    let response = handle_request(request, &roots, &workspace_policy_id, active_pids, None).await;
-    write_response(&mut stream, &response).await
+    // Watch the client connection for a mid-run disconnect. Splitting the stream
+    // lets a background task observe EOF/read errors on the read half while the
+    // request runs; on disconnect it fires the oneshot, which `run_interactive`
+    // honours by terminating and reaping the Claude child promptly instead of
+    // leaving it alive until the timeout. Without this wiring the (tested)
+    // client-disconnect path was dead code.
+    let (mut read_half, mut write_half) = stream.into_split();
+    let (disconnect_tx, disconnect_rx) = oneshot::channel();
+    let watcher = tokio::spawn(async move {
+        let mut scratch = [0_u8; 64];
+        loop {
+            match read_half.read(&mut scratch).await {
+                Ok(0) | Err(_) => {
+                    let _ = disconnect_tx.send(());
+                    return;
+                }
+                // The protocol is one request per connection; ignore any trailing
+                // bytes and keep watching for the close.
+                Ok(_) => {}
+            }
+        }
+    });
+    let response = handle_request(
+        request,
+        &roots,
+        &workspace_policy_id,
+        active_pids,
+        Some(disconnect_rx),
+    )
+    .await;
+    watcher.abort();
+    write_response(&mut write_half, &response).await
 }
 
 async fn handle_request(

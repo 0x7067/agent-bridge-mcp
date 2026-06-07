@@ -171,10 +171,32 @@ pub async fn run_interactive(
                         }
                     }
                     Some(event) if event.event_name == "Stop" => {
-                        stop = Some(event.payload);
-                        exit_status =
-                            Some(session.terminate_with_grace(Duration::from_secs(3)).await?);
-                        break None;
+                        // Claude fires a Stop hook at the end of *every* turn,
+                        // including initial/idle turns that precede the answer to
+                        // our injected prompt. Accept a Stop only once the
+                        // transcript actually carries an assistant response;
+                        // otherwise treat it as premature and keep the session
+                        // alive for the real completion (Claude fires Stop again).
+                        // Terminating on the first Stop tore Claude down
+                        // mid-response and lost the answer.
+                        let resolvable = match completion_payload(
+                            Some(&event.payload),
+                            session_start.as_ref(),
+                        ) {
+                            Some(payload) => {
+                                resolve_stop_result(payload, TRANSCRIPT_RETRY_BUDGET)
+                                    .await
+                                    .is_ok()
+                            }
+                            None => false,
+                        };
+                        if resolvable {
+                            stop = Some(event.payload);
+                            exit_status = Some(
+                                session.terminate_with_grace(Duration::from_secs(3)).await?,
+                            );
+                            break None;
+                        }
                     }
                     Some(event) if event.event_name == "StopFailure" => {
                         stop_failure = Some(event.payload);
@@ -677,6 +699,40 @@ mod tests {
         assert_eq!(result.failure_category, None);
         assert_eq!(result.final_text.as_deref(), Some("fixture final response"));
         assert_eq!(result.transcript["parseStatus"], "ok");
+    }
+
+    #[tokio::test]
+    async fn owned_runner_ignores_premature_stop_and_resolves_real_completion() {
+        // Regression: Claude fires a Stop hook at the end of every turn. A Stop
+        // that arrives before the injected prompt's answer exists must not tear
+        // the session down — the runner has to wait for the Stop whose transcript
+        // actually carries the assistant turn. Before the fix, the first
+        // (premature) bare Stop terminated Claude mid-response and produced an
+        // empty result.
+        let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("interactive_claude");
+        let result = run_interactive(ClaudeInteractiveRunRequest {
+            claude_bin: fixture_dir.join("fake_interactive_claude.sh"),
+            cwd: fixture_dir,
+            timeout_seconds: 15,
+            mode: TaskMode::Command,
+            prompt: "runner prompt".to_string(),
+            model: None,
+            effort: None,
+            extra_env: BTreeMap::from([(
+                "FAKE_CLAUDE_SCENARIO".to_string(),
+                "premature-stop".to_string(),
+            )]),
+            disconnect: None,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(result.failure_category, None);
+        assert_eq!(result.final_text.as_deref(), Some("fixture final response"));
+        assert_eq!(result.final_text_source.as_deref(), Some("transcript"));
     }
 
     #[tokio::test]

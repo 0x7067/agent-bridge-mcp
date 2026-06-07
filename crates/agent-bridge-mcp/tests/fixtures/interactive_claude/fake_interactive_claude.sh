@@ -30,6 +30,13 @@ emit_stop() {
   emit_hook "Stop" "{\"session_id\":\"fake-session\",\"transcript_path\":\"$transcript_path\",\"cwd\":\"$PWD\",\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"last_assistant_message\":\"fixture final response\",\"background_tasks\":[],\"session_crons\":[]}"
 }
 
+# Mirror the real hook relay helper, which emits a bare Stop payload (no
+# transcript_path / last_assistant_message) so completion must resolve via the
+# SessionStart transcript_path.
+emit_bare_stop() {
+  emit_hook "Stop" "{\"hook_event_name\":\"Stop\"}"
+}
+
 capture_prompt() {
   mkdir -p "$(dirname -- "$prompt_log")"
   prompt=""
@@ -62,6 +69,23 @@ case "$scenario" in
     emit_session_start "$transcript_path"
     capture_prompt
     emit_stop "$transcript_path"
+    sleep 30
+    ;;
+  premature-stop)
+    # Claude fires a Stop hook at the end of every turn. The first Stop here
+    # lands before any assistant turn exists in the transcript (premature); the
+    # runner must ignore it and keep the session alive. After the assistant turn
+    # is written, a second Stop must be accepted and resolved.
+    transcript_path="$tmp_root/premature.jsonl"
+    cp "$fixture_dir/transcripts/no_assistant.jsonl" "$transcript_path"
+    emit_session_start "$transcript_path"
+    capture_prompt
+    emit_bare_stop
+    # Outlast TRANSCRIPT_RETRY_BUDGET (2s) so the premature resolve attempt fails
+    # before the real answer is written.
+    sleep 3
+    cp "$fixture_dir/transcripts/success.jsonl" "$transcript_path"
+    emit_bare_stop
     sleep 30
     ;;
   malformed-transcript)

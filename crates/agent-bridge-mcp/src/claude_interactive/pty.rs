@@ -5,6 +5,13 @@ use std::process::ExitStatus;
 use std::time::Duration;
 use tokio::time::timeout;
 
+/// Hard upper bound on how long to wait for a child to be reaped after SIGKILL.
+/// A process whose exit status the OS/runtime cannot surface within this window
+/// (e.g. the status was already consumed elsewhere) is reported with a
+/// best-effort SIGKILL status rather than waited on indefinitely — mirroring the
+/// generic provider teardown in `task.rs` (`SIGKILL_REAP_GRACE`).
+const SIGKILL_REAP_GRACE: Duration = Duration::from_secs(1);
+
 pub struct PtySpawn {
     pub program: PathBuf,
     pub args: Vec<String>,
@@ -39,10 +46,27 @@ impl PtySession {
                 if let Some(pid) = self.pid {
                     terminate_process_tree(pid, libc::SIGKILL);
                 }
-                self.child.wait().await
+                // Bound the post-SIGKILL reap. If the runtime cannot surface the
+                // child's exit status within the grace window (observed when the
+                // status was consumed by another reaper, leaving `wait()` to block
+                // forever), report a best-effort SIGKILL status so the run can
+                // still finalize instead of hanging teardown indefinitely.
+                match timeout(SIGKILL_REAP_GRACE, self.child.wait()).await {
+                    Ok(status) => status,
+                    Err(_) => Ok(sigkill_exit_status()),
+                }
             }
         }
     }
+}
+
+/// Best-effort `ExitStatus` representing a child terminated by SIGKILL, used when
+/// the real status cannot be reaped within [`SIGKILL_REAP_GRACE`].
+#[cfg(unix)]
+fn sigkill_exit_status() -> ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    // Raw wait-status whose low 7 bits encode the terminating signal.
+    ExitStatus::from_raw(libc::SIGKILL)
 }
 
 pub fn spawn(spec: PtySpawn) -> io::Result<PtySession> {
