@@ -106,76 +106,8 @@ async fn call_tool(params: Value) -> Value {
             Ok(manager) => tool_result(agent_list(manager, params.arguments).await),
             Err(error) => tool_error(error),
         },
-        ToolName::AgentObserve => {
-            // observe subsumes the former agent_status (limit:0) and agent_wait
-            // (until:"final") and agent_transcript (events) tools.
-            let detailed = is_detailed(&params.arguments);
-            let until = params
-                .arguments
-                .get("until")
-                .and_then(Value::as_str)
-                .unwrap_or("now");
-            let cursor = params.arguments.get("cursor").and_then(Value::as_u64);
-            let limit = params.arguments.get("limit").and_then(Value::as_u64);
-            let timeout_ms = params.arguments.get("timeoutMs").and_then(Value::as_i64);
-            match (
-                require_agent_id(&params.arguments),
-                TaskManagerHandle::from_env().await,
-            ) {
-                (Ok(agent_id), Ok(manager)) => {
-                    if until == "final" {
-                        tool_result(manager.wait(agent_id, timeout_ms, detailed).await)
-                    } else if limit == Some(0) {
-                        tool_result(manager.status(agent_id, detailed).await)
-                    } else {
-                        tool_result(
-                            manager
-                                .observe(agent_id, cursor, limit, timeout_ms, detailed)
-                                .await,
-                        )
-                    }
-                }
-                (Err(error), _) | (_, Err(error)) => tool_error(error),
-            }
-        }
-        ToolName::AgentResult => {
-            // result subsumes the former agent_logs tool via sections.
-            let detailed = is_detailed(&params.arguments);
-            let sections = result_sections(&params.arguments);
-            let max_bytes = params.arguments.get("maxBytes").and_then(Value::as_i64);
-            let stdout_line = params
-                .arguments
-                .get("stdoutLine")
-                .and_then(Value::as_u64)
-                .map(|value| value as usize);
-            let stderr_line = params
-                .arguments
-                .get("stderrLine")
-                .and_then(Value::as_u64)
-                .map(|value| value as usize);
-            let cursor = params.arguments.get("cursor").and_then(Value::as_u64);
-            let limit = params.arguments.get("limit").and_then(Value::as_u64);
-            match (
-                require_agent_id(&params.arguments),
-                TaskManagerHandle::from_env().await,
-            ) {
-                (Ok(agent_id), Ok(manager)) => tool_result(
-                    manager
-                        .result(
-                            agent_id,
-                            sections,
-                            max_bytes,
-                            stdout_line,
-                            stderr_line,
-                            cursor,
-                            limit,
-                            detailed,
-                        )
-                        .await,
-                ),
-                (Err(error), _) | (_, Err(error)) => tool_error(error),
-            }
-        }
+        ToolName::AgentObserve => handle_agent_observe(params.arguments).await,
+        ToolName::AgentResult => handle_agent_result(params.arguments).await,
         ToolName::AgentStop => match (
             require_agent_id(&params.arguments),
             TaskManagerHandle::from_env().await,
@@ -190,6 +122,69 @@ async fn call_tool(params: Value) -> Value {
             (Ok(agent_id), Ok(manager)) => tool_result(manager.remove(agent_id).await),
             (Err(error), _) | (_, Err(error)) => tool_error(error),
         },
+    }
+}
+
+/// Handles `agent_observe`, which subsumes the former agent_status (limit:0),
+/// agent_wait (until:"final"), and agent_transcript (events) tools.
+async fn handle_agent_observe(arguments: Value) -> Value {
+    let detailed = is_detailed(&arguments);
+    let until = arguments
+        .get("until")
+        .and_then(Value::as_str)
+        .unwrap_or("now");
+    let cursor = arguments.get("cursor").and_then(Value::as_u64);
+    let limit = arguments.get("limit").and_then(Value::as_u64);
+    let timeout_ms = arguments.get("timeoutMs").and_then(Value::as_i64);
+    match (
+        require_agent_id(&arguments),
+        TaskManagerHandle::from_env().await,
+    ) {
+        (Ok(agent_id), Ok(manager)) => {
+            if until == "final" {
+                tool_result(manager.wait(agent_id, timeout_ms, detailed).await)
+            } else if limit == Some(0) {
+                tool_result(manager.status(agent_id, detailed).await)
+            } else {
+                tool_result(
+                    manager
+                        .observe(agent_id, cursor, limit, timeout_ms, detailed)
+                        .await,
+                )
+            }
+        }
+        (Err(error), _) | (_, Err(error)) => tool_error(error),
+    }
+}
+
+/// Handles `agent_result`, which subsumes the former agent_logs tool via sections.
+async fn handle_agent_result(arguments: Value) -> Value {
+    let detailed = is_detailed(&arguments);
+    let sections = result_sections(&arguments);
+    let max_bytes = arguments.get("maxBytes").and_then(Value::as_i64);
+    let stdout_line = arguments
+        .get("stdoutLine")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
+    let stderr_line = arguments
+        .get("stderrLine")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
+    let cursor = arguments.get("cursor").and_then(Value::as_u64);
+    let limit = arguments.get("limit").and_then(Value::as_u64);
+    match (
+        require_agent_id(&arguments),
+        TaskManagerHandle::from_env().await,
+    ) {
+        (Ok(agent_id), Ok(manager)) => tool_result(
+            manager
+                .result(
+                    agent_id, sections, max_bytes, stdout_line, stderr_line, cursor, limit,
+                    detailed,
+                )
+                .await,
+        ),
+        (Err(error), _) | (_, Err(error)) => tool_error(error),
     }
 }
 
