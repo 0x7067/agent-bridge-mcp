@@ -318,92 +318,64 @@ struct ProbeResult {
     duration_ms: u64,
 }
 
-async fn run_probe(
-    command: &provider::ProviderCommand,
-    provider: ProviderKind,
-    timeout_ms: u64,
-    phase: &'static str,
+/// Builds an empty (no stdout/stderr, no exit status) `ProbeResult` carrying a
+/// failure category and optional error message — the shape every probe early
+/// return shares.
+fn probe_failure(
+    failure_category: &'static str,
+    error: Option<String>,
+    duration_ms: u64,
 ) -> ProbeResult {
-    if provider == ProviderKind::Claude
-        && let (Some(socket_path), Some(claude_command)) = (
-            crate::claude_host::socket_path_from_env(),
-            command.claude_host.as_ref(),
-        )
-    {
-        let started = Instant::now();
-        return match crate::claude_host::run_claude(&socket_path, claude_command).await {
-            Ok(response) => host_probe_result(response, started.elapsed().as_millis() as u64),
-            Err(error) => ProbeResult {
-                status: None,
-                stdout: Vec::new(),
-                stderr: Vec::new(),
-                failure_category: Some("host_runner_unavailable"),
-                error: Some(error),
-                duration_ms: started.elapsed().as_millis() as u64,
-            },
-        };
-    }
-    let started = Instant::now();
-    let mut process = tokio::process::Command::new(&command.command);
-    process
-        .args(&command.args)
-        .current_dir(&command.cwd)
-        .env_clear()
-        .envs(provider::provider_env(provider))
-        .stdin(if command.stdin.is_some() {
-            std::process::Stdio::piped()
-        } else {
-            std::process::Stdio::null()
-        })
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    configure_child_process_group(&mut process);
-    let child = process.spawn().map_err(|error| ProbeResult {
+    ProbeResult {
         status: None,
         stdout: Vec::new(),
         stderr: Vec::new(),
-        failure_category: Some("provider_start_error"),
-        error: Some(error.to_string()),
-        duration_ms: started.elapsed().as_millis() as u64,
-    });
-    let mut child = match child {
-        Ok(child) => child,
-        Err(result) => return result,
-    };
-    let pid = child.id();
-    let stdin_write = if let (Some(stdin), Some(mut child_stdin)) =
-        (command.stdin.as_deref(), child.stdin.take())
-    {
-        child_stdin.write_all(stdin.as_bytes()).await
-    } else {
-        Ok(())
-    };
-    if let Err(error) = stdin_write {
-        return ProbeResult {
-            status: None,
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-            failure_category: Some("provider_start_error"),
-            error: Some(error.to_string()),
-            duration_ms: started.elapsed().as_millis() as u64,
-        };
+        failure_category: Some(failure_category),
+        error,
+        duration_ms,
     }
-    let stdout_task = child.stdout.take().map(|mut stdout| {
-        tokio::spawn(async move {
-            let mut bytes = Vec::new();
-            let _ = stdout.read_to_end(&mut bytes).await;
-            bytes
-        })
-    });
-    let stderr_task = child.stderr.take().map(|mut stderr| {
-        tokio::spawn(async move {
-            let mut bytes = Vec::new();
-            let _ = stderr.read_to_end(&mut bytes).await;
-            bytes
-        })
-    });
-    let wait = timeout(Duration::from_millis(timeout_ms), child.wait()).await;
-    let (status, failure_category, error) = match wait {
+}
+
+/// Runs a Claude probe through the owned host runner when a socket and host
+/// command are available. Returns `None` to fall back to direct child spawn.
+async fn probe_via_host(
+    command: &provider::ProviderCommand,
+    provider: ProviderKind,
+) -> Option<ProbeResult> {
+    if provider != ProviderKind::Claude {
+        return None;
+    }
+    let (Some(socket_path), Some(claude_command)) = (
+        crate::claude_host::socket_path_from_env(),
+        command.claude_host.as_ref(),
+    ) else {
+        return None;
+    };
+    let started = Instant::now();
+    Some(
+        match crate::claude_host::run_claude(&socket_path, claude_command).await {
+            Ok(response) => host_probe_result(response, started.elapsed().as_millis() as u64),
+            Err(error) => probe_failure(
+                "host_runner_unavailable",
+                Some(error),
+                started.elapsed().as_millis() as u64,
+            ),
+        },
+    )
+}
+
+/// Awaits the probe child within `timeout_ms`, escalating SIGTERM then SIGKILL on
+/// timeout. Returns the exit status (if reaped), a failure category, and an error
+/// message.
+async fn await_probe_exit(
+    child: &mut tokio::process::Child,
+    pid: Option<u32>,
+    timeout_ms: u64,
+    provider: ProviderKind,
+    phase: &'static str,
+    started: Instant,
+) -> (Option<std::process::ExitStatus>, Option<&'static str>, Option<String>) {
+    match timeout(Duration::from_millis(timeout_ms), child.wait()).await {
         Ok(Ok(status)) => {
             let failure_category = if status.success() {
                 None
@@ -435,7 +407,74 @@ async fn run_probe(
                 Some(format!("command timed out after {timeout_ms}ms")),
             )
         }
+    }
+}
+
+async fn run_probe(
+    command: &provider::ProviderCommand,
+    provider: ProviderKind,
+    timeout_ms: u64,
+    phase: &'static str,
+) -> ProbeResult {
+    if let Some(result) = probe_via_host(command, provider).await {
+        return result;
+    }
+    let started = Instant::now();
+    let mut process = tokio::process::Command::new(&command.command);
+    process
+        .args(&command.args)
+        .current_dir(&command.cwd)
+        .env_clear()
+        .envs(provider::provider_env(provider))
+        .stdin(if command.stdin.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    configure_child_process_group(&mut process);
+    let mut child = match process.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return probe_failure(
+                "provider_start_error",
+                Some(error.to_string()),
+                started.elapsed().as_millis() as u64,
+            );
+        }
     };
+    let pid = child.id();
+    let stdin_write = if let (Some(stdin), Some(mut child_stdin)) =
+        (command.stdin.as_deref(), child.stdin.take())
+    {
+        child_stdin.write_all(stdin.as_bytes()).await
+    } else {
+        Ok(())
+    };
+    if let Err(error) = stdin_write {
+        return probe_failure(
+            "provider_start_error",
+            Some(error.to_string()),
+            started.elapsed().as_millis() as u64,
+        );
+    }
+    let stdout_task = child.stdout.take().map(|mut stdout| {
+        tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            let _ = stdout.read_to_end(&mut bytes).await;
+            bytes
+        })
+    });
+    let stderr_task = child.stderr.take().map(|mut stderr| {
+        tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            let _ = stderr.read_to_end(&mut bytes).await;
+            bytes
+        })
+    });
+    let (status, failure_category, error) =
+        await_probe_exit(&mut child, pid, timeout_ms, provider, phase, started).await;
     let stdout = match stdout_task {
         Some(task) => task.await.unwrap_or_default(),
         None => Vec::new(),
@@ -882,6 +921,17 @@ fn require_agent_id(arguments: &Value) -> Result<String, String> {
 mod tests {
     use super::diagnostics::*;
     use super::*;
+
+    #[test]
+    fn probe_failure_builds_empty_result_with_category_and_error() {
+        let result = probe_failure("provider_timeout", Some("timed out".to_string()), 99);
+        assert!(result.status.is_none());
+        assert!(result.stdout.is_empty());
+        assert!(result.stderr.is_empty());
+        assert_eq!(result.failure_category, Some("provider_timeout"));
+        assert_eq!(result.error.as_deref(), Some("timed out"));
+        assert_eq!(result.duration_ms, 99);
+    }
 
     #[test]
     fn doctor_host_runner_response_reports_successful_ping_metadata() {
