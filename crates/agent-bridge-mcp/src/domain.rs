@@ -131,6 +131,103 @@ pub enum ErrorType {
     Stale,
 }
 
+/// Strongly typed failure categories used across provider probes, task
+/// lifecycle diagnostics, and the host-runner wire format. Serialized as
+/// kebab-case at the JSON boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureCategory {
+    ProviderTimeout,
+    ProviderOutputError,
+    ProviderExitError,
+    ProviderStartError,
+    ProviderSandboxDenied,
+    HostRunnerUnavailable,
+    WorktreeCleanupFailed,
+    WorktreeReclaimFailed,
+    AgentDirCleanupFailed,
+    TranscriptUnavailable,
+    ClaudeApiError,
+    ClaudeAuthError,
+    ClaudeBillingError,
+    ClaudeRateLimit,
+    ClaudeModelUnavailable,
+    ClaudeSetupRequired,
+    RunnerTimeout,
+    ClientDisconnected,
+}
+
+impl FailureCategory {
+    /// Returns the kebab-case string used at the JSON boundary.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ProviderTimeout => "provider_timeout",
+            Self::ProviderOutputError => "provider_output_error",
+            Self::ProviderExitError => "provider_exit_error",
+            Self::ProviderStartError => "provider_start_error",
+            Self::ProviderSandboxDenied => "provider_sandbox_denied",
+            Self::HostRunnerUnavailable => "host_runner_unavailable",
+            Self::WorktreeCleanupFailed => "worktree_cleanup_failed",
+            Self::WorktreeReclaimFailed => "worktree_reclaim_failed",
+            Self::AgentDirCleanupFailed => "agent_dir_cleanup_failed",
+            Self::TranscriptUnavailable => "transcript_unavailable",
+            Self::ClaudeApiError => "claude_api_error",
+            Self::ClaudeAuthError => "claude_auth_error",
+            Self::ClaudeBillingError => "claude_billing_error",
+            Self::ClaudeRateLimit => "claude_rate_limit",
+            Self::ClaudeModelUnavailable => "claude_model_unavailable",
+            Self::ClaudeSetupRequired => "claude_setup_required",
+            Self::RunnerTimeout => "runner_timeout",
+            Self::ClientDisconnected => "client_disconnected",
+        }
+    }
+}
+
+impl fmt::Display for FailureCategory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for FailureCategory {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "provider_timeout" => Ok(Self::ProviderTimeout),
+            "provider_output_error" => Ok(Self::ProviderOutputError),
+            "provider_exit_error" => Ok(Self::ProviderExitError),
+            "provider_start_error" => Ok(Self::ProviderStartError),
+            "provider_sandbox_denied" => Ok(Self::ProviderSandboxDenied),
+            "host_runner_unavailable" => Ok(Self::HostRunnerUnavailable),
+            "worktree_cleanup_failed" => Ok(Self::WorktreeCleanupFailed),
+            "worktree_reclaim_failed" => Ok(Self::WorktreeReclaimFailed),
+            "agent_dir_cleanup_failed" => Ok(Self::AgentDirCleanupFailed),
+            "transcript_unavailable" => Ok(Self::TranscriptUnavailable),
+            "claude_api_error" => Ok(Self::ClaudeApiError),
+            "claude_auth_error" => Ok(Self::ClaudeAuthError),
+            "claude_billing_error" => Ok(Self::ClaudeBillingError),
+            "claude_rate_limit" => Ok(Self::ClaudeRateLimit),
+            "claude_model_unavailable" => Ok(Self::ClaudeModelUnavailable),
+            "claude_setup_required" => Ok(Self::ClaudeSetupRequired),
+            "runner_timeout" => Ok(Self::RunnerTimeout),
+            "client_disconnected" => Ok(Self::ClientDisconnected),
+            _ => Err(format!("unknown failure category: {s}")),
+        }
+    }
+}
+
+impl Serialize for FailureCategory {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for FailureCategory {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        s.parse::<Self>().map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Isolation {
@@ -220,4 +317,60 @@ fn join_provider_names() -> String {
 
 fn join_task_modes() -> String {
     task_modes().join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_category_round_trip_serialization() {
+        let variants = [
+            FailureCategory::ProviderTimeout,
+            FailureCategory::ProviderOutputError,
+            FailureCategory::ProviderExitError,
+            FailureCategory::ProviderStartError,
+            FailureCategory::ProviderSandboxDenied,
+            FailureCategory::HostRunnerUnavailable,
+            FailureCategory::WorktreeCleanupFailed,
+            FailureCategory::WorktreeReclaimFailed,
+            FailureCategory::AgentDirCleanupFailed,
+            FailureCategory::TranscriptUnavailable,
+            FailureCategory::ClaudeApiError,
+            FailureCategory::ClaudeAuthError,
+            FailureCategory::ClaudeBillingError,
+            FailureCategory::ClaudeRateLimit,
+            FailureCategory::ClaudeModelUnavailable,
+            FailureCategory::ClaudeSetupRequired,
+            FailureCategory::RunnerTimeout,
+            FailureCategory::ClientDisconnected,
+        ];
+        for variant in variants {
+            let json = serde_json::to_string(&variant).unwrap();
+            let parsed: FailureCategory = serde_json::from_str(&json).unwrap();
+            assert_eq!(variant, parsed, "round-trip failed for {variant:?}");
+            // Verify the serialized form is a kebab-case string.
+            let value = serde_json::to_value(variant).unwrap();
+            assert!(value.is_string(), "expected string for {variant:?}");
+        }
+    }
+
+    #[test]
+    fn failure_category_from_str_round_trip() {
+        for expected in [
+            FailureCategory::ProviderTimeout,
+            FailureCategory::ClaudeApiError,
+            FailureCategory::ClientDisconnected,
+        ] {
+            let s = expected.as_str();
+            let parsed: FailureCategory = s.parse().unwrap();
+            assert_eq!(expected, parsed);
+        }
+    }
+
+    #[test]
+    fn failure_category_rejects_unknown_strings() {
+        let result = "totally_bogus_category".parse::<FailureCategory>();
+        assert!(result.is_err());
+    }
 }

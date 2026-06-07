@@ -1,4 +1,4 @@
-use crate::domain::{Isolation, ProviderKind, TimeoutSeconds, WorktreeName};
+use crate::domain::{FailureCategory, Isolation, ProviderKind, TimeoutSeconds, WorktreeName};
 use crate::guidance;
 use crate::mcp::{JsonRpcId, JsonRpcRequest, JsonRpcResponse};
 use crate::provider::{self, ProviderTask};
@@ -319,7 +319,7 @@ struct ProbeResult {
     status: Option<std::process::ExitStatus>,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
-    failure_category: Option<&'static str>,
+    failure_category: Option<crate::domain::FailureCategory>,
     error: Option<String>,
     duration_ms: u64,
 }
@@ -328,7 +328,7 @@ struct ProbeResult {
 /// failure category and optional error message — the shape every probe early
 /// return shares.
 fn probe_failure(
-    failure_category: &'static str,
+    failure_category: crate::domain::FailureCategory,
     error: Option<String>,
     duration_ms: u64,
 ) -> ProbeResult {
@@ -362,7 +362,7 @@ async fn probe_via_host(
         match crate::claude_host::run_claude(&socket_path, claude_command).await {
             Ok(response) => host_probe_result(response, started.elapsed().as_millis() as u64),
             Err(error) => probe_failure(
-                "host_runner_unavailable",
+                FailureCategory::HostRunnerUnavailable,
                 Some(error),
                 started.elapsed().as_millis() as u64,
             ),
@@ -382,7 +382,7 @@ async fn await_probe_exit(
     started: Instant,
 ) -> (
     Option<std::process::ExitStatus>,
-    Option<&'static str>,
+    Option<FailureCategory>,
     Option<String>,
 ) {
     match timeout(Duration::from_millis(timeout_ms), child.wait()).await {
@@ -390,11 +390,15 @@ async fn await_probe_exit(
             let failure_category = if status.success() {
                 None
             } else {
-                Some("provider_exit_error")
+                Some(FailureCategory::ProviderExitError)
             };
             (Some(status), failure_category, None)
         }
-        Ok(Err(error)) => (None, Some("provider_exit_error"), Some(error.to_string())),
+        Ok(Err(error)) => (
+            None,
+            Some(FailureCategory::ProviderExitError),
+            Some(error.to_string()),
+        ),
         Err(_) => {
             terminate_child_tree(pid, libc::SIGTERM);
             let status = match timeout(CHILD_SHUTDOWN_GRACE, child.wait()).await {
@@ -413,7 +417,7 @@ async fn await_probe_exit(
             );
             (
                 status,
-                Some("provider_timeout"),
+                Some(FailureCategory::ProviderTimeout),
                 Some(format!("command timed out after {timeout_ms}ms")),
             )
         }
@@ -448,7 +452,7 @@ async fn run_probe(
         Ok(child) => child,
         Err(error) => {
             return probe_failure(
-                "provider_start_error",
+                FailureCategory::ProviderStartError,
                 Some(error.to_string()),
                 started.elapsed().as_millis() as u64,
             );
@@ -464,7 +468,7 @@ async fn run_probe(
     };
     if let Err(error) = stdin_write {
         return probe_failure(
-            "provider_start_error",
+            FailureCategory::ProviderStartError,
             Some(error.to_string()),
             started.elapsed().as_millis() as u64,
         );
@@ -509,7 +513,7 @@ fn host_probe_result(response: crate::claude_host::HostResponse, duration_ms: u6
             status: None,
             stdout: Vec::new(),
             stderr: Vec::new(),
-            failure_category: Some("host_runner_unavailable"),
+            failure_category: Some(FailureCategory::HostRunnerUnavailable),
             error: response.error.map(|error| error.message),
             duration_ms,
         };
@@ -533,13 +537,8 @@ fn host_probe_result(response: crate::claude_host::HostResponse, duration_ms: u6
                 status: host_exit_status(exit_code, signal.as_deref()),
                 stdout: success_text.into_bytes(),
                 stderr: pty_output_excerpt.into_bytes(),
-                failure_category: failure_category.as_deref().map(|category| match category {
-                    "provider_timeout" => "provider_timeout",
-                    "provider_exit_error" => "provider_exit_error",
-                    "client_disconnected" => "provider_timeout",
-                    _ => "provider_output_error",
-                }),
-                error: failure_category,
+                failure_category,
+                error: failure_category.map(|c| c.to_string()),
                 duration_ms,
             }
         }
@@ -547,7 +546,7 @@ fn host_probe_result(response: crate::claude_host::HostResponse, duration_ms: u6
             status: None,
             stdout: Vec::new(),
             stderr: Vec::new(),
-            failure_category: Some("host_runner_unavailable"),
+            failure_category: Some(FailureCategory::HostRunnerUnavailable),
             error: Some("host runner returned unexpected response".to_string()),
             duration_ms,
         },
@@ -633,7 +632,7 @@ fn provider_diagnostic(
 ) -> Value {
     let redactions = diagnostic_redactions(command);
     let mut diagnostic = json!({
-        "failureCategory": output.failure_category.unwrap_or("provider_output_error"),
+        "failureCategory": output.failure_category.unwrap_or(FailureCategory::ProviderOutputError),
         "provider": provider.as_str(),
         "commandKind": command_kind(provider, command),
         "commandPath": command_path(provider, command),
@@ -934,11 +933,18 @@ mod tests {
 
     #[test]
     fn probe_failure_builds_empty_result_with_category_and_error() {
-        let result = probe_failure("provider_timeout", Some("timed out".to_string()), 99);
+        let result = probe_failure(
+            FailureCategory::ProviderTimeout,
+            Some("timed out".to_string()),
+            99,
+        );
         assert!(result.status.is_none());
         assert!(result.stdout.is_empty());
         assert!(result.stderr.is_empty());
-        assert_eq!(result.failure_category, Some("provider_timeout"));
+        assert_eq!(
+            result.failure_category,
+            Some(FailureCategory::ProviderTimeout)
+        );
         assert_eq!(result.error.as_deref(), Some("timed out"));
         assert_eq!(result.duration_ms, 99);
     }
@@ -1007,6 +1013,7 @@ mod tests {
             &json!({}),
             &json!({}),
             &json!({}),
+            &json!({"status": "ok", "orphans": []}),
         );
         assert!(
             recommendations
@@ -1223,5 +1230,168 @@ CLAUDE_CODE_OAUTH_TOKEN = "secret"
         ));
         let expected = root.join("target/release/agent-bridge-mcp");
         assert_eq!(release_binary_path(Some(root.to_str().unwrap())), expected);
+    }
+
+    #[test]
+    fn orphan_recommendations_empty_when_no_orphans() {
+        let recs = orphan_recommendations(&json!({"status": "ok", "orphans": []}));
+        assert!(recs.is_empty());
+    }
+
+    #[test]
+    fn orphan_recommendations_warns_on_stale_worktree_orphans() {
+        let recs = orphan_recommendations(&json!({
+            "status": "warning",
+            "orphans": [
+                {"agentId": "agent_stale", "status": "failed_stale", "worktreeManaged": true},
+                {"agentId": "agent_cleanup", "status": "failed", "worktreeManaged": false},
+            ]
+        }));
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0]["id"], "reclaim_orphaned_tasks");
+        assert_eq!(recs[0]["severity"], "warning");
+        assert!(recs[0]["message"].as_str().unwrap().contains("agent_stale"));
+    }
+
+    #[test]
+    fn doctor_orphans_detects_stale_worktree_records() {
+        let state_dir =
+            std::env::temp_dir().join(format!("agent-bridge-orphan-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let registry = json!({
+            "tasks": {
+                "agent_stale": {
+                    "status": "failed_stale",
+                    "worktreeManaged": true,
+                    "worktreePath": "/tmp/orphan-worktree",
+                    "provider": "codex"
+                },
+                "agent_ok": {
+                    "status": "succeeded",
+                    "worktreeManaged": false,
+                    "provider": "claude"
+                }
+            }
+        });
+        std::fs::write(
+            state_dir.join("registry.json"),
+            serde_json::to_vec_pretty(&registry).unwrap(),
+        )
+        .unwrap();
+        let key = "AGENT_BRIDGE_STATE_DIR";
+        let prev = std::env::var(key).ok();
+        // SAFETY: test runs single-threaded; no other code reads this env var concurrently.
+        unsafe {
+            std::env::set_var(key, &state_dir);
+        }
+        let result = doctor_orphans();
+        if let Some(prev_val) = prev {
+            unsafe {
+                std::env::set_var(key, prev_val);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var(key);
+            }
+        }
+        std::fs::remove_dir_all(&state_dir).unwrap();
+
+        assert_eq!(result["status"], "warning");
+        let orphans = result["orphans"].as_array().unwrap();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0]["agentId"], "agent_stale");
+        assert_eq!(orphans[0]["worktreeManaged"], true);
+    }
+
+    #[test]
+    fn doctor_orphans_detects_cleanup_failed_diagnostics() {
+        let state_dir = std::env::temp_dir().join(format!(
+            "agent-bridge-orphan-cleanup-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let registry = json!({
+            "tasks": {
+                "agent_cleanup": {
+                    "status": "failed",
+                    "worktreeManaged": false,
+                    "provider": "cursor",
+                    "diagnostic": {
+                        "failureCategory": "agent_dir_cleanup_failed",
+                        "message": "failed to remove agent directory"
+                    }
+                }
+            }
+        });
+        std::fs::write(
+            state_dir.join("registry.json"),
+            serde_json::to_vec_pretty(&registry).unwrap(),
+        )
+        .unwrap();
+        let key = "AGENT_BRIDGE_STATE_DIR";
+        let prev = std::env::var(key).ok();
+        // SAFETY: test runs single-threaded; no other code reads this env var concurrently.
+        unsafe {
+            std::env::set_var(key, &state_dir);
+        }
+        let result = doctor_orphans();
+        if let Some(prev_val) = prev {
+            unsafe {
+                std::env::set_var(key, prev_val);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var(key);
+            }
+        }
+        std::fs::remove_dir_all(&state_dir).unwrap();
+
+        assert_eq!(result["status"], "warning");
+        let orphans = result["orphans"].as_array().unwrap();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0]["agentId"], "agent_cleanup");
+    }
+
+    #[test]
+    fn doctor_orphans_ok_when_no_orphans() {
+        let state_dir = std::env::temp_dir().join(format!(
+            "agent-bridge-orphan-ok-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let registry = json!({
+            "tasks": {
+                "agent_ok": {
+                    "status": "succeeded",
+                    "worktreeManaged": false,
+                    "provider": "claude"
+                }
+            }
+        });
+        std::fs::write(
+            state_dir.join("registry.json"),
+            serde_json::to_vec_pretty(&registry).unwrap(),
+        )
+        .unwrap();
+        let key = "AGENT_BRIDGE_STATE_DIR";
+        let prev = std::env::var(key).ok();
+        // SAFETY: test runs single-threaded; no other code reads this env var concurrently.
+        unsafe {
+            std::env::set_var(key, &state_dir);
+        }
+        let result = doctor_orphans();
+        if let Some(prev_val) = prev {
+            unsafe {
+                std::env::set_var(key, prev_val);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var(key);
+            }
+        }
+        std::fs::remove_dir_all(&state_dir).unwrap();
+
+        assert_eq!(result["status"], "ok");
+        assert!(result["orphans"].as_array().unwrap().is_empty());
     }
 }

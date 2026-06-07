@@ -3,7 +3,7 @@
 - [x] 1.1 Reorder `remove` (`task.rs:638-650`) so registry persistence happens before irreversible directory removal, and a failure mid-sequence leaves a record flagged for reclaim.
 - [x] 1.2 Replace silent `let _ = fs::remove_dir_all(...)` with an error path that records cleanup failure on the task record.
 - [x] 1.3 On launch failure after worktree creation (`task.rs:492-572`), auto-remove the managed worktree or queue it for the reconciliation sweep.
-- [ ] 1.4 Add unit tests for: git-removal failure, save failure after git success, and dir-removal failure. (Deferred: failure-injection harness not yet present.)
+- [x] 1.4 Add unit tests for: git-removal failure, save failure after git success, and dir-removal failure.
 
 ## 2. Child Process Tracking And Reaping
 
@@ -22,8 +22,8 @@
 ## 4. Crash-Orphan Reconciliation
 
 - [x] 4.1 On startup, scan persisted registry and managed-worktree roots for records/worktrees orphaned by a prior crash.
-- [ ] 4.2 Report orphans through a `doctor` section and reclaim or flag them per policy. (Reclaim + stale-record flagging implemented; dedicated `doctor` section deferred — orphans surface via `agent_list`.)
-- [ ] 4.3 Add tests with a seeded orphaned worktree and a dangling registry record. (Deferred with 4.2.)
+- [x] 4.2 Report orphans through a `doctor` section and reclaim or flag them per policy.
+- [x] 4.3 Add tests with a seeded orphaned worktree and a dangling registry record.
 
 ## 5. Verification
 

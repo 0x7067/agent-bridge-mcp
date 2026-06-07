@@ -1,4 +1,3 @@
 [workspace]
 members = ["crates/agent-bridge-mcp"]
 resolver = "3"
-

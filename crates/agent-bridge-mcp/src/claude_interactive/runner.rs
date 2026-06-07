@@ -800,8 +800,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            result.failure_category.as_deref(),
-            Some("claude_setup_required")
+            result.failure_category,
+            Some("claude_setup_required".to_string())
         );
         assert!(result.final_text.is_none());
         assert!(!result.pty_output_excerpt.contains("runner prompt"));

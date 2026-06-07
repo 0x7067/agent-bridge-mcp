@@ -103,7 +103,7 @@ pub struct HostRunResult {
     #[serde(rename = "durationMs")]
     pub duration_ms: u64,
     #[serde(rename = "failureCategory")]
-    pub failure_category: Option<String>,
+    pub failure_category: Option<crate::domain::FailureCategory>,
     #[serde(rename = "ptyOutputExcerpt")]
     pub pty_output_excerpt: String,
     #[serde(rename = "ptyOutputTruncated")]
@@ -440,7 +440,9 @@ fn build_run_response(result: ClaudeInteractiveRunResult) -> HostResponse {
             exit_code: result.exit_code,
             signal: result.signal,
             duration_ms: result.duration_ms,
-            failure_category: result.failure_category.clone(),
+            failure_category: result
+                .failure_category
+                .and_then(|s| s.parse::<crate::domain::FailureCategory>().ok()),
             pty_output_excerpt: result.pty_output_excerpt,
             pty_output_truncated: result.pty_output_truncated,
             redactions_applied: vec!["prompt".to_string(), "secrets".to_string()],
@@ -869,7 +871,10 @@ mod tests {
         assert_eq!(run.status, "failure");
         assert_eq!(run.stderr, "raw pty");
         assert!(run.result.is_none());
-        assert_eq!(run.failure_category.as_deref(), Some("claude_api_error"));
+        assert_eq!(
+            run.failure_category,
+            Some("claude_api_error".parse().unwrap())
+        );
     }
 
     #[test]

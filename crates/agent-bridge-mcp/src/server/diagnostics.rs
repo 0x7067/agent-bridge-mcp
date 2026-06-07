@@ -45,6 +45,7 @@ pub(super) async fn doctor(arguments: Value) -> Result<Value, String> {
     }
     let workspace = doctor_workspace(input.cwd.as_deref());
     let state = doctor_state();
+    let orphans = doctor_orphans();
     let binary = doctor_binary(input.cwd.as_deref());
     let clients = doctor_clients();
     let task_extension_readiness = doctor_task_extension_readiness();
@@ -64,6 +65,7 @@ pub(super) async fn doctor(arguments: Value) -> Result<Value, String> {
         &launch_readiness,
         &clients,
         &binary,
+        &orphans,
     );
     let summary_status = aggregate_status([
         workspace["status"].as_str().unwrap_or("ok"),
@@ -85,6 +87,7 @@ pub(super) async fn doctor(arguments: Value) -> Result<Value, String> {
         },
         "workspace": workspace,
         "state": state,
+        "orphans": orphans,
         "binary": binary,
         "clients": clients,
         "taskExtensionReadiness": task_extension_readiness,
@@ -1255,6 +1258,59 @@ fn doctor_registry_status(state_dir: &Path) -> Result<(), String> {
     }
 }
 
+pub(super) fn doctor_orphans() -> Value {
+    let state_dir = env::var("AGENT_BRIDGE_STATE_DIR")
+        .map(|value| expand_home(&value))
+        .unwrap_or_else(|_| expand_home("~/.agent-bridge-mcp/state"));
+    let registry_path = state_dir.join("registry.json");
+    let Ok(contents) = std::fs::read_to_string(&registry_path) else {
+        return json!({"status": "ok", "orphans": []});
+    };
+    let Ok(mut value) = serde_json::from_str::<Value>(&contents) else {
+        return json!({"status": "ok", "orphans": []});
+    };
+    // Normalize legacy fields so we can read agentId reliably.
+    crate::task::normalize_legacy_registry_fields_exported(&mut value);
+    let Some(tasks) = value.get("tasks").and_then(Value::as_object) else {
+        return json!({"status": "ok", "orphans": []});
+    };
+    let mut orphan_list = Vec::new();
+    for (id, task) in tasks {
+        let status = task["status"].as_str().unwrap_or("");
+        let worktree_managed = task["worktreeManaged"].as_bool().unwrap_or(false);
+        let has_diagnostic = task.get("diagnostic").is_some() && !task["diagnostic"].is_null();
+        // Orphan: FailedStale records that still track managed worktrees, or
+        // any record with a worktree reclaim diagnostic.
+        let is_stale_with_worktree = status == "failed_stale" && worktree_managed;
+        let is_cleanup_failed = has_diagnostic
+            && task
+                .get("diagnostic")
+                .and_then(|d| d.get("failureCategory"))
+                .and_then(Value::as_str)
+                .is_some_and(|cat| cat.contains("cleanup") || cat.contains("reclaim"));
+        if is_stale_with_worktree || is_cleanup_failed {
+            orphan_list.push(json!({
+                "agentId": id,
+                "status": status,
+                "provider": task["provider"],
+                "worktreeManaged": worktree_managed,
+                "worktreePath": task.get("worktreePath").unwrap_or(&Value::Null),
+                "diagnostic": task.get("diagnostic").unwrap_or(&Value::Null),
+                "updatedAt": task.get("updatedAt").unwrap_or(&Value::Null),
+            }));
+        }
+    }
+    let status = if orphan_list.is_empty() {
+        "ok"
+    } else {
+        "warning"
+    };
+    json!({
+        "status": status,
+        "orphans": orphan_list,
+    })
+}
+
 async fn doctor_claude_host_runner() -> Value {
     let Some(socket_path) = crate::claude_host::socket_path_from_env() else {
         return json!({
@@ -1346,6 +1402,7 @@ fn providers_status(providers: &Value) -> &'static str {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn doctor_recommendations(
     workspace_status: &str,
     state_status: &str,
@@ -1354,6 +1411,7 @@ pub(super) fn doctor_recommendations(
     launch_readiness: &Value,
     clients: &Value,
     binary: &Value,
+    orphans: &Value,
 ) -> Value {
     let mut recommendations = Vec::new();
     if workspace_status == "error" {
@@ -1428,6 +1486,7 @@ pub(super) fn doctor_recommendations(
     }
     recommendations.extend(client_recommendations(clients));
     recommendations.extend(binary_recommendations(binary));
+    recommendations.extend(orphan_recommendations(orphans));
     Value::Array(recommendations)
 }
 
@@ -1461,6 +1520,30 @@ fn binary_recommendations(binary: &Value) -> Vec<Value> {
         }));
     }
     recommendations
+}
+
+pub(super) fn orphan_recommendations(orphans: &Value) -> Vec<Value> {
+    let Some(orphan_list) = orphans["orphans"].as_array() else {
+        return Vec::new();
+    };
+    if orphan_list.is_empty() {
+        return Vec::new();
+    }
+    let agent_ids: Vec<&str> = orphan_list
+        .iter()
+        .filter_map(|o| o["agentId"].as_str())
+        .collect();
+    vec![json!({
+        "id": "reclaim_orphaned_tasks",
+        "severity": "warning",
+        "message": format!(
+            "Found {} orphaned task(s) with unreclaimed worktrees or failed cleanup: {}. Remove them with agent_remove or rerun doctor after cleanup.",
+            orphan_list.len(),
+            agent_ids.join(", ")
+        ),
+        "tool": "agent_list",
+        "arguments": {}
+    })]
 }
 
 fn client_recommendations(clients: &Value) -> Vec<Value> {
@@ -1804,7 +1887,7 @@ async fn smoke_one_provider(
                 .is_some_and(|status| status.success())
                 && !smoke_output_is_accepted(provider, &output.stdout)
             {
-                output.failure_category = Some("provider_output_error");
+                output.failure_category = Some(FailureCategory::ProviderOutputError);
                 output.error =
                     Some("provider smoke output did not contain expected token".to_string());
             }

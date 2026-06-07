@@ -1,6 +1,6 @@
 use crate::domain::{
-    ErrorType, Isolation, LaunchProfile, ProviderKind, TaskPhase, TaskStatus, TimeoutSeconds,
-    WorktreeName,
+    ErrorType, FailureCategory, Isolation, LaunchProfile, ProviderKind, TaskPhase, TaskStatus,
+    TimeoutSeconds, WorktreeName,
 };
 use crate::provider::{self, ProviderCommand, ProviderTask};
 use crate::tools::TaskPreviewInput;
@@ -104,7 +104,7 @@ impl TaskManagerHandle {
                         }
                         Err(cleanup_error) => {
                             task.diagnostic = Some(json!({
-                                "failureCategory": "worktree_reclaim_failed",
+                                "failureCategory": FailureCategory::WorktreeReclaimFailed.as_str(),
                                 "message": format!(
                                     "failed to reclaim orphaned worktree on restart: {cleanup_error}"
                                 ),
@@ -641,7 +641,7 @@ impl TaskActor {
         let dir_removal = fs::remove_dir_all(&agent_dir).await;
         if let Err(error) = &dir_removal {
             task.diagnostic = Some(json!({
-                "failureCategory": "agent_dir_cleanup_failed",
+                "failureCategory": FailureCategory::AgentDirCleanupFailed.as_str(),
                 "message": format!("failed to remove agent directory: {error}"),
                 "agentDir": agent_dir,
             }));
@@ -717,7 +717,7 @@ impl TaskActor {
             None
         } else {
             Some(json!({
-                "failureCategory": "transcript_unavailable",
+                "failureCategory": FailureCategory::TranscriptUnavailable.as_str(),
                 "message": "transcript artifact was not available during finalization"
             }))
         };
@@ -908,7 +908,7 @@ async fn apply_launch_outcome(
                     }
                     Err(cleanup_error) => {
                         record.diagnostic = Some(json!({
-                            "failureCategory": "worktree_cleanup_failed",
+                            "failureCategory": FailureCategory::WorktreeCleanupFailed.as_str(),
                             "message": format!(
                                 "failed to remove worktree after launch failure: {cleanup_error}"
                             ),
@@ -1238,7 +1238,7 @@ async fn complete_host_response(
 /// The exit evidence from a finished host-runner task, used to build its
 /// `TaskCompletion`.
 struct HostOutcome<'a> {
-    failure_category: Option<String>,
+    failure_category: Option<crate::domain::FailureCategory>,
     result_present: bool,
     exit_code: Option<i32>,
     signal: Option<String>,
@@ -1273,21 +1273,23 @@ fn host_completion(
             diagnostic: None,
         };
     }
-    let category = failure_category.unwrap_or_else(|| "provider_exit_error".to_string());
+    let category = failure_category.unwrap_or(crate::domain::FailureCategory::ProviderExitError);
     TaskCompletion {
         agent_id,
         status: TaskStatus::Failed,
         exit_code,
         signal: signal.clone(),
-        error: Some(category.clone()),
-        error_type: Some(if category == "provider_timeout" {
-            ErrorType::Timeout
-        } else {
-            ErrorType::ProviderExitError
-        }),
+        error: Some(category.to_string()),
+        error_type: Some(
+            if category == crate::domain::FailureCategory::ProviderTimeout {
+                ErrorType::Timeout
+            } else {
+                ErrorType::ProviderExitError
+            },
+        ),
         diagnostic: Some(agent_diagnostic(
             command,
-            &category,
+            category,
             command.timeout_seconds * 1000,
             exit_code,
             signal,
@@ -1483,7 +1485,7 @@ fn classify_success_exit(
                 error_type: Some(ErrorType::ProviderOutputError),
                 diagnostic: Some(agent_diagnostic(
                     command,
-                    "provider_output_error",
+                    FailureCategory::ProviderOutputError,
                     timeout_seconds * 1000,
                     status.code(),
                     signal_name(&status),
@@ -1550,9 +1552,9 @@ fn classify_failure_exit(
         diagnostic: Some(agent_diagnostic(
             command,
             if timed_out {
-                "provider_timeout"
+                FailureCategory::ProviderTimeout
             } else {
-                "provider_exit_error"
+                FailureCategory::ProviderExitError
             },
             timeout_seconds * 1000,
             status.code(),
@@ -1581,7 +1583,7 @@ fn codex_denial_completion(
         error_type: Some(ErrorType::CodexSandboxDenied),
         diagnostic: Some(agent_diagnostic(
             command,
-            "provider_sandbox_denied",
+            FailureCategory::ProviderSandboxDenied,
             timeout_seconds * 1000,
             exit_code,
             signal,
@@ -1593,7 +1595,7 @@ fn codex_denial_completion(
 
 fn agent_diagnostic(
     command: &ProviderCommand,
-    failure_category: &str,
+    failure_category: FailureCategory,
     timeout_ms: i64,
     exit_code: Option<i32>,
     signal: Option<String>,
@@ -1602,7 +1604,7 @@ fn agent_diagnostic(
 ) -> Value {
     let redactions = diagnostic_redactions(command);
     json!({
-        "failureCategory": failure_category,
+        "failureCategory": failure_category.as_str(),
         "provider": command_provider_hint(command).as_str(),
         "commandKind": command_kind(command),
         "commandPath": command_path(command),
@@ -2686,6 +2688,10 @@ fn parse_registry_text(text: &str) -> Result<Registry, String> {
     serde_json::from_value(value).map_err(|error| format!("failed to parse registry.json: {error}"))
 }
 
+pub(crate) fn normalize_legacy_registry_fields_exported(value: &mut Value) {
+    normalize_legacy_registry_fields(value)
+}
+
 fn normalize_legacy_registry_fields(value: &mut Value) {
     let Some(tasks) = value.get_mut("tasks").and_then(Value::as_object_mut) else {
         return;
@@ -2904,7 +2910,7 @@ mod tests {
 
     fn sample_task(status: TaskStatus) -> TaskRecord {
         TaskRecord {
-            agent_id: "agent_11111111111111111111111111111111".to_string(),
+            agent_id: "agent_11111111111111111111111111111".to_string(),
             provider: ProviderKind::Codex,
             mode: crate::domain::TaskMode::Review,
             title: None,
@@ -3304,5 +3310,117 @@ mod tests {
         // Exercises the default branch; env-driven overrides are validated by the
         // parsing logic (positive integers only).
         assert!(max_active_tasks() >= 1);
+    }
+
+    async fn make_actor_with_task(task: TaskRecord) -> (TaskActor, mpsc::Receiver<ActorCommand>) {
+        let state_dir = temp_dir("actor-remove");
+        let mut registry = Registry {
+            tasks: BTreeMap::new(),
+        };
+        registry.tasks.insert(task.agent_id.clone(), task);
+        let (tx, rx) = mpsc::channel(16);
+        let actor = TaskActor {
+            state_dir,
+            registry,
+            active: BTreeMap::new(),
+            tx,
+        };
+        (actor, rx)
+    }
+
+    #[tokio::test]
+    async fn remove_returns_error_on_git_worktree_failure() {
+        let mut task = sample_task(TaskStatus::Succeeded);
+        task.worktree_managed = true;
+        task.worktree_path = Some("/tmp/nonexistent-agent-bridge-worktree-test".to_string());
+        task.original_cwd = Some(".".to_string());
+        task.agent_dir = ".".to_string();
+        let (mut actor, _rx) = make_actor_with_task(task).await;
+
+        let error = actor.remove("agent_11111111111111111111111111111").await;
+        assert!(error.is_err());
+        let msg = error.unwrap_err();
+        assert!(
+            msg.contains("worktree") || msg.contains("git"),
+            "expected worktree/git error, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_records_diagnostic_on_dir_cleanup_failure() {
+        let state_dir = temp_dir("remove-dir-failure");
+        let mut task = sample_task(TaskStatus::Succeeded);
+        // Point agent_dir at a read-only directory so remove_dir_all fails.
+        // Use /dev/null as agent_dir — it exists but is not a directory,
+        // so remove_dir_all will fail with ENOTDIR.
+        task.agent_dir = "/dev/null".to_string();
+        task.worktree_managed = false;
+        let mut registry = Registry {
+            tasks: BTreeMap::new(),
+        };
+        registry.tasks.insert(task.agent_id.clone(), task);
+        let (tx, _rx) = mpsc::channel(16);
+        let mut actor = TaskActor {
+            state_dir,
+            registry,
+            active: BTreeMap::new(),
+            tx,
+        };
+
+        let result = actor.remove("agent_11111111111111111111111111111").await;
+        assert!(
+            result.is_ok(),
+            "remove should succeed even with dir cleanup failure"
+        );
+
+        // Verify diagnostic was recorded on the task record.
+        let task_record = actor
+            .registry
+            .tasks
+            .get("agent_11111111111111111111111111111")
+            .unwrap();
+        let diag = task_record
+            .diagnostic
+            .as_ref()
+            .expect("expected diagnostic");
+        assert_eq!(diag["failureCategory"], "agent_dir_cleanup_failed");
+    }
+
+    #[tokio::test]
+    async fn remove_returns_error_on_save_failure() {
+        let state_dir = temp_dir("remove-save-failure");
+        let mut task = sample_task(TaskStatus::Succeeded);
+        task.agent_dir = state_dir.join("agent").display().to_string();
+        std::fs::create_dir_all(&task.agent_dir).unwrap();
+        task.worktree_managed = false;
+        let mut registry = Registry {
+            tasks: BTreeMap::new(),
+        };
+        registry.tasks.insert(task.agent_id.clone(), task);
+        let (tx, _rx) = mpsc::channel(16);
+        let mut actor = TaskActor {
+            state_dir: state_dir.clone(),
+            registry,
+            active: BTreeMap::new(),
+            tx,
+        };
+
+        // Write an initial registry so save can attempt an atomic rename.
+        save_registry(&state_dir, &actor.registry).await.unwrap();
+
+        // Replace the state dir with a file so save_registry's create_dir_all fails.
+        std::fs::remove_dir_all(&state_dir).unwrap();
+        std::fs::write(&state_dir, b"blocking-file").unwrap();
+
+        let result = actor.remove("agent_11111111111111111111111111111").await;
+        // Clean up the blocking file.
+        std::fs::remove_file(&state_dir).ok();
+
+        assert!(
+            result.is_err(),
+            "remove should fail when registry save fails"
+        );
+        let msg = result.unwrap_err();
+        assert!(!msg.is_empty(), "expected error");
     }
 }
