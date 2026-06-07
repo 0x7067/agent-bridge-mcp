@@ -1,22 +1,15 @@
 use crate::domain::{
-    ErrorType, FailureCategory, Isolation, LaunchProfile, ProviderKind, TaskPhase, TaskStatus,
-    TimeoutSeconds, WorktreeName,
+    ErrorType, FailureCategory, Isolation, LaunchProfile, ProviderKind, TaskStatus, TimeoutSeconds,
 };
-use crate::provider::{self, ProviderCommand, ProviderTask};
-use crate::tools::TaskPreviewInput;
-use chrono::Utc;
+use crate::provider::{self, ProviderTask};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::env;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::fs;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command as ProcessCommand;
 use tokio::sync::{OnceCell, mpsc, oneshot};
-use tokio::time::{Duration, Instant, sleep, timeout};
+use tokio::time::{Duration, Instant, sleep};
 use uuid::Uuid;
 
 const MAX_PROMPT_BYTES: usize = 100 * 1024;
@@ -39,22 +32,31 @@ static MANAGER: OnceCell<TaskManagerHandle> = OnceCell::const_new();
 
 mod supervision;
 pub(crate) use supervision::{
-    configure_child_process_group, register_active_pid, signal_name, terminate_all_active_pids,
-    terminate_child_tree, unregister_active_pid,
+    register_active_pid, terminate_all_active_pids, terminate_child_tree, unregister_active_pid,
 };
 
 mod registry;
-use registry::*;
+use registry::{expand_home, load_registry, now_iso, save_registry};
+
 pub(crate) use registry::{normalize_legacy_registry_fields_exported, validate_registry_text};
 
 mod review;
-use review::*;
+#[allow(unused_imports)]
+use review::{
+    add_detail, display_title, insert_detail_fields, insert_evidence_fields, insert_outcome_fields,
+    is_final, list_tasks, normalize_max_bytes, normalize_observe_limit, normalize_observe_ms,
+    normalize_wait_ms, observe_payload, public_task, read_capped_file, read_transcript,
+    slice_lines, transcript_evidence, transition_status,
+};
 
 mod complete;
-use complete::*;
+use complete::{append_transcript_event, git_snapshot, provider_env_redactions, run_git};
 
 mod spawn;
-use spawn::*;
+use spawn::{
+    apply_launch_outcome, create_worktree, default_launch_profile, launch_task, safe_cwd,
+    validate_spawn_arguments,
+};
 
 fn max_active_tasks() -> usize {
     env::var("AGENT_BRIDGE_MAX_ACTIVE_TASKS")

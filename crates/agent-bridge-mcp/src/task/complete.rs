@@ -1,5 +1,13 @@
-use super::supervision::append_stream_transcript;
-use super::*;
+use super::registry::{cap_string, now_iso};
+use super::supervision::{append_stream_transcript, signal_name};
+use super::{MAX_LOG_BYTES, TaskCompletion};
+use crate::domain::{ErrorType, FailureCategory, ProviderKind, TaskStatus};
+use crate::provider::{self, ProviderCommand};
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+use tokio::fs;
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command as ProcessCommand;
 
 pub(super) async fn complete_host_response(
     agent_id: String,

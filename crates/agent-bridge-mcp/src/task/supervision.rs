@@ -7,9 +7,18 @@
 //! instances so signal-delivery can be exercised without a shared global that
 //! would cross-kill other tests' children.
 
+use super::complete::classify_completion;
+use super::{CHILD_SHUTDOWN_GRACE, MAX_LOG_BYTES, SIGKILL_REAP_GRACE, TaskCompletion};
+use crate::domain::ProviderKind;
+use crate::provider::{self, ProviderCommand};
+use serde_json::json;
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tokio::fs;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command as ProcessCommand;
+use tokio::time::{Duration, sleep, timeout};
 
 /// Tracks live child process-group ids and can signal them as a group.
 pub(crate) struct ActivePids {
@@ -182,7 +191,6 @@ mod tests {
 
 use super::complete::{append_transcript_event, diagnostic_redactions};
 use super::review::parse_transcript_line;
-use super::*;
 
 pub(super) struct ChildIoDrains {
     pub stdout: Option<tokio::task::JoinHandle<()>>,

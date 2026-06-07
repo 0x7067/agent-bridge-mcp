@@ -1,5 +1,26 @@
-use super::supervision::{ChildIoDrains, drain_log, wait_for_child};
-use super::*;
+use super::complete::{
+    append_transcript_event, command_provider_hint, complete_host_response, diagnostic_redactions,
+    run_git, run_git_stdout,
+};
+use super::registry::now_iso;
+use super::review::transition_status;
+use super::supervision::{
+    ChildIoDrains, configure_child_process_group, drain_log, register_active_pid,
+    unregister_active_pid, wait_for_child,
+};
+use super::{ActiveTask, ActorCommand, MAX_PROMPT_BYTES, TaskCompletion, TaskRecord};
+use crate::domain::{
+    ErrorType, FailureCategory, LaunchProfile, ProviderKind, TaskStatus, WorktreeName,
+};
+use crate::provider::{self, ProviderCommand};
+use crate::tools::TaskPreviewInput;
+use serde_json::{Value, json};
+use std::env;
+use std::path::{Path, PathBuf};
+use tokio::fs;
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command as ProcessCommand;
+use tokio::sync::{mpsc, oneshot};
 
 pub(super) fn default_launch_profile() -> LaunchProfile {
     LaunchProfile::Bridge

@@ -1,5 +1,16 @@
-use super::*;
-
+use super::complete::{provider_env_redactions, redact_value};
+use super::{
+    MAX_LOG_BYTES, MAX_OBSERVE_EVENTS, MAX_OBSERVE_MS, MAX_WAIT_MS, PROGRESS_TRANSCRIPT_TAIL_BYTES,
+    Registry, ResultSections, TaskListInput, TaskListScope, TaskRecord,
+};
+use crate::domain::{ErrorType, TaskPhase, TaskStatus};
+use crate::provider::{self};
+use chrono::Utc;
+use serde_json::{Value, json};
+use std::cmp::Ordering;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use tokio::fs;
 pub(super) fn parse_transcript_line(line: &str) -> (&'static str, Value) {
     let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
         return ("provider_event", json!({}));
