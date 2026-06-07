@@ -131,6 +131,16 @@ pub enum ErrorType {
     Stale,
 }
 
+/// Bounded retry policy attached to a spawned task. Evaluated by the actor
+/// when a completion carries a transient failure category.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetryPolicy {
+    #[serde(rename = "maxRetries")]
+    pub max_retries: u32,
+    #[serde(rename = "backoffMs")]
+    pub backoff_ms: u64,
+}
+
 /// Strongly typed failure categories used across provider probes, task
 /// lifecycle diagnostics, and the host-runner wire format. Serialized as
 /// kebab-case at the JSON boundary.
@@ -157,6 +167,20 @@ pub enum FailureCategory {
 }
 
 impl FailureCategory {
+    /// Returns true for categories that may resolve on retry (timeouts,
+    /// rate limits, transient disconnects).
+    pub fn is_transient(self) -> bool {
+        matches!(
+            self,
+            Self::ProviderTimeout
+                | Self::ProviderStartError
+                | Self::ClaudeRateLimit
+                | Self::ClaudeModelUnavailable
+                | Self::RunnerTimeout
+                | Self::ClientDisconnected
+        )
+    }
+
     /// Returns the kebab-case string used at the JSON boundary.
     pub fn as_str(self) -> &'static str {
         match self {

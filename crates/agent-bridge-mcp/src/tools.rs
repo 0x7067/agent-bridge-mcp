@@ -1,5 +1,6 @@
 use crate::domain::{
-    Isolation, LaunchProfile, ProviderKind, TaskMode, launch_profiles, provider_names, task_modes,
+    Isolation, LaunchProfile, ProviderKind, RetryPolicy, TaskMode, launch_profiles, provider_names,
+    task_modes,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -51,6 +52,8 @@ pub struct TaskPreviewInput {
     pub profile: Option<LaunchProfile>,
     #[serde(default)]
     pub dry_run: Option<bool>,
+    #[serde(default)]
+    pub retry_policy: Option<RetryPolicy>,
 }
 
 pub fn tool_definitions() -> Vec<Value> {

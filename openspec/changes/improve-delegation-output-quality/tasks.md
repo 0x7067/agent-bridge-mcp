@@ -34,15 +34,15 @@
 
 ## 4. Auto Retry Policy
 
-- [ ] 4.1 Add `RetryPolicy` struct with `max_retries` and `backoff_ms` to `domain.rs` or `task.rs`
-- [ ] 4.2 Extend `agent_spawn` input schema in `tools.rs` to accept optional `retryPolicy`
-- [ ] 4.3 Store `retry_policy` and `attempt_count` on `TaskRecord`
-- [ ] 4.4 Define `Transient` vs `Permanent` categorization on `FailureCategory` variants
-- [ ] 4.5 Modify `TaskActor::complete` to evaluate transient failures and schedule a respawn if budget permits
-- [ ] 4.6 Compute jittered exponential backoff with clamp at 30 seconds and minimum 1 second
-- [ ] 4.7 Append `retry_attempt` transcript events before each respawn
-- [ ] 4.8 Add integration test asserting retry exhaustion, backoff delay, and non-retry for permanent failures
-- [ ] 4.9 Run `scripts/quality.sh` and verify no new warnings or machete hits
+- [x] 4.1 Add `RetryPolicy` struct with `max_retries` and `backoff_ms` to `domain.rs` or `task.rs`
+- [x] 4.2 Extend `agent_spawn` input schema in `tools.rs` to accept optional `retryPolicy`
+- [x] 4.3 Store `retry_policy` and `attempt_count` on `TaskRecord`
+- [x] 4.4 Define `Transient` vs `Permanent` categorization on `FailureCategory` variants
+- [x] 4.5 Modify `TaskActor::complete` to evaluate transient failures and schedule a respawn if budget permits
+- [x] 4.6 Compute jittered exponential backoff with clamp at 30 seconds and minimum 1 second
+- [x] 4.7 Append `retry_attempt` transcript events before each respawn
+- [x] 4.8 Add integration test asserting retry exhaustion, backoff delay, and non-retry for permanent failures
+- [x] 4.9 Run `scripts/quality.sh` and verify no new warnings or machete hits
 
 ## 5. Partial Result Surfacing
 

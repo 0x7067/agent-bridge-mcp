@@ -1,5 +1,6 @@
 use crate::domain::{
-    ErrorType, FailureCategory, Isolation, LaunchProfile, ProviderKind, TaskStatus, TimeoutSeconds,
+    ErrorType, FailureCategory, Isolation, LaunchProfile, ProviderKind, RetryPolicy, TaskStatus,
+    TimeoutSeconds,
 };
 use crate::provider::{self, ProviderTask};
 use serde::{Deserialize, Serialize};
@@ -486,6 +487,7 @@ impl TaskActor {
     }
 
     async fn spawn(&mut self, arguments: Value) -> Result<Value, String> {
+        let spawn_input = arguments.clone();
         let input = validate_spawn_arguments(arguments)?;
         let limit = max_active_tasks();
         if self.active.len() >= limit {
@@ -570,6 +572,10 @@ impl TaskActor {
             final_result_detected: false,
             partial_result_detected: false,
             transcript_diagnostic: None,
+            retry_policy: input.retry_policy.clone(),
+            attempt_count: 0,
+            parent_agent_id: None,
+            spawn_input,
         };
 
         let outcome = launch_task(agent_id.clone(), command, agent_dir, self.tx.clone()).await;
@@ -690,58 +696,148 @@ impl TaskActor {
 
     async fn complete(&mut self, completion: TaskCompletion) -> Result<(), String> {
         self.active.remove(&completion.agent_id);
-        let task = self.require_agent_mut(&completion.agent_id)?;
-        if task.status != TaskStatus::Stopped {
-            transition_status(task, completion.status)?;
-            task.error = completion.error;
-            task.error_type = completion.error_type;
-            task.diagnostic = completion.diagnostic;
-        } else if task.error.is_none() {
-            task.error = Some(format!(
-                "task stopped with signal {}",
-                completion
-                    .signal
-                    .clone()
-                    .unwrap_or_else(|| "SIGTERM".to_string())
-            ));
-        }
-        task.exit_code = completion.exit_code;
-        task.signal = completion.signal;
-        task.completed_at = Some(now_iso());
-        task.updated_at = task.completed_at.clone().unwrap();
-        let snapshot = git_snapshot(&task.cwd).await;
-        task.git_status = Some(snapshot.git_status);
-        task.git_diff = Some(snapshot.git_diff);
-        task.changed_files = Some(snapshot.changed_files);
-        append_transcript_event(
-            &PathBuf::from(&task.agent_dir).join("transcript.jsonl"),
-            task.provider,
-            "lifecycle",
-            "lifecycle",
-            "",
-            json!({"phase": "finalized", "status": task.status}),
-            &provider_env_redactions(task.provider),
-        )
-        .await;
-        let (transcript_available, final_result_detected, partial_result_detected) =
-            transcript_evidence(&task.agent_dir);
-        task.transcript_available = transcript_available;
-        task.final_result_detected = final_result_detected;
-        task.partial_result_detected = partial_result_detected;
-        task.transcript_diagnostic = if transcript_available {
-            None
-        } else {
-            Some(json!({
-                "failureCategory": FailureCategory::TranscriptUnavailable.as_str(),
-                "message": "transcript artifact was not available during finalization"
-            }))
+
+        let retry_info = {
+            let task = self.require_agent_mut(&completion.agent_id)?;
+            if task.status != TaskStatus::Stopped {
+                transition_status(task, completion.status)?;
+                task.error = completion.error;
+                task.error_type = completion.error_type;
+                task.diagnostic = completion.diagnostic;
+            } else if task.error.is_none() {
+                task.error = Some(format!(
+                    "task stopped with signal {}",
+                    completion
+                        .signal
+                        .clone()
+                        .unwrap_or_else(|| "SIGTERM".to_string())
+                ));
+            }
+            task.exit_code = completion.exit_code;
+            task.signal = completion.signal;
+            task.completed_at = Some(now_iso());
+            task.updated_at = task.completed_at.clone().unwrap();
+            let snapshot = git_snapshot(&task.cwd).await;
+            task.git_status = Some(snapshot.git_status);
+            task.git_diff = Some(snapshot.git_diff);
+            task.changed_files = Some(snapshot.changed_files);
+            append_transcript_event(
+                &PathBuf::from(&task.agent_dir).join("transcript.jsonl"),
+                task.provider,
+                "lifecycle",
+                "lifecycle",
+                "",
+                json!({"phase": "finalized", "status": task.status}),
+                &provider_env_redactions(task.provider),
+            )
+            .await;
+            let (transcript_available, final_result_detected, partial_result_detected) =
+                transcript_evidence(&task.agent_dir);
+            task.transcript_available = transcript_available;
+            task.final_result_detected = final_result_detected;
+            task.partial_result_detected = partial_result_detected;
+            task.transcript_diagnostic = if transcript_available {
+                None
+            } else {
+                Some(json!({
+                    "failureCategory": FailureCategory::TranscriptUnavailable.as_str(),
+                    "message": "transcript artifact was not available during finalization"
+                }))
+            };
+            let result_path = PathBuf::from(&task.agent_dir).join("result.json");
+            let result_json = serde_json::to_vec_pretty(task).map_err(|error| error.to_string())?;
+            fs::write(result_path, result_json)
+                .await
+                .map_err(|error| error.to_string())?;
+
+            let mut info = None;
+            if let Some(policy) = &task.retry_policy
+                && task.attempt_count < policy.max_retries
+            {
+                let category = task
+                    .diagnostic
+                    .as_ref()
+                    .and_then(|d| d.get("failureCategory"))
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<FailureCategory>().ok());
+                if let Some(category) = category
+                    && category.is_transient()
+                {
+                    let next_attempt = task.attempt_count + 1;
+                    let backoff = compute_jittered_backoff(next_attempt, policy.backoff_ms);
+                    task.attempt_count = next_attempt;
+                    let origin_agent_id = task
+                        .parent_agent_id
+                        .clone()
+                        .unwrap_or_else(|| task.agent_id.clone());
+                    info = Some((
+                        backoff,
+                        task.spawn_input.clone(),
+                        origin_agent_id,
+                        task.agent_dir.clone(),
+                        task.retry_policy.clone(),
+                        next_attempt,
+                        task.provider,
+                    ));
+                }
+            }
+            info
         };
-        let result_path = PathBuf::from(&task.agent_dir).join("result.json");
-        let result_json = serde_json::to_vec_pretty(task).map_err(|error| error.to_string())?;
-        fs::write(result_path, result_json)
-            .await
-            .map_err(|error| error.to_string())?;
-        self.save().await
+
+        self.save().await?;
+
+        if let Some((
+            backoff,
+            spawn_input,
+            parent_agent_id,
+            parent_agent_dir,
+            retry_policy,
+            next_attempt,
+            provider,
+        )) = retry_info
+        {
+            let _ = append_transcript_event(
+                &PathBuf::from(&parent_agent_dir).join("transcript.jsonl"),
+                provider,
+                "lifecycle",
+                "lifecycle",
+                "",
+                json!({
+                    "phase": "retry_attempt",
+                    "attemptCount": next_attempt,
+                    "maxRetries": retry_policy.as_ref().unwrap().max_retries,
+                    "backoffMs": backoff,
+                    "parentAgentId": parent_agent_id,
+                }),
+                &provider_env_redactions(provider),
+            )
+            .await;
+
+            sleep(Duration::from_millis(backoff)).await;
+
+            let mut args = spawn_input;
+            if let Some(obj) = args.as_object_mut() {
+                obj.remove("dryRun");
+            }
+
+            match self.spawn(args).await {
+                Ok(public) => {
+                    if let Some(new_id) = public["agentId"].as_str() {
+                        if let Some(new_task) = self.registry.tasks.get_mut(new_id) {
+                            new_task.attempt_count = next_attempt;
+                            new_task.retry_policy = retry_policy;
+                            new_task.parent_agent_id = Some(parent_agent_id);
+                        }
+                        let _ = self.save().await;
+                    }
+                }
+                Err(error) => {
+                    eprintln!("[agent-bridge] retry spawn failed for {parent_agent_id}: {error}");
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn require_task(&self, agent_id: &str) -> Result<&TaskRecord, String> {
@@ -772,6 +868,27 @@ impl TaskActor {
     async fn save(&self) -> Result<(), String> {
         save_registry(&self.state_dir, &self.registry).await
     }
+}
+
+/// Computes jittered exponential backoff for a retry attempt.
+/// Base doubles each attempt (starting at attempt 1). Clamp to [1000, 30000] ms.
+/// Jitter is +/- 25% drawn from wall-clock nanosecond entropy.
+fn compute_jittered_backoff(attempt_count: u32, base_backoff_ms: u64) -> u64 {
+    let base = base_backoff_ms.max(1000);
+    let exp = attempt_count.saturating_sub(1).min(6);
+    let raw = base.saturating_mul(1u64 << exp);
+    let clamped = raw.clamp(1000, 30000);
+    let jitter_seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let jitter_range = (clamped / 4).max(1);
+    let jitter_window = jitter_range * 2 + 1;
+    let jitter_offset = (jitter_seed.wrapping_add(attempt_count as u64)) % jitter_window;
+    let jittered = clamped
+        .saturating_sub(jitter_range)
+        .saturating_add(jitter_offset);
+    jittered.clamp(1000, 30000)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -865,6 +982,14 @@ pub struct TaskRecord {
     pub partial_result_detected: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcript_diagnostic: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_policy: Option<RetryPolicy>,
+    #[serde(default)]
+    pub attempt_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<String>,
+    #[serde(default)]
+    pub spawn_input: Value,
 }
 struct ActiveTask {
     pid: Option<u32>,
@@ -930,6 +1055,10 @@ mod tests {
             final_result_detected: false,
             partial_result_detected: false,
             transcript_diagnostic: None,
+            retry_policy: None,
+            attempt_count: 0,
+            parent_agent_id: None,
+            spawn_input: Value::Null,
         }
     }
 
@@ -1407,5 +1536,267 @@ mod tests {
         );
         let msg = result.unwrap_err();
         assert!(!msg.is_empty(), "expected error");
+    }
+
+    #[tokio::test]
+    async fn retry_exhaustion_schedules_respawns_within_budget() {
+        let state_dir = temp_dir("retry-budget");
+        let mut task = sample_task(TaskStatus::Running);
+        task.agent_id = "agent_original".to_string();
+        task.agent_dir = state_dir
+            .join("tasks")
+            .join("agent_original")
+            .display()
+            .to_string();
+        std::fs::create_dir_all(&task.agent_dir).unwrap();
+        task.retry_policy = Some(RetryPolicy {
+            max_retries: 2,
+            backoff_ms: 1000,
+        });
+        task.spawn_input = json!({
+            "provider": "kimi",
+            "mode": "research",
+            "prompt": "test prompt",
+            "cwd": ".",
+            "timeoutSeconds": 1
+        });
+        task.attempt_count = 0;
+
+        let mut registry = Registry {
+            tasks: BTreeMap::new(),
+        };
+        registry.tasks.insert(task.agent_id.clone(), task);
+        let (tx, _rx) = mpsc::channel(16);
+        let mut actor = TaskActor {
+            state_dir: state_dir.clone(),
+            registry,
+            active: BTreeMap::new(),
+            tx,
+        };
+
+        let transient_completion = |agent_id: &str| TaskCompletion {
+            agent_id: agent_id.to_string(),
+            status: TaskStatus::Failed,
+            exit_code: None,
+            signal: None,
+            error: Some("timeout".to_string()),
+            error_type: Some(ErrorType::Timeout),
+            diagnostic: Some(json!({
+                "failureCategory": FailureCategory::ProviderTimeout.as_str(),
+            })),
+        };
+
+        // First failure triggers a retry.
+        let start = Instant::now();
+        actor
+            .complete(transient_completion("agent_original"))
+            .await
+            .unwrap();
+        let elapsed_first = start.elapsed();
+        assert!(
+            actor.registry.tasks.len() >= 2,
+            "expected retry task to be created"
+        );
+
+        let retry_id_1 = actor
+            .registry
+            .tasks
+            .keys()
+            .find(|id| *id != "agent_original")
+            .cloned()
+            .expect("retry task should exist");
+        let retry_task_1 = actor.registry.tasks.get(&retry_id_1).unwrap();
+        assert_eq!(
+            retry_task_1.parent_agent_id,
+            Some("agent_original".to_string())
+        );
+        assert_eq!(retry_task_1.attempt_count, 1);
+
+        // Second failure triggers another retry.
+        actor
+            .complete(transient_completion(&retry_id_1))
+            .await
+            .unwrap();
+        assert!(
+            actor.registry.tasks.len() >= 3,
+            "expected second retry task"
+        );
+
+        let retry_id_2 = actor
+            .registry
+            .tasks
+            .keys()
+            .find(|id| *id != "agent_original" && *id != &retry_id_1)
+            .cloned()
+            .expect("second retry task should exist");
+        let retry_task_2 = actor.registry.tasks.get(&retry_id_2).unwrap();
+        assert_eq!(
+            retry_task_2.parent_agent_id,
+            Some("agent_original".to_string())
+        );
+        assert_eq!(retry_task_2.attempt_count, 2);
+
+        // Third failure exhausts the budget.
+        actor
+            .complete(transient_completion(&retry_id_2))
+            .await
+            .unwrap();
+        assert_eq!(
+            actor.registry.tasks.len(),
+            3,
+            "should not create more retries after exhaustion"
+        );
+
+        // Effective backoff is at least 750 ms (1000 ms minus 25% jitter).
+        assert!(
+            elapsed_first >= Duration::from_millis(750),
+            "expected backoff delay before first retry, got {:?}",
+            elapsed_first
+        );
+    }
+
+    #[tokio::test]
+    async fn permanent_failure_does_not_trigger_retry() {
+        let state_dir = temp_dir("retry-permanent");
+        let mut task = sample_task(TaskStatus::Running);
+        task.agent_id = "agent_perm".to_string();
+        task.agent_dir = state_dir
+            .join("tasks")
+            .join("agent_perm")
+            .display()
+            .to_string();
+        std::fs::create_dir_all(&task.agent_dir).unwrap();
+        task.retry_policy = Some(RetryPolicy {
+            max_retries: 2,
+            backoff_ms: 1000,
+        });
+        task.spawn_input = json!({
+            "provider": "kimi",
+            "mode": "research",
+            "prompt": "test prompt",
+            "cwd": ".",
+            "timeoutSeconds": 1
+        });
+        task.attempt_count = 0;
+
+        let mut registry = Registry {
+            tasks: BTreeMap::new(),
+        };
+        registry.tasks.insert(task.agent_id.clone(), task);
+        let (tx, _rx) = mpsc::channel(16);
+        let mut actor = TaskActor {
+            state_dir,
+            registry,
+            active: BTreeMap::new(),
+            tx,
+        };
+
+        let permanent_completion = TaskCompletion {
+            agent_id: "agent_perm".to_string(),
+            status: TaskStatus::Failed,
+            exit_code: Some(1),
+            signal: None,
+            error: Some("exit error".to_string()),
+            error_type: Some(ErrorType::ProviderExitError),
+            diagnostic: Some(json!({
+                "failureCategory": FailureCategory::ProviderExitError.as_str(),
+            })),
+        };
+
+        actor.complete(permanent_completion).await.unwrap();
+        assert_eq!(
+            actor.registry.tasks.len(),
+            1,
+            "permanent failure should not trigger retry"
+        );
+        let task_record = actor.registry.tasks.get("agent_perm").unwrap();
+        assert_eq!(task_record.attempt_count, 0);
+    }
+
+    #[tokio::test]
+    async fn retry_appends_transcript_event_before_respawn() {
+        let state_dir = temp_dir("retry-transcript");
+        let mut task = sample_task(TaskStatus::Running);
+        task.agent_id = "agent_trans".to_string();
+        let agent_dir = state_dir.join("tasks").join("agent_trans");
+        task.agent_dir = agent_dir.display().to_string();
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        task.retry_policy = Some(RetryPolicy {
+            max_retries: 1,
+            backoff_ms: 1000,
+        });
+        task.spawn_input = json!({
+            "provider": "kimi",
+            "mode": "research",
+            "prompt": "test prompt",
+            "cwd": ".",
+            "timeoutSeconds": 1
+        });
+        task.attempt_count = 0;
+
+        let mut registry = Registry {
+            tasks: BTreeMap::new(),
+        };
+        registry.tasks.insert(task.agent_id.clone(), task);
+        let (tx, _rx) = mpsc::channel(16);
+        let mut actor = TaskActor {
+            state_dir,
+            registry,
+            active: BTreeMap::new(),
+            tx,
+        };
+
+        let completion = TaskCompletion {
+            agent_id: "agent_trans".to_string(),
+            status: TaskStatus::Failed,
+            exit_code: None,
+            signal: None,
+            error: Some("timeout".to_string()),
+            error_type: Some(ErrorType::Timeout),
+            diagnostic: Some(json!({
+                "failureCategory": FailureCategory::ProviderTimeout.as_str(),
+            })),
+        };
+
+        actor.complete(completion).await.unwrap();
+
+        let transcript_path = agent_dir.join("transcript.jsonl");
+        let transcript = tokio::fs::read_to_string(&transcript_path).await.unwrap();
+        assert!(
+            transcript.contains("retry_attempt"),
+            "transcript should contain retry_attempt event: {transcript}"
+        );
+    }
+
+    #[test]
+    fn compute_jittered_backoff_clamps_and_jitters() {
+        // Attempt 1: base doubled 0 times, so base itself.
+        let b1 = compute_jittered_backoff(1, 1000);
+        assert!(
+            (1000..=1250).contains(&b1),
+            "attempt 1 backoff out of range: {b1}"
+        );
+
+        // Attempt 4: base * 8 = 8000, still within clamp.
+        let b4 = compute_jittered_backoff(4, 1000);
+        assert!(
+            (6000..=10000).contains(&b4),
+            "attempt 4 backoff out of range: {b4}"
+        );
+
+        // Large base should clamp at 30000.
+        let b_cap = compute_jittered_backoff(1, 60000);
+        assert!(
+            b_cap <= 30000,
+            "capped backoff exceeded max+jitter: {b_cap}"
+        );
+        assert!(b_cap >= 22500, "capped backoff below min+jitter: {b_cap}");
+
+        // Small base should floor at 1000.
+        let b_floor = compute_jittered_backoff(1, 100);
+        assert!(
+            (1000..=1250).contains(&b_floor),
+            "floored backoff out of range: {b_floor}"
+        );
     }
 }
