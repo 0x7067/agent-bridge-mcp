@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "agent-bridge": {
+      "command": "agent-bridge-mcp",
+      "args": [],
+      "env": {
+        "AGENT_BRIDGE_WORKSPACES": "${workspaceFolder}",
+        "AGENT_BRIDGE_STATE_DIR": "${env:HOME}/.agent-bridge-mcp/state"
+      }
+    }
+  }
+}

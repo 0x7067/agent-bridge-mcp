@@ -118,6 +118,44 @@ Task `cwd` values must resolve inside one of those roots.
 `AGENT_BRIDGE_STATE_DIR` is optional. When omitted, Agent Bridge stores state in
 `~/.agent-bridge-mcp/state`.
 
+### Cursor
+
+Cursor supports project-specific MCP servers in `.cursor/mcp.json` and global
+MCP servers in `~/.cursor/mcp.json`. This repository checks in a project-level
+Cursor config at `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "agent-bridge": {
+      "command": "agent-bridge-mcp",
+      "args": [],
+      "env": {
+        "AGENT_BRIDGE_WORKSPACES": "${workspaceFolder}",
+        "AGENT_BRIDGE_STATE_DIR": "${env:HOME}/.agent-bridge-mcp/state"
+      }
+    }
+  }
+}
+```
+
+Use this flow for Cursor:
+
+1. Build and install `agent-bridge-mcp` on `PATH`.
+2. Open this repository in Cursor so `${workspaceFolder}` resolves to the repo
+   root.
+3. Confirm Cursor loads the `agent-bridge` server from `.cursor/mcp.json`.
+4. Call `doctor` from Cursor. For provider readiness only, call it with
+   `focus: "providers"`; add `smoke: true` only when you want to launch-check
+   local provider CLIs.
+5. Preview a minimal Cursor provider task without spawning it by calling
+   `agent_spawn` with `dryRun: true`, `provider: "cursor"`, `mode: "research"`,
+   `cwd` set to this repo, and a short prompt.
+
+Use `~/.cursor/mcp.json` instead only when you want Agent Bridge available in
+every Cursor project. Keep secrets out of checked-in MCP configs; use Cursor
+environment interpolation such as `${env:NAME}` for machine-local values.
+
 ## Claude Host Runner
 
 Claude tasks use an Agent Bridge-owned host runner so interactive Claude Code can
