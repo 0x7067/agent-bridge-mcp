@@ -281,7 +281,8 @@ pub async fn run_interactive(
     }
     relay_stop.store(true, Ordering::Relaxed);
     if debug_enabled {
-        eprintln!(
+        tracing::debug!(
+            run_dir = %relay.run_dir.display(),
             "agent-bridge claude runner debug artifacts kept at {}",
             relay.run_dir.display()
         );

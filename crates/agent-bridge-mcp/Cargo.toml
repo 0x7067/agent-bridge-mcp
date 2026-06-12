@@ -17,9 +17,13 @@ path = "src/bin/agent-bridge-mcp-rs.rs"
 
 [dependencies]
 chrono = { version = "0.4.44", default-features = false, features = ["clock", "serde"] }
+clap = { version = "4.5.53", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 libc = "0.2.186"
 pty-process = { version = "0.5.3", features = ["async"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.150", features = ["preserve_order"] }
 tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "io-std", "io-util", "signal", "time", "process", "sync", "fs", "net"] }
+toml = { version = "0.9.9", default-features = false, features = ["parse", "serde"] }
+tracing = "0.1.43"
+tracing-subscriber = { version = "0.3.22", default-features = false, features = ["fmt", "json", "std"] }
 uuid = { version = "1.23.2", features = ["v4"] }

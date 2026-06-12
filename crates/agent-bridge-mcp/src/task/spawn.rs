@@ -5,12 +5,12 @@ use super::complete::{
 use super::registry::now_iso;
 use super::review::transition_status;
 use super::supervision::{
-    ChildIoDrains, configure_child_process_group, drain_log, register_active_pid,
+    ChildIoDrains, DrainLogContext, configure_child_process_group, drain_log, register_active_pid,
     unregister_active_pid, wait_for_child,
 };
 use super::{ActiveTask, ActorCommand, MAX_PROMPT_BYTES, TaskCompletion, TaskRecord};
 use crate::domain::{
-    ErrorType, FailureCategory, LaunchProfile, ProviderKind, TaskStatus, WorktreeName,
+    ErrorType, FailureCategory, LaunchProfile, ProviderKind, TaskMode, TaskStatus, WorktreeName,
 };
 use crate::provider::{self, ProviderCommand};
 use crate::tools::TaskPreviewInput;
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command as ProcessCommand;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 pub(super) fn default_launch_profile() -> LaunchProfile {
     LaunchProfile::Bridge
@@ -95,7 +95,7 @@ pub(super) fn launch_host_runner_task(
         )
         .await;
         if tx.send(ActorCommand::Complete(completion)).await.is_err() {
-            eprintln!("[agent-bridge] task manager dropped completion message");
+            tracing::error!("[agent-bridge] task manager dropped completion message");
             std::process::abort();
         }
     });
@@ -105,12 +105,30 @@ pub(super) fn launch_host_runner_task(
     }
 }
 
+#[tracing::instrument(
+    name = "launch_child",
+    skip(command, agent_dir, tx, watch_sender),
+    fields(
+        agent_id = %agent_id,
+        provider = tracing::field::Empty,
+        mode = tracing::field::Empty,
+        task_status = "queued"
+    )
+)]
 pub(super) async fn launch_task(
     agent_id: String,
+    mode: TaskMode,
     command: ProviderCommand,
     agent_dir: PathBuf,
     tx: mpsc::Sender<ActorCommand>,
+    watch_sender: watch::Sender<u64>,
 ) -> Result<ActiveTask, String> {
+    let span = tracing::Span::current();
+    span.record(
+        "provider",
+        tracing::field::display(command.provider.as_str()),
+    );
+    span.record("mode", tracing::field::display(mode.as_str()));
     if command.provider == ProviderKind::Claude
         && let (Some(socket_path), Some(claude_command)) = (
             crate::claude_host::socket_path_from_env(),
@@ -170,38 +188,40 @@ pub(super) async fn launch_task(
         stdout: child.stdout.take().map(|stdout| {
             tokio::spawn(drain_log(
                 stdout,
-                stdout_path,
-                transcript_path.clone(),
-                command.provider,
-                "stdout",
-                redactions.clone(),
+                DrainLogContext {
+                    agent_id: agent_id.clone(),
+                    path: stdout_path,
+                    transcript_path: transcript_path.clone(),
+                    provider: command.provider,
+                    mode,
+                    source: "stdout",
+                    redactions: redactions.clone(),
+                    watch_sender: watch_sender.clone(),
+                },
             ))
         }),
         stderr: child.stderr.take().map(|stderr| {
             tokio::spawn(drain_log(
                 stderr,
-                stderr_path,
-                transcript_path,
-                command.provider,
-                "stderr",
-                redactions,
+                DrainLogContext {
+                    agent_id: agent_id.clone(),
+                    path: stderr_path,
+                    transcript_path,
+                    provider: command.provider,
+                    mode,
+                    source: "stderr",
+                    redactions,
+                    watch_sender,
+                },
             ))
         }),
     };
     tokio::spawn(async move {
-        let completion = wait_for_child(
-            agent_id,
-            pid,
-            command.timeout_seconds,
-            child,
-            command,
-            agent_dir,
-            drains,
-        )
-        .await;
+        let completion =
+            wait_for_child(agent_id, pid, child, mode, command, agent_dir, drains).await;
         unregister_active_pid(pid);
         if tx.send(ActorCommand::Complete(completion)).await.is_err() {
-            eprintln!("[agent-bridge] task manager dropped completion message");
+            tracing::error!("[agent-bridge] task manager dropped completion message");
             std::process::abort();
         }
     });
@@ -339,20 +359,5 @@ pub(super) fn safe_cwd(cwd: Option<&str>) -> Result<String, String> {
 }
 
 pub(super) fn configured_workspace_roots() -> Result<Vec<PathBuf>, String> {
-    let roots: Vec<PathBuf> = env::var_os("AGENT_BRIDGE_WORKSPACES")
-        .map(|value| {
-            env::split_paths(&value)
-                .filter(|path| !path.as_os_str().is_empty())
-                .collect()
-        })
-        .unwrap_or_else(|| vec![env::current_dir().unwrap_or_else(|_| PathBuf::from("."))]);
-    let roots = if roots.is_empty() {
-        vec![env::current_dir().map_err(|error| error.to_string())?]
-    } else {
-        roots
-    };
-    roots
-        .into_iter()
-        .map(|root| root.canonicalize().map_err(|error| error.to_string()))
-        .collect()
+    crate::config::runtime_workspace_roots()
 }

@@ -9,7 +9,7 @@
 
 use super::complete::classify_completion;
 use super::{CHILD_SHUTDOWN_GRACE, MAX_LOG_BYTES, SIGKILL_REAP_GRACE, TaskCompletion};
-use crate::domain::ProviderKind;
+use crate::domain::{ProviderKind, TaskMode};
 use crate::provider::{self, ProviderCommand};
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -18,7 +18,9 @@ use std::sync::Mutex;
 use tokio::fs;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command as ProcessCommand;
+use tokio::sync::watch;
 use tokio::time::{Duration, sleep, timeout};
+use tracing::Instrument;
 
 /// Tracks live child process-group ids and can signal them as a group.
 pub(crate) struct ActivePids {
@@ -197,6 +199,17 @@ pub(super) struct ChildIoDrains {
     pub stderr: Option<tokio::task::JoinHandle<()>>,
 }
 
+pub(super) struct DrainLogContext {
+    pub agent_id: String,
+    pub path: PathBuf,
+    pub transcript_path: PathBuf,
+    pub provider: ProviderKind,
+    pub mode: TaskMode,
+    pub source: &'static str,
+    pub redactions: Vec<String>,
+    pub watch_sender: watch::Sender<u64>,
+}
+
 /// Appends one transcript event per non-blank line of a host-runner stream
 /// (stdout/stderr), classifying each line via `parse_transcript_line`.
 pub(super) async fn append_stream_transcript(
@@ -221,15 +234,32 @@ pub(super) async fn append_stream_transcript(
     }
 }
 
+#[tracing::instrument(
+    name = "wait_for_child",
+    skip(child, command, agent_dir, drains),
+    fields(
+        agent_id = %agent_id,
+        provider = tracing::field::Empty,
+        mode = tracing::field::Empty,
+        task_status = "running"
+    )
+)]
 pub(super) async fn wait_for_child(
     agent_id: String,
     pid: u32,
-    timeout_seconds: i64,
     mut child: tokio::process::Child,
+    mode: TaskMode,
     command: ProviderCommand,
     agent_dir: PathBuf,
     drains: ChildIoDrains,
 ) -> TaskCompletion {
+    let span = tracing::Span::current();
+    span.record(
+        "provider",
+        tracing::field::display(command.provider.as_str()),
+    );
+    span.record("mode", tracing::field::display(mode.as_str()));
+    let timeout_seconds = command.timeout_seconds;
     let wait = child.wait();
     tokio::pin!(wait);
     let agent_timeout = sleep(Duration::from_secs(timeout_seconds as u64));
@@ -328,11 +358,53 @@ pub(super) async fn wait_for_child(
 
 pub(super) async fn drain_log(
     mut reader: impl tokio::io::AsyncRead + Unpin,
+    context: DrainLogContext,
+) {
+    let span = match context.source {
+        "stdout" => tracing::info_span!(
+            "drain_stdout",
+            agent_id = %context.agent_id,
+            provider = %context.provider.as_str(),
+            mode = %context.mode.as_str(),
+            task_status = "running"
+        ),
+        "stderr" => tracing::info_span!(
+            "drain_stderr",
+            agent_id = %context.agent_id,
+            provider = %context.provider.as_str(),
+            mode = %context.mode.as_str(),
+            task_status = "running"
+        ),
+        _ => tracing::info_span!(
+            "drain_log",
+            agent_id = %context.agent_id,
+            provider = %context.provider.as_str(),
+            mode = %context.mode.as_str(),
+            task_status = "running",
+            source = context.source
+        ),
+    };
+    drain_log_inner(
+        &mut reader,
+        context.path,
+        context.transcript_path,
+        context.provider,
+        context.source,
+        context.redactions,
+        context.watch_sender,
+    )
+    .instrument(span)
+    .await;
+}
+
+async fn drain_log_inner(
+    reader: &mut (impl tokio::io::AsyncRead + Unpin),
     path: PathBuf,
     transcript_path: PathBuf,
     provider: ProviderKind,
     source: &'static str,
     redactions: Vec<String>,
+    watch_sender: watch::Sender<u64>,
 ) {
     let mut file_bytes = 0usize;
     let mut saw_output = false;
@@ -359,6 +431,7 @@ pub(super) async fn drain_log(
             let _ = file.write_all(&buffer[..take]).await;
         }
         let text = String::from_utf8_lossy(&buffer[..take]).to_string();
+        let mut appended_event_count = 0usize;
         for line in text.lines().filter(|line| !line.trim().is_empty()) {
             if !saw_output {
                 append_transcript_event(
@@ -372,6 +445,7 @@ pub(super) async fn drain_log(
                 )
                 .await;
                 saw_output = true;
+                appended_event_count += 1;
             }
             let (kind, parsed) = parse_transcript_line(line);
             append_transcript_event(
@@ -384,6 +458,10 @@ pub(super) async fn drain_log(
                 &redactions,
             )
             .await;
+            appended_event_count += 1;
+        }
+        if appended_event_count > 0 {
+            watch_sender.send_modify(|version| *version = version.wrapping_add(1));
         }
         file_bytes += take;
     }
@@ -398,5 +476,6 @@ pub(super) async fn drain_log(
             &redactions,
         )
         .await;
+        watch_sender.send_modify(|version| *version = version.wrapping_add(1));
     }
 }

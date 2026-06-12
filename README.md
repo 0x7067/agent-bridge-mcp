@@ -93,6 +93,15 @@ Run the MCP server over stdio:
 agent-bridge-mcp
 ```
 
+Check the installed binary and effective config without starting stdio:
+
+```bash
+agent-bridge-mcp --help
+agent-bridge-mcp --version
+agent-bridge-mcp --config-check
+agent-bridge-mcp --doctor-smoke --provider codex
+```
+
 ## MCP Client Configuration
 
 Example MCP config:
@@ -112,11 +121,37 @@ Example MCP config:
 }
 ```
 
-`AGENT_BRIDGE_WORKSPACES` is a platform path-list of allowed workspace roots.
-Task `cwd` values must resolve inside one of those roots.
+Preferred local config lives at `~/.agent-bridge-mcp/config.toml`:
+
+```toml
+workspaces = ["/path/to/workspaces"]
+state_dir = "~/.agent-bridge-mcp/state"
+claude_host_socket = "~/.agent-bridge-mcp/run/claude-host.sock"
+max_active_tasks = 16
+```
+
+Config precedence is file < legacy env < CLI flags. `AGENT_BRIDGE_WORKSPACES`
+remains supported as a platform path-list of allowed workspace roots, but it is
+deprecated in favor of the config file or `--workspaces`. Task `cwd` values must
+resolve inside one configured root.
 
 `AGENT_BRIDGE_STATE_DIR` is optional. When omitted, Agent Bridge stores state in
-`~/.agent-bridge-mcp/state`.
+`~/.agent-bridge-mcp/state`. On startup the server writes
+`server.pid` inside the state directory and refuses a second live server for the
+same state dir.
+
+Workspace roots are cached at server startup. After editing the config file,
+reload the running server without restarting the MCP client:
+
+```bash
+agent-bridge-mcp reload
+```
+
+`reload` reads `state_dir/server.pid` and sends SIGHUP. A successful reload
+updates workspace roots for new tasks; malformed config preserves the incumbent
+roots and emits a JSON error log to stderr. All Agent Bridge logs are
+newline-delimited JSON on stderr so stdout remains reserved for MCP JSON-RPC
+traffic and explicit CLI JSON output.
 
 ### Cursor
 

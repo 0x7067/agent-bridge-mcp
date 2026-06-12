@@ -67,6 +67,10 @@ pub async fn handle_request(request: JsonRpcRequest) -> Option<JsonRpcResponse> 
     Some(response)
 }
 
+pub async fn doctor_report(arguments: Value) -> Result<Value, String> {
+    doctor(arguments).await
+}
+
 async fn call_tool(params: Value) -> Value {
     let parsed: Result<ToolCallParams, _> = serde_json::from_value(params);
     let params = match parsed {
@@ -408,7 +412,12 @@ async fn await_probe_exit(
                     child.wait().await.ok()
                 }
             };
-            eprintln!(
+            tracing::warn!(
+                provider = %provider.as_str(),
+                phase = phase,
+                elapsed_ms = started.elapsed().as_millis(),
+                timeout_ms = timeout_ms,
+                failure_category = FailureCategory::ProviderTimeout.as_str(),
                 "[agent-bridge] provider probe timeout provider={} phase={} elapsedMs={} timeoutMs={} failureCategory=provider_timeout",
                 provider.as_str(),
                 phase,
@@ -858,36 +867,7 @@ fn safe_cwd(cwd: Option<&str>) -> Result<String, String> {
 }
 
 fn configured_workspace_roots() -> Result<Vec<PathBuf>, String> {
-    let roots: Vec<PathBuf> = env::var_os("AGENT_BRIDGE_WORKSPACES")
-        .map(|value| {
-            env::split_paths(&value)
-                .filter(|path| !path.as_os_str().is_empty())
-                .collect()
-        })
-        .unwrap_or_else(|| vec![env::current_dir().unwrap_or_else(|_| PathBuf::from("."))]);
-    let roots = if roots.is_empty() {
-        vec![env::current_dir().map_err(|error| error.to_string())?]
-    } else {
-        roots
-    };
-    roots
-        .into_iter()
-        .map(|root| root.canonicalize().map_err(|error| error.to_string()))
-        .collect()
-}
-
-fn expand_home(value: &str) -> PathBuf {
-    if value == "~" {
-        return env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(value));
-    }
-    if let Some(rest) = value.strip_prefix("~/") {
-        return env::var("HOME")
-            .map(|home| PathBuf::from(home).join(rest))
-            .unwrap_or_else(|_| PathBuf::from(value));
-    }
-    PathBuf::from(value)
+    crate::config::runtime_workspace_roots()
 }
 
 fn is_inside(candidate: &Path, root: &Path) -> bool {
