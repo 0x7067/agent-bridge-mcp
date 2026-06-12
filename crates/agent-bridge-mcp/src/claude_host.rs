@@ -142,17 +142,7 @@ pub struct HostError {
 }
 
 pub fn configured_workspace_roots() -> Result<Vec<PathBuf>, String> {
-    let roots: Vec<PathBuf> = env::var_os("AGENT_BRIDGE_WORKSPACES")
-        .ok_or_else(|| "AGENT_BRIDGE_WORKSPACES is required".to_string())
-        .map(|value| {
-            env::split_paths(&value)
-                .filter(|path| !path.as_os_str().is_empty())
-                .collect()
-        })?;
-    if roots.is_empty() {
-        return Err("AGENT_BRIDGE_WORKSPACES is required".to_string());
-    }
-    canonicalize_roots(&roots)
+    crate::config::runtime_workspace_roots()
 }
 
 pub fn workspace_policy_id(roots: &[PathBuf]) -> Result<String, String> {
@@ -166,9 +156,9 @@ pub fn workspace_policy_id(roots: &[PathBuf]) -> Result<String, String> {
 }
 
 pub fn socket_path_from_env() -> Option<PathBuf> {
-    env::var_os("AGENT_BRIDGE_CLAUDE_HOST_SOCKET")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    crate::config::Config::from_env(crate::config::ConfigCliOverrides::default())
+        .ok()
+        .and_then(|config| config.claude_host_socket().map(Path::to_path_buf))
 }
 
 pub async fn ping(socket_path: &Path) -> Result<HostResponse, String> {
@@ -236,7 +226,11 @@ pub async fn run_server(socket_path: PathBuf) -> Result<(), String> {
                         let active_pids = active_pids.clone();
                         tokio::spawn(async move {
                             if let Err(error) = handle_connection(stream, roots, workspace_policy_id, active_pids).await {
-                                eprintln!("[agent-bridge-host] error code={}", sanitized_code(&error));
+                                tracing::error!(
+                                    error_code = %sanitized_code(&error),
+                                    "[agent-bridge-host] error code={}",
+                                    sanitized_code(&error)
+                                );
                             }
                         });
                     }

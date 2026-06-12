@@ -404,23 +404,8 @@ fn doctor_workspace(cwd: Option<&str>) -> Value {
 }
 
 fn doctor_configured_workspace_roots() -> Result<Vec<PathBuf>, String> {
-    let Some(value) = env::var_os("AGENT_BRIDGE_WORKSPACES") else {
-        return Err(
-            "AGENT_BRIDGE_WORKSPACES is required for doctor workspace diagnostics".to_string(),
-        );
-    };
-    let roots: Vec<PathBuf> = env::split_paths(&value)
-        .filter(|path| !path.as_os_str().is_empty())
-        .collect();
-    if roots.is_empty() {
-        return Err(
-            "AGENT_BRIDGE_WORKSPACES is required for doctor workspace diagnostics".to_string(),
-        );
-    }
-    roots
-        .into_iter()
-        .map(|root| root.canonicalize().map_err(|error| error.to_string()))
-        .collect()
+    crate::config::Config::from_env(crate::config::ConfigCliOverrides::default())
+        .map(|config| config.configured_workspace_roots().to_vec())
 }
 
 fn doctor_environment() -> Value {
@@ -580,7 +565,7 @@ fn doctor_binary(cwd: Option<&str>) -> Value {
 fn installed_binary_path() -> PathBuf {
     env::var("AGENT_BRIDGE_INSTALLED_BIN")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| expand_home("~/.local/bin/agent-bridge-mcp"))
+        .unwrap_or_else(|_| crate::config::expand_home("~/.local/bin/agent-bridge-mcp"))
 }
 
 pub(super) fn release_binary_path(cwd: Option<&str>) -> PathBuf {
@@ -1208,9 +1193,17 @@ fn parse_toml_inline_table_keys(value: &str) -> Vec<String> {
 }
 
 fn doctor_state() -> Value {
-    let path = env::var("AGENT_BRIDGE_STATE_DIR")
-        .map(|value| expand_home(&value))
-        .unwrap_or_else(|_| expand_home("~/.agent-bridge-mcp/state"));
+    let path = match crate::config::Config::from_env(crate::config::ConfigCliOverrides::default()) {
+        Ok(config) => config.state_dir().to_path_buf(),
+        Err(error) => {
+            return json!({
+                "status": "error",
+                "path": null,
+                "exists": false,
+                "error": error
+            });
+        }
+    };
     if let Err(error) = std::fs::create_dir_all(&path) {
         return json!({
             "status": "error",
@@ -1259,9 +1252,11 @@ fn doctor_registry_status(state_dir: &Path) -> Result<(), String> {
 }
 
 pub(super) fn doctor_orphans() -> Value {
-    let state_dir = env::var("AGENT_BRIDGE_STATE_DIR")
-        .map(|value| expand_home(&value))
-        .unwrap_or_else(|_| expand_home("~/.agent-bridge-mcp/state"));
+    let Ok(config) = crate::config::Config::from_env(crate::config::ConfigCliOverrides::default())
+    else {
+        return json!({"status": "ok", "orphans": []});
+    };
+    let state_dir = config.state_dir().to_path_buf();
     let registry_path = state_dir.join("registry.json");
     let Ok(contents) = std::fs::read_to_string(&registry_path) else {
         return json!({"status": "ok", "orphans": []});
@@ -1829,7 +1824,9 @@ async fn run_smoke_checks(
         }
         match running.join_next().await {
             Some(Ok(result)) => results.push(result),
-            Some(Err(error)) => eprintln!("[agent-bridge] smoke task join error: {error}"),
+            Some(Err(error)) => {
+                tracing::error!(error = %error, "[agent-bridge] smoke task join error: {error}");
+            }
             None => break,
         }
     }

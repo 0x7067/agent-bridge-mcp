@@ -2,8 +2,7 @@ use super::Registry;
 use chrono::Utc;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::env;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tokio::fs;
 use uuid::Uuid;
 pub(super) fn cap_string(value: String, max_bytes: usize) -> String {
@@ -105,18 +104,4 @@ pub(super) async fn save_registry(state_dir: &Path, registry: &Registry) -> Resu
 
 pub(super) fn now_iso() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-}
-
-pub(super) fn expand_home(value: &str) -> PathBuf {
-    if value == "~" {
-        return env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(value));
-    }
-    if let Some(rest) = value.strip_prefix("~/") {
-        return env::var("HOME")
-            .map(|home| PathBuf::from(home).join(rest))
-            .unwrap_or_else(|_| PathBuf::from(value));
-    }
-    PathBuf::from(value)
 }

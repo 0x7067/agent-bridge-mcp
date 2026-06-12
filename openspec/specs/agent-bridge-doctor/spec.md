@@ -160,3 +160,19 @@ The system SHALL include supported MCP client configuration diagnostics in the `
 - **WHEN** doctor reports client diagnostics as ok or warning
 - **THEN** it does not claim delegated task output, provider model behavior, or project tests are verified.
 
+### Requirement: Doctor smoke can be invoked from CLI
+The system SHALL expose a `--doctor-smoke` CLI flag that exercises the same provider readiness engine as the MCP `doctor` tool with `smoke: true`.
+
+#### Scenario: CLI smoke mirrors MCP tool behavior
+- **WHEN** an operator runs `agent-bridge-mcp --doctor-smoke`
+- **THEN** the binary performs the same version, probe, and aggregate timeout logic as the MCP `doctor` tool.
+- **AND** the printed JSON schema matches the `doctor` tool's `providers` and `launchReadiness` structures.
+
+#### Scenario: CLI smoke respects provider filtering
+- **WHEN** an operator runs `agent-bridge-mcp --doctor-smoke --provider claude --provider codex`
+- **THEN** the binary evaluates only Claude and Codex readiness.
+
+#### Scenario: CLI smoke does not mutate state
+- **WHEN** `--doctor-smoke` executes
+- **THEN** no task records are created, no registry mutations occur, and no provider tasks are spawned.
+

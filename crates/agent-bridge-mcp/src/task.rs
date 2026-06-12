@@ -6,11 +6,10 @@ use crate::provider::{self, ProviderTask};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::env;
 use std::path::PathBuf;
 use tokio::fs;
-use tokio::sync::{OnceCell, mpsc, oneshot};
-use tokio::time::{Duration, Instant, sleep};
+use tokio::sync::{OnceCell, mpsc, oneshot, watch};
+use tokio::time::{Duration, Instant, sleep, timeout};
 use uuid::Uuid;
 
 const MAX_PROMPT_BYTES: usize = 100 * 1024;
@@ -25,10 +24,6 @@ const CHILD_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 /// A process the OS cannot reap within this window is reported, never waited on
 /// indefinitely.
 const SIGKILL_REAP_GRACE: Duration = Duration::from_secs(1);
-/// Default ceiling on concurrently active tasks; overridable via
-/// `AGENT_BRIDGE_MAX_ACTIVE_TASKS`.
-const DEFAULT_MAX_ACTIVE_TASKS: usize = 16;
-
 static MANAGER: OnceCell<TaskManagerHandle> = OnceCell::const_new();
 
 mod supervision;
@@ -37,7 +32,7 @@ pub(crate) use supervision::{
 };
 
 mod registry;
-use registry::{expand_home, load_registry, now_iso, save_registry};
+use registry::{load_registry, now_iso, save_registry};
 
 pub(crate) use registry::{normalize_legacy_registry_fields_exported, validate_registry_text};
 
@@ -60,11 +55,9 @@ use spawn::{
 };
 
 fn max_active_tasks() -> usize {
-    env::var("AGENT_BRIDGE_MAX_ACTIVE_TASKS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_MAX_ACTIVE_TASKS)
+    crate::config::Config::from_env(crate::config::ConfigCliOverrides::default())
+        .map(|config| config.max_active_tasks())
+        .unwrap_or(crate::config::DEFAULT_MAX_ACTIVE_TASKS)
 }
 
 #[derive(Clone)]
@@ -76,11 +69,10 @@ impl TaskManagerHandle {
     pub async fn from_env() -> Result<Self, String> {
         MANAGER
             .get_or_try_init(|| async {
-                let state_dir = expand_home(
-                    env::var("AGENT_BRIDGE_STATE_DIR")
-                        .unwrap_or_else(|_| "~/.agent-bridge-mcp/state".to_string())
-                        .as_str(),
-                );
+                let state_dir =
+                    crate::config::Config::from_env(crate::config::ConfigCliOverrides::default())?
+                        .state_dir()
+                        .to_path_buf();
                 Self::start(state_dir).await
             })
             .await
@@ -141,12 +133,13 @@ impl TaskManagerHandle {
             state_dir,
             registry,
             active: BTreeMap::new(),
+            watches: BTreeMap::new(),
             tx: tx.clone(),
         };
         let join = tokio::spawn(actor.run(rx));
         tokio::spawn(async move {
             if let Err(error) = join.await {
-                eprintln!("[agent-bridge] task actor failed: {error}");
+                tracing::error!(error = %error, "[agent-bridge] task actor failed: {error}");
                 std::process::abort();
             }
         });
@@ -208,6 +201,7 @@ impl TaskManagerHandle {
         let limit = normalize_observe_limit(limit);
         let timeout_ms = normalize_observe_ms(timeout_ms);
         let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
+        let mut watcher = self.subscribe(agent_id.clone()).await?;
         loop {
             let task: TaskRecord = self
                 .request(|reply| ActorCommand::Get(agent_id.clone(), reply))
@@ -226,7 +220,11 @@ impl TaskManagerHandle {
             if next_cursor > cursor as u64 {
                 return Ok(observe_payload(task, transcript, false, detailed));
             }
-            sleep(Duration::from_millis(50)).await;
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(observe_payload(task, transcript, true, detailed));
+            }
+            let _ = timeout(deadline - now, watcher.changed()).await;
         }
     }
 
@@ -380,6 +378,11 @@ impl TaskManagerHandle {
         rx.await
             .map_err(|_| "task manager dropped response".to_string())?
     }
+
+    async fn subscribe(&self, agent_id: String) -> Result<watch::Receiver<u64>, String> {
+        self.request(|reply| ActorCommand::Subscribe(agent_id, reply))
+            .await
+    }
 }
 
 /// Evidence sections a caller can request from `agent_result`. The review-packet
@@ -431,6 +434,10 @@ enum ActorCommand {
     Spawn(Value, oneshot::Sender<Result<Value, String>>),
     List(Value, oneshot::Sender<Result<Value, String>>),
     Get(String, oneshot::Sender<Result<TaskRecord, String>>),
+    Subscribe(
+        String,
+        oneshot::Sender<Result<watch::Receiver<u64>, String>>,
+    ),
     InspectResult(String, oneshot::Sender<Result<TaskRecord, String>>),
     Stop(String, oneshot::Sender<Result<Value, String>>),
     Remove(String, oneshot::Sender<Result<Value, String>>),
@@ -442,6 +449,7 @@ struct TaskActor {
     state_dir: PathBuf,
     registry: Registry,
     active: BTreeMap<String, ActiveTask>,
+    watches: BTreeMap<String, watch::Sender<u64>>,
     tx: mpsc::Sender<ActorCommand>,
 }
 
@@ -459,6 +467,10 @@ impl TaskActor {
                 }
                 ActorCommand::Get(agent_id, reply) => {
                     let result = self.require_task(&agent_id).cloned();
+                    let _ = reply.send(result);
+                }
+                ActorCommand::Subscribe(agent_id, reply) => {
+                    let result = self.subscribe_task(&agent_id);
                     let _ = reply.send(result);
                 }
                 ActorCommand::InspectResult(agent_id, reply) => {
@@ -479,16 +491,32 @@ impl TaskActor {
                 }
                 ActorCommand::Complete(completion) => {
                     if let Err(error) = self.complete(completion).await {
-                        eprintln!("[agent-bridge] failed to complete task: {error}");
+                        tracing::error!(
+                            error = %error,
+                            "[agent-bridge] failed to complete task: {error}"
+                        );
                     }
                 }
             }
         }
     }
 
+    #[tracing::instrument(
+        name = "spawn_task",
+        skip(self, arguments),
+        fields(
+            agent_id = tracing::field::Empty,
+            provider = tracing::field::Empty,
+            mode = tracing::field::Empty,
+            task_status = "queued"
+        )
+    )]
     async fn spawn(&mut self, arguments: Value) -> Result<Value, String> {
         let spawn_input = arguments.clone();
         let input = validate_spawn_arguments(arguments)?;
+        let span = tracing::Span::current();
+        span.record("provider", tracing::field::display(input.provider.as_str()));
+        span.record("mode", tracing::field::display(input.mode.as_str()));
         let limit = max_active_tasks();
         if self.active.len() >= limit {
             return Err(format!(
@@ -498,6 +526,8 @@ impl TaskActor {
             ));
         }
         let agent_id = self.next_agent_id();
+        span.record("agent_id", tracing::field::display(&agent_id));
+        let watch_sender = self.ensure_watch_sender(&agent_id).clone();
         let created_at = now_iso();
         let agent_dir = self.state_dir.join("tasks").join(&agent_id);
         fs::create_dir_all(&agent_dir)
@@ -579,7 +609,15 @@ impl TaskActor {
             partial_results: Vec::new(),
         };
 
-        let outcome = launch_task(agent_id.clone(), command, agent_dir, self.tx.clone()).await;
+        let outcome = launch_task(
+            agent_id.clone(),
+            input.mode,
+            command,
+            agent_dir,
+            self.tx.clone(),
+            watch_sender,
+        )
+        .await;
         if let Some(active) = apply_launch_outcome(&mut record, outcome, &cwd).await? {
             self.active.insert(agent_id.clone(), active);
         }
@@ -617,6 +655,7 @@ impl TaskActor {
         .await;
         let public = public_task(task);
         self.save().await?;
+        self.signal_task(agent_id);
         if let Some(mut active) = active {
             if let Some(pid) = active.pid {
                 terminate_child_tree(pid, libc::SIGTERM);
@@ -671,6 +710,7 @@ impl TaskActor {
         transition_status(task, TaskStatus::Removed)?;
         task.updated_at = now_iso();
         self.save().await?;
+        self.watches.remove(agent_id);
         Ok(json!({ "agentId": agent_id, "status": "removed" }))
     }
 
@@ -695,7 +735,20 @@ impl TaskActor {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "finalize_task",
+        skip(self, completion),
+        fields(
+            agent_id = %completion.agent_id,
+            exit_code = ?completion.exit_code,
+            signal = ?completion.signal,
+            error_type = ?completion.error_type,
+            duration_ms = tracing::field::Empty,
+            task_status = ?completion.status
+        )
+    )]
     async fn complete(&mut self, completion: TaskCompletion) -> Result<(), String> {
+        let finalize_started = Instant::now();
         self.active.remove(&completion.agent_id);
 
         let retry_info = {
@@ -789,6 +842,11 @@ impl TaskActor {
         };
 
         self.save().await?;
+        self.signal_task(&completion.agent_id);
+        tracing::Span::current().record(
+            "duration_ms",
+            tracing::field::display(finalize_started.elapsed().as_millis()),
+        );
 
         if let Some((
             backoff,
@@ -836,7 +894,11 @@ impl TaskActor {
                     }
                 }
                 Err(error) => {
-                    eprintln!("[agent-bridge] retry spawn failed for {parent_agent_id}: {error}");
+                    tracing::error!(
+                        parent_agent_id = %parent_agent_id,
+                        error = %error,
+                        "[agent-bridge] retry spawn failed for {parent_agent_id}: {error}"
+                    );
                 }
             }
         }
@@ -858,6 +920,23 @@ impl TaskActor {
             .get_mut(agent_id)
             .filter(|task| task.status != TaskStatus::Removed)
             .ok_or_else(|| format!("Unknown agent: {agent_id}"))
+    }
+
+    fn subscribe_task(&mut self, agent_id: &str) -> Result<watch::Receiver<u64>, String> {
+        self.require_task(agent_id)?;
+        Ok(self.ensure_watch_sender(agent_id).subscribe())
+    }
+
+    fn ensure_watch_sender(&mut self, agent_id: &str) -> &watch::Sender<u64> {
+        self.watches
+            .entry(agent_id.to_string())
+            .or_insert_with(|| watch::channel(0).0)
+    }
+
+    fn signal_task(&mut self, agent_id: &str) {
+        if let Some(sender) = self.watches.get(agent_id) {
+            sender.send_modify(|version| *version = version.wrapping_add(1));
+        }
     }
 
     fn next_agent_id(&self) -> String {
@@ -1016,7 +1095,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let path = env::temp_dir().join(format!(
+        let path = std::env::temp_dir().join(format!(
             "agent-bridge-mcp-{name}-{}",
             Uuid::new_v4().simple()
         ));
@@ -1444,9 +1523,74 @@ mod tests {
             state_dir,
             registry,
             active: BTreeMap::new(),
+            watches: BTreeMap::new(),
             tx,
         };
         (actor, rx)
+    }
+
+    #[tokio::test]
+    async fn observe_wakes_promptly_when_task_watch_is_signaled() {
+        let agent_dir = temp_dir("observe-watch-agent");
+        let mut task = sample_task(TaskStatus::Running);
+        task.agent_dir = agent_dir.display().to_string();
+        let agent_id = task.agent_id.clone();
+        let transcript_path = agent_dir.join("transcript.jsonl");
+        let state_dir = temp_dir("observe-watch-state");
+        let mut registry = Registry {
+            tasks: BTreeMap::new(),
+        };
+        registry.tasks.insert(agent_id.clone(), task);
+        let (tx, rx) = mpsc::channel(16);
+        let mut actor = TaskActor {
+            state_dir,
+            registry,
+            active: BTreeMap::new(),
+            watches: BTreeMap::new(),
+            tx: tx.clone(),
+        };
+        let watch = actor.ensure_watch_sender(&agent_id).clone();
+        tokio::spawn(actor.run(rx));
+        let handle = TaskManagerHandle { tx };
+
+        let started = Instant::now();
+        let observe = tokio::spawn({
+            let agent_id = agent_id.clone();
+            async move {
+                handle
+                    .observe(agent_id, Some(0), Some(10), Some(5_000), false)
+                    .await
+                    .unwrap()
+            }
+        });
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(10)).await;
+            append_transcript_event(
+                &transcript_path,
+                ProviderKind::Codex,
+                "stdout",
+                "provider_result",
+                "ready",
+                json!({"result": "ready"}),
+                &[],
+            )
+            .await;
+            for _ in 0..20 {
+                watch.send_modify(|version| *version = version.wrapping_add(1));
+                sleep(Duration::from_millis(2)).await;
+            }
+        });
+
+        let observed = tokio::time::timeout(Duration::from_millis(250), observe)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(45),
+            "observe should wake from watch signal before the old 50ms poll interval"
+        );
+        assert_eq!(observed["timedOut"], false);
+        assert!(!observed["events"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1485,6 +1629,7 @@ mod tests {
             state_dir,
             registry,
             active: BTreeMap::new(),
+            watches: BTreeMap::new(),
             tx,
         };
 
@@ -1523,6 +1668,7 @@ mod tests {
             state_dir: state_dir.clone(),
             registry,
             active: BTreeMap::new(),
+            watches: BTreeMap::new(),
             tx,
         };
 
@@ -1578,6 +1724,7 @@ mod tests {
             state_dir: state_dir.clone(),
             registry,
             active: BTreeMap::new(),
+            watches: BTreeMap::new(),
             tx,
         };
 
@@ -1695,6 +1842,7 @@ mod tests {
             state_dir,
             registry,
             active: BTreeMap::new(),
+            watches: BTreeMap::new(),
             tx,
         };
 
@@ -1750,6 +1898,7 @@ mod tests {
             state_dir,
             registry,
             active: BTreeMap::new(),
+            watches: BTreeMap::new(),
             tx,
         };
 

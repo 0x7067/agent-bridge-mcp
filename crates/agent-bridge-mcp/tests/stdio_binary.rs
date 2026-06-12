@@ -683,6 +683,285 @@ fn stdio_protocol_and_tool_schema_smoke() {
 }
 
 #[test]
+fn stdio_binary_prints_help_and_version_without_starting_mcp_loop() {
+    let help = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    let help_stdout = String::from_utf8(help.stdout).unwrap();
+    assert!(help_stdout.contains("Usage:"));
+    assert!(help_stdout.contains("--config-check"));
+    assert!(help_stdout.contains("--doctor-smoke"));
+    assert!(help_stdout.contains("claude-host-runner"));
+
+    let version = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(version.status.success());
+    let version_stdout = String::from_utf8(version.stdout).unwrap();
+    assert!(version_stdout.contains(env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn stdio_binary_config_check_prints_effective_config_json() {
+    let env = fixture_env();
+    let config_dir = env.root.join(".agent-bridge-mcp");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "workspaces = [\"{}\"]\nstate_dir = \"{}\"\nmax_active_tasks = 7\n",
+            env.root.display(),
+            env.state_dir.display()
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"))
+        .arg("--config-check")
+        .env("HOME", &env.root)
+        .env_remove("AGENT_BRIDGE_WORKSPACES")
+        .env_remove("AGENT_BRIDGE_STATE_DIR")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["status"], "ok");
+    assert_eq!(value["valid"], true);
+    assert_eq!(value["maxActiveTasks"], 7);
+    assert_eq!(value["stateDir"], env.state_dir.display().to_string());
+    assert_eq!(
+        value["workspaces"],
+        json!([env.root.canonicalize().unwrap().display().to_string()])
+    );
+}
+
+#[test]
+fn stdio_binary_config_check_keeps_legacy_warnings_on_stderr() {
+    let env = fixture_env();
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"))
+        .arg("--config-check")
+        .env("HOME", &env.root)
+        .env("AGENT_BRIDGE_WORKSPACES", &env.root)
+        .env("AGENT_BRIDGE_STATE_DIR", &env.state_dir)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(stdout["status"], "ok");
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let warning = stderr
+        .lines()
+        .find_map(|line| serde_json::from_str::<Value>(line).ok())
+        .expect("expected JSON warning log on stderr");
+    assert_eq!(warning["level"], "WARN");
+    assert_eq!(warning["fields"]["env_var"], "AGENT_BRIDGE_WORKSPACES");
+    assert!(
+        warning["fields"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("legacy Agent Bridge environment variable is deprecated")
+    );
+}
+
+#[test]
+fn stdio_binary_panic_hook_logs_json_to_stderr_without_stdout() {
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"))
+        .env("AGENT_BRIDGE_FORCE_PANIC", "1")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let log_line = stderr
+        .lines()
+        .find(|line| line.trim_start().starts_with('{'))
+        .expect("expected at least one JSON log line on stderr");
+    let log: Value = serde_json::from_str(log_line).unwrap();
+    assert_eq!(log["level"], "ERROR");
+    assert!(log["fields"]["message"].as_str().unwrap().contains("panic"));
+}
+
+#[test]
+fn stdio_binary_doctor_smoke_prints_provider_report_json() {
+    let env = fixture_env();
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"))
+        .arg("--doctor-smoke")
+        .arg("--provider")
+        .arg("cursor")
+        .arg("--provider")
+        .arg("codex")
+        .env("HOME", &env.root)
+        .env("AGENT_BRIDGE_WORKSPACES", &env.root)
+        .env("AGENT_BRIDGE_STATE_DIR", &env.state_dir)
+        .env("CURSOR_AGENT_BIN", &env.fake_provider)
+        .env("CODEX_BIN", &env.fake_provider)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(provider_keys(&value), vec!["cursor", "codex"]);
+    assert_eq!(value["launchReadiness"]["status"], "ready");
+    assert_eq!(value["providers"]["codex"]["startupVerified"], true);
+    assert_eq!(value["providers"]["cursor"]["startupVerified"], true);
+}
+
+#[test]
+fn stdio_binary_reload_refreshes_workspace_roots_from_pid_file() {
+    let env = fixture_env();
+    let config_dir = env.root.join(".agent-bridge-mcp");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let config_path = config_dir.join("config.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "workspaces = [\"{}\"]\nstate_dir = \"{}\"\n",
+            env.root.display(),
+            env.state_dir.display()
+        ),
+    )
+    .unwrap();
+
+    let added_root = temp_dir("agent-bridge-reload-root");
+    let mut client = McpClient::start_without_workspace(&env);
+    client.initialize(json!({}));
+
+    assert!(env.state_dir.join("server.pid").exists());
+    let second = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"))
+        .env("HOME", &env.root)
+        .env("AGENT_BRIDGE_STATE_DIR", &env.state_dir)
+        .env_remove("AGENT_BRIDGE_WORKSPACES")
+        .output()
+        .unwrap();
+    assert!(!second.status.success());
+    assert!(
+        String::from_utf8_lossy(&second.stderr).contains("already appears to be running"),
+        "stderr: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    let rejected_before_update = client.tool_error(
+        "agent_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "research",
+            "prompt": "hello",
+            "cwd": added_root,
+            "timeoutSeconds": 5
+        }),
+    );
+    assert!(rejected_before_update.contains("cwd is outside configured workspaces"));
+
+    std::fs::write(
+        &config_path,
+        format!(
+            "workspaces = [\"{}\"]\nstate_dir = \"{}\"\n",
+            added_root.display(),
+            env.state_dir.display()
+        ),
+    )
+    .unwrap();
+    let rejected_before_reload = client.tool_error(
+        "agent_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "research",
+            "prompt": "hello",
+            "cwd": added_root,
+            "timeoutSeconds": 5
+        }),
+    );
+    assert!(rejected_before_reload.contains("cwd is outside configured workspaces"));
+
+    let reload = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"))
+        .arg("reload")
+        .env("HOME", &env.root)
+        .env("AGENT_BRIDGE_STATE_DIR", &env.state_dir)
+        .env_remove("AGENT_BRIDGE_WORKSPACES")
+        .output()
+        .unwrap();
+    assert!(
+        reload.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&reload.stdout),
+        String::from_utf8_lossy(&reload.stderr)
+    );
+
+    let mut accepted_after_reload = None;
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(2) {
+        let response = client.tool_response_with_params(json!({
+            "name": "agent_spawn",
+            "arguments": {
+                "provider": "codex",
+                "mode": "research",
+                "prompt": "hello",
+                "cwd": added_root,
+                "timeoutSeconds": 5
+            }
+        }));
+        if response["result"]["isError"] != true {
+            accepted_after_reload = Some(response);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        accepted_after_reload.is_some(),
+        "expected added workspace to be accepted after reload"
+    );
+    let rejected_removed_root = client.tool_error(
+        "agent_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "research",
+            "prompt": "hello",
+            "cwd": env.root,
+            "timeoutSeconds": 5
+        }),
+    );
+    assert!(rejected_removed_root.contains("cwd is outside configured workspaces"));
+
+    std::fs::write(&config_path, "{not-toml").unwrap();
+    let broken_reload = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"))
+        .arg("reload")
+        .env("HOME", &env.root)
+        .env("AGENT_BRIDGE_STATE_DIR", &env.state_dir)
+        .env_remove("AGENT_BRIDGE_WORKSPACES")
+        .output()
+        .unwrap();
+    assert!(broken_reload.status.success());
+    std::thread::sleep(Duration::from_millis(100));
+    let still_accepted = client.tool(
+        "agent_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "research",
+            "prompt": "hello",
+            "cwd": added_root,
+            "timeoutSeconds": 5
+        }),
+    );
+    assert_eq!(
+        still_accepted["cwd"],
+        added_root.canonicalize().unwrap().display().to_string()
+    );
+}
+
+#[test]
 fn stdio_agent_extension_readiness_reports_unavailable_without_metadata() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
@@ -772,6 +1051,7 @@ fn stdio_agent_extension_readiness_reports_legacy_unknown_and_conflict_metadata(
             .iter()
             .any(|indicator| indicator.as_str().unwrap().contains("capabilities.tasks"))
     );
+    drop(legacy);
 
     let mut unknown = McpClient::start(&env);
     unknown.initialize(json!({
@@ -791,6 +1071,7 @@ fn stdio_agent_extension_readiness_reports_legacy_unknown_and_conflict_metadata(
             .unwrap()
             .contains("taskQueue")
     );
+    drop(unknown);
 
     let mut conflict = McpClient::start(&env);
     conflict.initialize(json!({
@@ -1857,12 +2138,14 @@ fn stdio_doctor_summary_status_reflects_errors_and_warnings() {
     let mut ok_client = McpClient::start(&env);
     let ok = ok_client.tool("doctor", json!({"cwd": env.root}));
     assert_eq!(ok["summary"]["status"], "ok");
+    drop(ok_client);
 
     let mut warning_env = BTreeMap::new();
     warning_env.insert("CODEX_BIN".to_string(), OsString::from("/missing/codex"));
     let mut warning_client = McpClient::start_with_extra_env(&env, warning_env);
     let warning = warning_client.tool("doctor", json!({"cwd": env.root, "providers": ["codex"]}));
     assert_eq!(warning["summary"]["status"], "warning");
+    drop(warning_client);
 
     let mut error_client = McpClient::start_without_workspace(&env);
     let error = error_client.tool("doctor", json!({"cwd": env.root}));
@@ -1872,6 +2155,27 @@ fn stdio_doctor_summary_status_reflects_errors_and_warnings() {
             .as_str()
             .unwrap()
             .contains("AGENT_BRIDGE_WORKSPACES")
+    );
+}
+
+#[test]
+fn stdio_doctor_reads_workspace_policy_from_config_file() {
+    let env = fixture_env();
+    let config_dir = env.root.join(".agent-bridge-mcp");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!("workspaces = [\"{}\"]\n", env.root.display()),
+    )
+    .unwrap();
+
+    let mut client = McpClient::start_without_workspace(&env);
+    let report = client.tool("doctor", json!({"cwd": env.root}));
+
+    assert_eq!(report["workspace"]["status"], "ok");
+    assert_eq!(
+        report["workspace"]["cwd"]["insideConfiguredWorkspace"],
+        true
     );
 }
 
@@ -1896,6 +2200,7 @@ fn stdio_doctor_reports_workspace_diagnostic_errors() {
         invalid_cwd["workspace"]["cwd"]["insideConfiguredWorkspace"],
         false
     );
+    drop(client);
 
     let invalid_root = env.root.join("missing-root");
     let mut invalid_client =
@@ -1928,6 +2233,7 @@ fn stdio_doctor_reports_state_dir_creation_and_registry_errors() {
             .unwrap()
             .contains("registry")
     );
+    drop(invalid_client);
 
     std::fs::write(
         env.state_dir.join("registry.json"),
@@ -2519,6 +2825,7 @@ fn stdio_providers_check_concurrency_env_fallbacks() {
         "concurrency=1 should run probes sequentially: {:?}",
         started.elapsed()
     );
+    drop(client);
 
     let mut extra_env = BTreeMap::new();
     extra_env.insert(
