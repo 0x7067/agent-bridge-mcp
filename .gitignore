@@ -1,4 +1,5 @@
 .DS_Store
+__pycache__/
 target/
 
 # Local environment and credentials
@@ -18,6 +19,7 @@ id_ed25519
 *.tmp
 tmp/
 dist/
+artifacts/
 
 # Editor and OS noise
 .vscode/

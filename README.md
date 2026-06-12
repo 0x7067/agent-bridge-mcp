@@ -75,6 +75,9 @@ cargo build --release --bin agent-bridge-mcp
 
 The default test suite uses fake providers and local fixtures.
 
+To dogfood provider/profile behavior with real local providers, see
+[`docs/WORKFLOWS/dogfood-provider-profiles.md`](docs/WORKFLOWS/dogfood-provider-profiles.md).
+
 ## Install
 
 Build the release binary and place it somewhere on your `PATH`:
