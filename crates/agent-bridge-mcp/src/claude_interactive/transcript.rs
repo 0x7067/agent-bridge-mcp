@@ -1,6 +1,6 @@
 use serde_json::Value;
 use std::fs;
-use std::io;
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -125,10 +125,19 @@ async fn read_transcript_with_retry(
 }
 
 pub fn parse_transcript(path: &Path) -> io::Result<Option<String>> {
-    let text = fs::read_to_string(path)?;
+    let file = fs::File::open(path)?;
+    let mut reader = BufReader::new(file);
     let mut final_assistant_text = None;
-    for line in text.lines().filter(|line| !line.trim().is_empty()) {
-        let value: Value = serde_json::from_str(line).map_err(io::Error::other)?;
+    loop {
+        let mut line = Vec::new();
+        let read = reader.read_until(b'\n', &mut line)?;
+        if read == 0 {
+            break;
+        }
+        let Some(line) = parse_jsonl_line(&line) else {
+            continue;
+        };
+        let value = line;
         if value.get("type").and_then(Value::as_str) == Some("assistant")
             && let Some(text) = assistant_text(&value)
         {
@@ -136,6 +145,15 @@ pub fn parse_transcript(path: &Path) -> io::Result<Option<String>> {
         }
     }
     Ok(final_assistant_text)
+}
+
+fn parse_jsonl_line(line: &[u8]) -> Option<Value> {
+    let line = line.trim_ascii();
+    if line.is_empty() {
+        return None;
+    }
+    let text = std::str::from_utf8(line).ok()?;
+    serde_json::from_str(text).ok()
 }
 
 fn assistant_text(value: &Value) -> Option<String> {
@@ -222,10 +240,21 @@ mod tests {
     }
 
     #[test]
-    fn malformed_transcript_returns_parse_error() {
+    fn malformed_transcript_without_assistant_returns_none() {
+        let transcript = temp_path("malformed-only.jsonl");
+        fs::write(&transcript, b"not-json\n").unwrap();
+
+        let text = parse_transcript(&transcript).unwrap();
+
+        assert_eq!(text, None);
+    }
+
+    #[test]
+    fn parse_transcript_skips_malformed_lines_before_assistant() {
         let transcript = copy_fixture("malformed.jsonl");
-        let error = parse_transcript(&transcript).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::Other);
+        let text = parse_transcript(&transcript).unwrap();
+
+        assert_eq!(text.as_deref(), Some("partial before malformed transcript"));
     }
 
     fn copy_fixture(name: &str) -> PathBuf {
