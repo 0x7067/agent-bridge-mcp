@@ -168,7 +168,7 @@ impl PidLock {
         std::fs::create_dir_all(state_dir).map_err(|error| error.to_string())?;
         let path = state_dir.join("server.pid");
         if let Ok(pid) = read_pid(&path) {
-            if process_is_alive(pid) {
+            if process_holds_pid_lock(pid) {
                 return Err(format!(
                     "Agent Bridge server already appears to be running with pid {pid}; stop it before starting another instance"
                 ));
@@ -198,6 +198,40 @@ fn process_is_alive(pid: u32) -> bool {
 #[cfg(not(unix))]
 fn process_is_alive(_pid: u32) -> bool {
     false
+}
+
+#[cfg(unix)]
+fn process_holds_pid_lock(pid: u32) -> bool {
+    process_is_alive(pid) && process_command_is_agent_bridge(pid).unwrap_or(true)
+}
+
+#[cfg(not(unix))]
+fn process_holds_pid_lock(pid: u32) -> bool {
+    process_is_alive(pid)
+}
+
+#[cfg(unix)]
+fn process_command_is_agent_bridge(pid: u32) -> Option<bool> {
+    let output = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "args="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let command_line = String::from_utf8_lossy(&output.stdout);
+    Some(command_line_is_agent_bridge(&command_line))
+}
+
+#[cfg(unix)]
+fn command_line_is_agent_bridge(command_line: &str) -> bool {
+    let Some(command) = command_line.split_whitespace().next() else {
+        return false;
+    };
+    Path::new(command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| matches!(name, "agent-bridge-mcp" | "agent-bridge-mcp-rs"))
 }
 
 #[cfg(unix)]
@@ -372,4 +406,48 @@ fn install_panic_hook() {
         #[cfg(unix)]
         crate::task::terminate_all_active_pids(libc::SIGTERM);
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn pid_lock_reclaims_pid_file_for_unrelated_live_process() {
+        let state_dir = temp_dir("pid-lock-unrelated-live-process");
+        std::fs::write(
+            state_dir.join("server.pid"),
+            format!("{}\n", std::process::id()),
+        )
+        .unwrap();
+
+        let lock = PidLock::acquire(&state_dir).unwrap();
+
+        assert_eq!(read_pid(&state_dir.join("server.pid")).unwrap(), lock.pid);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_line_match_requires_agent_bridge_mcp_executable() {
+        assert!(command_line_is_agent_bridge(
+            "/Users/pedro/.local/bin/agent-bridge-mcp"
+        ));
+        assert!(command_line_is_agent_bridge("agent-bridge-mcp"));
+        assert!(!command_line_is_agent_bridge(
+            "/tmp/agent_bridge_mcp-test-binary"
+        ));
+        assert!(command_line_is_agent_bridge(
+            "/Users/pedro/.local/bin/agent-bridge-mcp-rs"
+        ));
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "agent-bridge-runtime-{label}-{}",
+            Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
 }
