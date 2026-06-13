@@ -176,16 +176,18 @@ impl TaskManagerHandle {
         detailed: bool,
     ) -> Result<Value, String> {
         let deadline = Instant::now() + Duration::from_millis(normalize_wait_ms(timeout_ms) as u64);
+        let mut watcher = self.subscribe(agent_id.clone()).await?;
         loop {
             let mut status = self.status(agent_id.clone(), detailed).await?;
             if status["isFinal"].as_bool().unwrap_or(false) {
                 return Ok(status);
             }
-            if Instant::now() >= deadline {
+            let now = Instant::now();
+            if now >= deadline {
                 status["timedOut"] = json!(true);
                 return Ok(status);
             }
-            sleep(Duration::from_millis(50)).await;
+            let _ = timeout(deadline - now, watcher.changed()).await;
         }
     }
 
@@ -1666,6 +1668,77 @@ mod tests {
         );
         assert_eq!(observed["timedOut"], false);
         assert!(!observed["events"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn wait_wakes_promptly_when_task_watch_is_signaled() {
+        let agent_dir = temp_dir("wait-watch-agent");
+        let mut task = sample_task(TaskStatus::Running);
+        task.agent_dir = agent_dir.display().to_string();
+        let agent_id = task.agent_id.clone();
+        let state_dir = temp_dir("wait-watch-state");
+        let mut registry = Registry {
+            tasks: BTreeMap::new(),
+        };
+        registry.tasks.insert(agent_id.clone(), task);
+        let (tx, rx) = mpsc::channel(16);
+        let mut active = BTreeMap::new();
+        active.insert(
+            agent_id.clone(),
+            ActiveTask {
+                pid: None,
+                cancel: None,
+            },
+        );
+        let actor = TaskActor {
+            state_dir,
+            registry,
+            active,
+            watches: BTreeMap::new(),
+            tx: tx.clone(),
+        };
+        tokio::spawn(actor.run(rx));
+        let handle = TaskManagerHandle { tx };
+
+        let (done_tx, done_rx) = oneshot::channel();
+        let waiting = tokio::spawn({
+            let handle = handle.clone();
+            let agent_id = agent_id.clone();
+            async move {
+                let waited = handle.wait(agent_id, Some(5_000), false).await.unwrap();
+                let _ = done_tx.send((Instant::now(), waited));
+            }
+        });
+        let (stopped_tx, stopped_rx) = oneshot::channel();
+        tokio::spawn({
+            let handle = handle.clone();
+            let agent_id = agent_id.clone();
+            async move {
+                sleep(Duration::from_millis(10)).await;
+                handle.stop(agent_id).await.unwrap();
+                let _ = stopped_tx.send(Instant::now());
+            }
+        });
+
+        let stopped_at = tokio::time::timeout(Duration::from_millis(250), stopped_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let (done_at, waited) = tokio::time::timeout(Duration::from_millis(250), done_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        waiting.await.unwrap();
+        let wake_latency = done_at
+            .checked_duration_since(stopped_at)
+            .unwrap_or(Duration::ZERO);
+
+        assert!(
+            wake_latency < Duration::from_millis(35),
+            "wait should wake from watch signal before the old 50ms poll interval"
+        );
+        assert_eq!(waited["status"], "stopped");
+        assert_eq!(waited["isFinal"], true);
     }
 
     #[tokio::test]
