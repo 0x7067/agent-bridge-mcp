@@ -693,9 +693,10 @@ fn smoke_output_is_accepted(provider: ProviderKind, stdout: &[u8]) -> bool {
                 .is_some_and(|result| result.contains(provider::PROVIDER_SMOKE_TOKEN))
                 || line.contains(provider::PROVIDER_SMOKE_TOKEN)
         }),
-        ProviderKind::Cursor | ProviderKind::Kimi | ProviderKind::Antigravity => {
-            text.contains(provider::PROVIDER_SMOKE_TOKEN)
-        }
+        ProviderKind::Cursor
+        | ProviderKind::Kimi
+        | ProviderKind::Forge
+        | ProviderKind::Antigravity => text.contains(provider::PROVIDER_SMOKE_TOKEN),
     }
 }
 

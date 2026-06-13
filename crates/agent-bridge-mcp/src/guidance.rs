@@ -312,6 +312,7 @@ First-class providers:
 - `cursor`: local Cursor Agent through `cursor-agent -p`.
 - `kimi`: local Pi/Kimi through `pi -p`.
 - `codex`: local Codex through `codex exec`. Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms should be investigated with bounded `agent_observe`, final `agent_result` (including `sections: ["stdout","stderr"]`), `agent_spawn dryRun:true`, cwd, workspace policy, prompt scope, and isolation strategy before retrying.
+- `forge`: local Forge through `forge -C <cwd> -p <prompt>`. `FORGE_BIN` may point at a specific `forge` binary.
 - `antigravity`: local Google Antigravity CLI through `agy --print`. `AGY_BIN` may point at a specific `agy` binary. Version checks prove binary availability only; smoke checks may fail until Antigravity auth is available through the local OS keyring or browser OAuth flow.
 
 Supported modes:

@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-06-07
 
-Agent Bridge MCP is a Rust stdio MCP server that delegates bounded tasks from a primary coding agent to local provider agents (Claude Code, Codex, Cursor, Kimi/Pi, Antigravity). It exposes a unified lifecycle — preview, spawn, observe, inspect, stop, remove — while keeping the caller responsible for verification.
+Agent Bridge MCP is a Rust stdio MCP server that delegates bounded tasks from a primary coding agent to local provider agents (Claude Code, Codex, Cursor, Kimi/Pi, Forge, Antigravity). It exposes a unified lifecycle — preview, spawn, observe, inspect, stop, remove — while keeping the caller responsible for verification.
 
 ## Tech Stack
 
@@ -48,12 +48,13 @@ Links: [Data Model](DATA-MODEL.md), [Backend Codemap](CODEMAPS/backend.md)
 
 ### Provider Adapters
 
-Five first-class providers are supported, each with a typed adapter defining command construction, environment filtering, denial detection, and output cadence:
+Six first-class providers are supported, each with a typed adapter defining command construction, environment filtering, denial detection, and output cadence:
 
 - **Claude** — Interactive via owned PTY host runner (Unix socket)
 - **Codex** — Noninteractive fork/exec; detects sandbox denials
 - **Cursor** — Noninteractive fork/exec; JSON-final output cadence
 - **Kimi** — Noninteractive fork/exec; supports thinking levels
+- **Forge** — Noninteractive fork/exec; direct prompt mode
 - **Antigravity** — Noninteractive fork/exec; research/review modes with `--sandbox`
 
 Links: [Integrations](INTEGRATIONS.md), [Integrations Codemap](CODEMAPS/integrations.md), [ADR-0002](ADR/0002-harden-task-lifecycle.md), [ADR-0005](ADR/0005-claude-pty-host-runner.md)

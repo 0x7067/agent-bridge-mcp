@@ -14,7 +14,7 @@
 | Field | Type | Business Meaning |
 |-------|------|-----------------|
 | `agentId` | UUID string | Canonical identifier for the task (formerly `taskId`; legacy normalized on load) |
-| `provider` | Enum (`claude`…`antigravity`) | Which provider agent executed the work |
+| `provider` | Enum (`claude`…`antigravity`, including `forge`) | Which provider agent executed the work |
 | `mode` | Enum (`research`,`review`,`implement`,`command`) | Nature of the requested work |
 | `title` | Optional string | Human-readable label for the task |
 | `status` | Enum (`Queued`,`Running`,`Succeeded`,`Failed`,`Stopped`,`FailedStale`,`Removed`) | Current phase of the lifecycle |

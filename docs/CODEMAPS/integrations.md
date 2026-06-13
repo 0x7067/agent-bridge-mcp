@@ -16,6 +16,7 @@ block-beta
     CODEX["Codex CLI"]:1
     CURSOR["Cursor Agent CLI"]:1
     KIMI["Kimi/Pi CLI"]:1
+    FORGE["Forge CLI"]:1
     AGY["Antigravity CLI"]:1
 
     CAPS --> HOST
@@ -24,6 +25,7 @@ block-beta
     CAPS --> CODEX
     CAPS --> CURSOR
     CAPS --> KIMI
+    CAPS --> FORGE
     CAPS --> AGY
 ```
 

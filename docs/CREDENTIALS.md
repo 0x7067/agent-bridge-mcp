@@ -36,7 +36,7 @@ To contribute to this project, a new team member needs:
 
 1. Rust toolchain — install via [rustup.rs](https://rustup.rs/)
 2. `git` configured with signing/email (follow project commit conventions)
-3. Optional: provider CLI installations for local smoke testing (e.g., `claude`, `codex`, `cursor-agent`, `pi`, `agy`)
+3. Optional: provider CLI installations for local smoke testing (e.g., `claude`, `codex`, `cursor-agent`, `pi`, `forge`, `agy`)
 4. No cloud accounts, VPNs, or SaaS dashboards are required for development
 
 ## Local Development Credentials

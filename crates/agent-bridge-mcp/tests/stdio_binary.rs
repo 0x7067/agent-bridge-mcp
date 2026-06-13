@@ -88,6 +88,7 @@ impl McpClient {
             .env("CURSOR_AGENT_BIN", &env.fake_provider)
             .env("PI_BIN", &env.fake_provider)
             .env("CODEX_BIN", &env.fake_provider)
+            .env("FORGE_BIN", &env.fake_provider)
             .env("AGY_BIN", &env.fake_provider)
             .env("ANTHROPIC_API_KEY", "test-key")
             .env("ANTHROPIC_AUTH_TOKEN", "test-auth-token")
@@ -490,7 +491,7 @@ fn stdio_protocol_and_tool_schema_smoke() {
     );
     assert_eq!(
         doctor["inputSchema"]["properties"]["providers"]["items"]["enum"],
-        json!(["claude", "cursor", "kimi", "codex", "antigravity"])
+        json!(["claude", "cursor", "kimi", "codex", "forge", "antigravity"])
     );
     assert_eq!(
         doctor["inputSchema"]["properties"]["aggregateTimeoutMs"]["maximum"],
@@ -506,7 +507,7 @@ fn stdio_protocol_and_tool_schema_smoke() {
     );
     assert_eq!(
         agent_spawn["inputSchema"]["properties"]["provider"]["enum"],
-        json!(["claude", "cursor", "kimi", "codex", "antigravity"])
+        json!(["claude", "cursor", "kimi", "codex", "forge", "antigravity"])
     );
     assert_eq!(
         agent_spawn["inputSchema"]["properties"]["profile"]["enum"],
@@ -1174,7 +1175,7 @@ fn stdio_tools_call_accepts_codex_meta_envelope() {
             .keys()
             .cloned()
             .collect::<Vec<_>>(),
-        vec!["claude", "cursor", "kimi", "codex", "antigravity"]
+        vec!["claude", "cursor", "kimi", "codex", "forge", "antigravity"]
     );
 
     let preview = client.tool_with_meta(
@@ -1259,7 +1260,7 @@ fn stdio_providers_preview_and_safety_checks() {
             .keys()
             .cloned()
             .collect::<Vec<_>>(),
-        vec!["claude", "cursor", "kimi", "codex", "antigravity"]
+        vec!["claude", "cursor", "kimi", "codex", "forge", "antigravity"]
     );
     assert_eq!(
         providers["providers"]["codex"]["launchProfiles"],
@@ -1346,7 +1347,43 @@ fn stdio_providers_preview_and_safety_checks() {
             .as_array()
             .unwrap()
             .iter()
+            .any(|arg| arg == "--skip-git-repo-check")
+    );
+    assert!(
+        preview["args"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|arg| arg == "<prompt redacted>")
+    );
+
+    let forge_preview = client.tool(
+        "agent_spawn",
+        json!({
+            "provider": "forge",
+            "mode": "review",
+            "prompt": "secret forge prompt",
+            "cwd": env.root,
+            "profile": "bare"
+        , "dryRun": true}),
+    );
+    assert_eq!(
+        forge_preview["command"].as_str().unwrap(),
+        env.fake_provider.to_string_lossy()
+    );
+    assert_eq!(forge_preview["profile"], "bare");
+    assert_eq!(forge_preview["promptStrategy"], "compact");
+    let forge_args = forge_preview["args"].as_array().unwrap();
+    for expected in ["-C", "-p", "<prompt redacted>"] {
+        assert!(
+            forge_args.contains(&json!(expected)),
+            "missing Forge arg {expected}: {forge_args:?}"
+        );
+    }
+    let directory_flag = forge_args.iter().position(|arg| arg == "-C").unwrap();
+    assert_eq!(
+        forge_args[directory_flag + 1],
+        json!(forge_preview["cwd"].as_str().unwrap())
     );
 
     let claude = client.tool(
@@ -2665,6 +2702,7 @@ fn stdio_providers_check_all_provider_smoke_is_batched_not_sequential() {
                 "cursor": 3000,
                 "kimi": 3000,
                 "codex": 3000,
+                "forge": 3000,
                 "antigravity": 3000
             }
         }),
@@ -2672,14 +2710,14 @@ fn stdio_providers_check_all_provider_smoke_is_batched_not_sequential() {
 
     assert_eq!(
         sorted_provider_keys(&checks),
-        vec!["antigravity", "claude", "codex", "cursor", "kimi"]
+        vec!["antigravity", "claude", "codex", "cursor", "forge", "kimi"]
     );
     assert_eq!(checks["providers"]["claude"]["startupVerified"], false);
-    for provider in ["cursor", "kimi", "codex", "antigravity"] {
+    for provider in ["cursor", "kimi", "codex", "forge", "antigravity"] {
         assert_eq!(checks["providers"][provider]["startupVerified"], true);
     }
     assert!(
-        started.elapsed() < std::time::Duration::from_millis(3600),
+        started.elapsed() < std::time::Duration::from_millis(4600),
         "all-provider smoke should be batched below sequential elapsed time: {:?}",
         started.elapsed()
     );

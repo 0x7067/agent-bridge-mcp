@@ -23,7 +23,7 @@ Illegal transitions are rejected. On server startup, orphaned `Queued`/`Running`
 | Concept | Code | Meaning |
 |---------|------|---------|
 | `agentId` | `UUID` string | Canonical identifier (legacy `taskId` normalized on load) |
-| `provider` | `ProviderKind` | Which CLI ran the work (`claude`, `cursor`, `kimi`, `codex`, `antigravity`) |
+| `provider` | `ProviderKind` | Which CLI ran the work (`claude`, `cursor`, `kimi`, `codex`, `forge`, `antigravity`) |
 | `mode` | `TaskMode` | `research`, `review`, `implement`, `command` |
 | `status` | `TaskStatus` | `Queued`, `Running`, `Succeeded`, `Failed`, `Stopped`, `FailedStale`, `Removed` |
 | `isolation` | `Isolation` | `None` or `Worktree` |

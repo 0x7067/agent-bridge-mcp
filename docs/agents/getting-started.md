@@ -15,7 +15,7 @@ Clone, build, and run the MCP server in under 15 minutes.
 | Rust | Latest stable | `rustc --version` |
 | git | 2.x | `git --version` |
 
-Optional provider CLIs for smoke testing: `claude`, `codex`, `cursor-agent`, `pi`, `agy`.
+Optional provider CLIs for smoke testing: `claude`, `codex`, `cursor-agent`, `pi`, `forge`, `agy`.
 
 ## Clone & Build
 

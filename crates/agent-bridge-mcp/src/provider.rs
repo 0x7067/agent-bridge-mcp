@@ -87,6 +87,17 @@ pub fn capabilities() -> Value {
             "readiness": default_readiness(),
             "reducedConfiguration": reduced_configuration(ProviderKind::Codex)
         },
+        "forge": {
+            "modes": ["research", "review", "implement", "command"],
+            "supportsReply": false,
+            "supportsResume": false,
+            "supportsWorktreeIsolation": true,
+            "launchProfiles": ["bridge", "bare"],
+            "presentationActions": presentation_actions(),
+            "outputCadence": output_cadence(ProviderKind::Forge),
+            "readiness": default_readiness(),
+            "reducedConfiguration": reduced_configuration(ProviderKind::Forge)
+        },
         "antigravity": {
             "modes": ["research", "review", "implement", "command"],
             "supportsReply": false,
@@ -159,6 +170,15 @@ pub fn output_cadence(provider: ProviderKind) -> Value {
             "advisory": true,
             "note": "Codex output cadence is provider-dependent."
         }),
+        ProviderKind::Forge => json!({
+            "cadence": "provider_dependent",
+            "firstOutputExpected": "intermittent",
+            "recommendedPollMs": 30000,
+            "recommendedSilentBudgetMs": 120000,
+            "fallbackAfterMs": 180000,
+            "advisory": true,
+            "note": "Forge output cadence is provider-dependent."
+        }),
         ProviderKind::Antigravity => json!({
             "cadence": "provider_dependent",
             "firstOutputExpected": "intermittent",
@@ -198,6 +218,15 @@ fn reduced_configuration(provider: ProviderKind) -> Value {
             "skills": "supported",
             "configIsolation": "supported",
             "memorySession": "supported",
+            "contextFiles": "best_effort"
+        }),
+        ProviderKind::Forge => json!({
+            "compactPrompt": "supported",
+            "customSystemPrompt": "unsupported",
+            "hooks": "unsupported",
+            "skills": "best_effort",
+            "configIsolation": "best_effort",
+            "memorySession": "best_effort",
             "contextFiles": "best_effort"
         }),
         ProviderKind::Cursor => json!({
@@ -339,11 +368,22 @@ pub fn smoke_command(
                 "exec".to_string(),
                 "--cd".to_string(),
                 task.cwd.to_string(),
+                "--skip-git-repo-check".to_string(),
                 "--json".to_string(),
                 "--sandbox".to_string(),
                 codex_sandbox(task.mode).to_string(),
                 "--config".to_string(),
                 "shell_environment_policy.inherit=\"all\"".to_string(),
+                PROVIDER_SMOKE_PROMPT.to_string(),
+            ],
+        ),
+        ProviderKind::Forge => minimal_smoke_command(
+            &task,
+            env_or("FORGE_BIN", "forge"),
+            vec![
+                "-C".to_string(),
+                task.cwd.to_string(),
+                "-p".to_string(),
                 PROVIDER_SMOKE_PROMPT.to_string(),
             ],
         ),
@@ -437,6 +477,7 @@ struct ClaudeAdapter;
 struct CursorAdapter;
 struct KimiAdapter;
 struct CodexAdapter;
+struct ForgeAdapter;
 struct AntigravityAdapter;
 
 /// Resolve the adapter for a provider. The set of providers is closed
@@ -448,6 +489,7 @@ pub fn adapter_for(provider: ProviderKind) -> &'static dyn ProviderAdapter {
         ProviderKind::Cursor => &CursorAdapter,
         ProviderKind::Kimi => &KimiAdapter,
         ProviderKind::Codex => &CodexAdapter,
+        ProviderKind::Forge => &ForgeAdapter,
         ProviderKind::Antigravity => &AntigravityAdapter,
     }
 }
@@ -506,11 +548,14 @@ fn codex_denial_text(stderr: &[u8]) -> bool {
         || text.contains("rejected by user approval")
         || text.contains("user approval settings")
         || text.contains("user denied approval");
+    let mentions_workspace_trust_denial =
+        text.contains("non-git workspace") && text.contains("untrusted");
 
     mentions_patch_rejection
         || mentions_outside_workspace
         || mentions_sandbox_denial
         || mentions_approval_denial
+        || mentions_workspace_trust_denial
 }
 
 impl ProviderAdapter for CursorAdapter {
@@ -610,6 +655,7 @@ impl ProviderAdapter for CodexAdapter {
                     "exec".to_string(),
                     "--cd".to_string(),
                     task.cwd.to_string(),
+                    "--skip-git-repo-check".to_string(),
                     "--json".to_string(),
                     "--sandbox".to_string(),
                     codex_sandbox(task.mode).to_string(),
@@ -629,6 +675,31 @@ impl ProviderAdapter for CodexAdapter {
                 vec![rendered_prompt.clone()],
             ]
             .concat(),
+            stdin: None,
+            redactions: vec![rendered_prompt, task.prompt.to_string()],
+            cwd: task.cwd.to_string(),
+            timeout_seconds: task.timeout_seconds,
+            env: BTreeMap::new(),
+            profile: task.profile,
+            prompt_strategy: prompt_strategy(task.profile).to_string(),
+            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
+        }
+    }
+}
+
+impl ProviderAdapter for ForgeAdapter {
+    fn build_command(&self, task: &ProviderTask<'_>, rendered_prompt: String) -> ProviderCommand {
+        ProviderCommand {
+            provider: task.provider,
+            command_kind: None,
+            claude_host: None,
+            command: env_or("FORGE_BIN", "forge"),
+            args: vec![
+                "-C".to_string(),
+                task.cwd.to_string(),
+                "-p".to_string(),
+                rendered_prompt.clone(),
+            ],
             stdin: None,
             redactions: vec![rendered_prompt, task.prompt.to_string()],
             cwd: task.cwd.to_string(),
@@ -721,6 +792,8 @@ pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
             "OPENAI_BASE_URL",
             "CODEX_BIN",
             "CODEX_HOME",
+            "FORGE_BIN",
+            "FORGE_HOME",
             "AGY_BIN",
             "OPENAI_API_KEY",
             "AGENT_BRIDGE_WORKSPACES",
@@ -775,6 +848,7 @@ fn resolve_command(provider: ProviderKind) -> String {
         ProviderKind::Cursor => env_or("CURSOR_AGENT_BIN", "cursor-agent"),
         ProviderKind::Kimi => env_or("PI_BIN", "pi"),
         ProviderKind::Codex => env_or("CODEX_BIN", "codex"),
+        ProviderKind::Forge => env_or("FORGE_BIN", "forge"),
         ProviderKind::Antigravity => env_or("AGY_BIN", "agy"),
     }
 }
@@ -859,6 +933,14 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
             "unsupportedReductions": ["custom_system_prompt", "disable_hooks"],
             "bestEffortReductions": ["context_files"],
             "note": "bare means provider-specific reduced configuration; inspect applied reductions"
+        }),
+        ProviderKind::Forge => json!({
+            "profile": "bare",
+            "promptStrategy": "compact",
+            "appliedReductions": ["compact_prompt"],
+            "unsupportedReductions": ["custom_system_prompt", "disable_hooks"],
+            "bestEffortReductions": ["disable_skills", "config_isolation", "memory_session", "context_files"],
+            "note": "forge bare uses compact prompting; CLI help does not expose reliable flags for disabling ambient settings"
         }),
         ProviderKind::Kimi => json!({
             "profile": "bare",
@@ -1006,6 +1088,7 @@ mod tests {
             (ProviderKind::Cursor, "cursor-agent"),
             (ProviderKind::Kimi, "pi"),
             (ProviderKind::Codex, "codex"),
+            (ProviderKind::Forge, "forge"),
             (ProviderKind::Antigravity, "agy"),
         ];
         for (provider, expected) in cases {
@@ -1027,6 +1110,12 @@ mod tests {
         t.thinking = Some("high");
         let command = build_command(&t).unwrap();
         assert!(command.args.iter().any(|arg| arg == "exec"));
+        assert!(
+            command
+                .args
+                .iter()
+                .any(|arg| arg == "--skip-git-repo-check")
+        );
         assert!(command.args.iter().any(|arg| arg == "workspace-write"));
         assert!(
             command
@@ -1070,6 +1159,7 @@ mod tests {
             "sandbox permission blocked command",
             "approval denied",
             "rejected by user approval settings",
+            "refusing to run in a non-git workspace because it is untrusted",
         ] {
             assert!(
                 adapter.detects_fatal_denial(stderr.as_bytes()),

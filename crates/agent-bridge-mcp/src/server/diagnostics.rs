@@ -416,6 +416,7 @@ fn doctor_environment() -> Value {
         "AGENT_BRIDGE_INSTALLED_BIN",
         "AGENT_BRIDGE_RELEASE_BIN",
         "CODEX_BIN",
+        "FORGE_BIN",
         "CURSOR_AGENT_BIN",
         "PI_BIN",
         "AGY_BIN",
@@ -1777,6 +1778,7 @@ fn provider_smoke_timeout_ms(provider: ProviderKind, input: &ProvidersCheckInput
 fn default_provider_smoke_timeout_ms(provider: ProviderKind) -> u64 {
     match provider {
         ProviderKind::Codex => 20_000,
+        ProviderKind::Forge => 60_000,
         ProviderKind::Claude => 60_000,
         ProviderKind::Kimi => 45_000,
         ProviderKind::Cursor => 60_000,

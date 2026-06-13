@@ -49,6 +49,7 @@ First-class provider adapters:
 | `codex` | `codex exec` | Uses noninteractive Codex execution. |
 | `cursor` | `cursor-agent -p` | Uses Cursor Agent prompt mode. |
 | `kimi` | `pi -p` | Uses the local Pi/Kimi CLI. |
+| `forge` | `forge -p` | Uses Forge direct prompt mode. |
 | `antigravity` | `agy --print` | Uses Antigravity CLI print mode. |
 
 Supported task modes are `research`, `review`, `implement`, and `command`.
@@ -59,7 +60,7 @@ Provider/mode combinations are validated before launch.
 - Rust toolchain with Cargo.
 - `git` on `PATH`.
 - Optional provider CLIs depending on which providers you want to use:
-  `claude`, `codex`, `cursor-agent`, `pi`, and/or `agy`.
+  `claude`, `codex`, `cursor-agent`, `pi`, `forge`, and/or `agy`.
 - For Claude provider tasks: run the Claude host runner outside restricted
   sandboxes and point the MCP server at its Unix socket with
   `AGENT_BRIDGE_CLAUDE_HOST_SOCKET`.

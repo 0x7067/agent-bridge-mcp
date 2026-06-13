@@ -1,7 +1,7 @@
 # Agent Bridge MCP
 
 Rust stdio MCP server that delegates bounded work from one agent client to local
-provider agents (Claude Code, Codex, Cursor, Kimi/Pi, Antigravity). Exposes a
+provider agents (Claude Code, Codex, Cursor, Kimi/Pi, Forge, Antigravity). Exposes a
 lean eight-tool lifecycle; the calling agent stays responsible for verification.
 
 ## Tech Stack

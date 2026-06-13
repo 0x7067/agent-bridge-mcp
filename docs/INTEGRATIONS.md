@@ -14,6 +14,7 @@ Agent Bridge MCP is a **desktop stdio server** with no traditional cloud service
 | Codex CLI | Noninteractive agent execution | Fork/exec + pipes | `provider.rs`, `task/spawn.rs` | No — only when Codex provider is chosen |
 | Cursor Agent CLI | Noninteractive agent execution | Fork/exec + pipes | `provider.rs`, `task/spawn.rs` | No — only when Cursor provider is chosen |
 | Kimi/Pi CLI | Noninteractive agent execution | Fork/exec + pipes | `provider.rs`, `task/spawn.rs` | No — only when Kimi provider is chosen |
+| Forge CLI | Noninteractive agent execution | Fork/exec + pipes | `provider.rs`, `task/spawn.rs` | No — only when Forge provider is chosen |
 | Antigravity CLI | Noninteractive agent execution | Fork/exec + pipes | `provider.rs`, `task/spawn.rs` | No — only when Antigravity provider is chosen |
 | Filesystem | Persistence (registry, logs, transcripts, diffs) | POSIX fs ops | `task/registry.rs`, `task/complete.rs` | Yes — loss of state dir means lost task history |
 
@@ -44,7 +45,7 @@ Agent Bridge MCP is a **desktop stdio server** with no traditional cloud service
 - **Error handling:** Failure categories (`ClaudeAuthError`, `ClaudeRateLimit`, etc.) are mapped from host-runner error frames.
 - **Test strategy:** Fake host runner in integration tests; no real Claude subscription required.
 
-### Provider CLIs (Codex, Cursor, Kimi, Antigravity)
+### Provider CLIs (Codex, Cursor, Kimi, Forge, Antigravity)
 
 - **Purpose:** Direct execution of non-Claude provider agents.
 - **Protocol:** Fork/exec with filtered environment and optionally piped stdin.
@@ -72,6 +73,7 @@ architecture-beta
         service codex(cli)[Codex CLI] in providers
         service cursor(cli)[Cursor Agent] in providers
         service kimi(cli)[Kimi/Pi CLI] in providers
+        service forge(cli)[Forge CLI] in providers
         service agy(cli)[Antigravity CLI] in providers
 
     runtime:R --> L:posix
@@ -83,5 +85,6 @@ architecture-beta
     provider_cmds:R --> L:codex
     provider_cmds:R --> L:cursor
     provider_cmds:R --> L:kimi
+    provider_cmds:R --> L:forge
     provider_cmds:R --> L:agy
 ```

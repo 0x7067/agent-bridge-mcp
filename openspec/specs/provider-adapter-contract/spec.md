@@ -8,7 +8,7 @@ The system SHALL expose the same public provider names, supported modes, and pro
 
 #### Scenario: Listing providers
 - **WHEN** a caller invokes `providers_list`
-- **THEN** the response includes `claude`, `cursor`, `kimi`, and `codex` with their supported modes and provider-specific options unchanged.
+- **THEN** the response includes `claude`, `cursor`, `kimi`, `codex`, `forge`, and `antigravity` with their supported modes and provider-specific options unchanged.
 
 #### Scenario: Validating provider-specific options
 - **WHEN** a caller previews or spawns a task with provider-specific fields such as `effort` or `thinking`
@@ -159,4 +159,3 @@ The system SHALL expose provider-specific output cadence and observation guidanc
 #### Scenario: Cadence metadata is advisory
 - **WHEN** provider output cadence metadata is returned
 - **THEN** the metadata is advisory and does not mark a provider as launchable, healthy, verified, or failed.
-

@@ -17,16 +17,19 @@ pub enum ProviderKind {
     Kimi,
     #[serde(rename = "codex")]
     Codex,
+    #[serde(rename = "forge")]
+    Forge,
     #[serde(rename = "antigravity")]
     Antigravity,
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Claude,
         Self::Cursor,
         Self::Kimi,
         Self::Codex,
+        Self::Forge,
         Self::Antigravity,
     ];
 
@@ -36,6 +39,7 @@ impl ProviderKind {
             Self::Cursor => "cursor",
             Self::Kimi => "kimi",
             Self::Codex => "codex",
+            Self::Forge => "forge",
             Self::Antigravity => "antigravity",
         }
     }
@@ -50,6 +54,7 @@ impl FromStr for ProviderKind {
             "cursor" => Ok(Self::Cursor),
             "kimi" => Ok(Self::Kimi),
             "codex" => Ok(Self::Codex),
+            "forge" => Ok(Self::Forge),
             "antigravity" => Ok(Self::Antigravity),
             _ => Err(format!(
                 "provider must be one of: {}",

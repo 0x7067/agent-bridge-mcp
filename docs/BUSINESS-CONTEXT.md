@@ -23,7 +23,7 @@ Agent Bridge MCP operates in the **developer tooling / agent orchestration** dom
 | Mode | Kind of work requested from the provider | `TaskMode`: `research`, `review`, `implement`, `command` | Code |
 | Observation | Streaming or polling retrieval of transcript events and progress | `agent_observe` tool | Code |
 | Presentation actions | Capability vocabulary describing what a caller can do next | `presentation_actions()` in `provider.rs` | Code |
-| Provider | A local CLI agent capable of accepting delegated work | `ProviderKind`: `claude`, `cursor`, `kimi`, `codex`, `antigravity` | Code |
+| Provider | A local CLI agent capable of accepting delegated work | `ProviderKind`: `claude`, `cursor`, `kimi`, `codex`, `forge`, `antigravity` | Code |
 | Review packet | Summarized evidence (status, diff, changed files, recommendations) returned by `agent_result` | `review_packet()` in `review.rs` | Code |
 | Stall risk | Heuristic computed from elapsed time and provider output cadence | `stall_risk` field in progress JSON | Code |
 | Transcript | Append-only JSON Lines log of provider stdout, stderr, and lifecycle events | `transcript.jsonl` per task | Code |

@@ -15,7 +15,7 @@ title Container Diagram — Agent Bridge MCP
         Container(server, "Server Router", "Rust / serde_json", "Handles JSON-RPC methods: init, tools/list, prompts/*, resources/*, and routes tool calls")
         Container(tools, "Tool Definitions", "Rust / serde", "Eight MCP tools: providers_list, doctor, agent_spawn, agent_observe, agent_result, agent_list, agent_stop, agent_remove")
         Container(task_mgr, "Task Manager", "Tokio sync primitives", "Spawns provider processes, supervises lifecycle, collects stdout/stderr/transcript, maintains registry")
-        Container(provider_cmds, "Provider Commands", "Rust / std::process", "Translates provider+mode into concrete CLI invocations (claude, codex, cursor-agent, pi, agy)")
+        Container(provider_cmds, "Provider Commands", "Rust / std::process", "Translates provider+mode into concrete CLI invocations (claude, codex, cursor-agent, pi, forge, agy)")
         Container(claude_host, "Claude Host Runner", "Unix-domain socket + PTY", "Sidecar subcommand that owns a PTY connected to Claude Code; bridges PTY ↔ socket")
         Container(state_store, "State Store", "Filesystem JSON", "Persists task registry, settings, and cached provider fingerprints")
     }

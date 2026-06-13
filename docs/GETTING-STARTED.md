@@ -20,6 +20,7 @@ Optional (only if using the corresponding provider):
 | codex       | `npm install -g @openai/codex`                         | `codex --version`   |
 | cursor-agent | Download from Cursor                                    | `cursor-agent --version` |
 | pi          | Follow Kimi/Pi installation instructions                 | `pi --version`      |
+| forge       | Follow Forge installation instructions                   | `forge --version`   |
 | agy         | Follow Antigravity CLI installation instructions        | `agy --version`     |
 
 ## Clone and Install

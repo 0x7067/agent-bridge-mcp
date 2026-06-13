@@ -512,7 +512,7 @@ async fn doctor_is_listed_with_strict_schema_and_rejects_unknown_arguments() {
     );
     assert_eq!(
         doctor["inputSchema"]["properties"]["providers"]["items"]["enum"],
-        serde_json::json!(["claude", "cursor", "kimi", "codex", "antigravity"])
+        serde_json::json!(["claude", "cursor", "kimi", "codex", "forge", "antigravity"])
     );
     assert_eq!(
         doctor["inputSchema"]["properties"]["aggregateTimeoutMs"]["maximum"],
@@ -608,6 +608,14 @@ async fn providers_list_returns_tool_json_payload() {
         "final_json"
     );
     assert_eq!(payload["providers"]["codex"]["readiness"]["state"], "stale");
+    assert_eq!(
+        payload["providers"]["forge"]["launchProfiles"],
+        serde_json::json!(["bridge", "bare"])
+    );
+    assert_eq!(
+        payload["providers"]["forge"]["reducedConfiguration"]["configIsolation"],
+        "best_effort"
+    );
     assert_eq!(
         payload["providers"]["antigravity"]["launchProfiles"],
         serde_json::json!(["bridge", "bare"])
