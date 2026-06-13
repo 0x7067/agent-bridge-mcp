@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tokio::fs;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process::Command as ProcessCommand;
 use tokio::sync::watch;
 use tokio::time::{Duration, sleep, timeout};
@@ -189,6 +189,30 @@ mod tests {
         assert_eq!(signal_name(&status).as_deref(), Some("SIGTERM"));
         assert!(registry.is_empty());
     }
+
+    #[tokio::test]
+    async fn stderr_denial_scanner_reads_only_appended_bytes() {
+        let path = temp_path("stderr-denial-incremental");
+        let mut scanner = StderrDenialScanner::default();
+        fs::write(&path, b"patch ").await.unwrap();
+
+        let first = scanner.read_appended(&path).await;
+
+        assert_eq!(first.as_deref(), Some(b"patch ".as_slice()));
+        fs::write(&path, b"patch rejected").await.unwrap();
+
+        let second = scanner.read_appended(&path).await;
+
+        assert_eq!(second.as_deref(), Some(b"rejected".as_slice()));
+        assert!(scanner.buffer().ends_with(b"patch rejected"));
+    }
+
+    fn temp_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "agent-bridge-supervision-{label}-{}",
+            uuid::Uuid::new_v4().simple()
+        ))
+    }
 }
 
 use super::complete::{append_transcript_event, diagnostic_redactions};
@@ -197,6 +221,45 @@ use super::review::parse_transcript_line;
 pub(super) struct ChildIoDrains {
     pub stdout: Option<tokio::task::JoinHandle<()>>,
     pub stderr: Option<tokio::task::JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct StderrDenialScanner {
+    offset: u64,
+    buffer: Vec<u8>,
+}
+
+impl StderrDenialScanner {
+    async fn read_appended(&mut self, path: &Path) -> Option<Vec<u8>> {
+        let metadata = fs::metadata(path).await.ok()?;
+        if metadata.len() < self.offset {
+            self.offset = 0;
+            self.buffer.clear();
+        }
+        let mut file = fs::File::open(path).await.ok()?;
+        if file
+            .seek(std::io::SeekFrom::Start(self.offset))
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        let mut appended = Vec::new();
+        if file.read_to_end(&mut appended).await.is_err() || appended.is_empty() {
+            return None;
+        }
+        self.offset += appended.len() as u64;
+        self.buffer.extend_from_slice(&appended);
+        if self.buffer.len() > MAX_LOG_BYTES {
+            let excess = self.buffer.len() - MAX_LOG_BYTES;
+            self.buffer.drain(..excess);
+        }
+        Some(appended)
+    }
+
+    fn buffer(&self) -> &[u8] {
+        &self.buffer
+    }
 }
 
 pub(super) struct DrainLogContext {
@@ -267,6 +330,8 @@ pub(super) async fn wait_for_child(
     let mut timed_out = false;
     let mut fatal_denial = false;
     let stderr_path = agent_dir.join("stderr.log");
+    let adapter = provider::adapter_for(command.provider);
+    let mut denial_scanner = StderrDenialScanner::default();
     let output: Result<std::process::ExitStatus, String> = loop {
         tokio::select! {
             wait_result = &mut wait => {
@@ -289,9 +354,10 @@ pub(super) async fn wait_for_child(
                     }
                 };
             }
-            _ = sleep(Duration::from_millis(50)), if provider::adapter_for(command.provider).polls_stderr_for_denial() => {
-                let stderr = fs::read(&stderr_path).await.unwrap_or_default();
-                if provider::adapter_for(command.provider).detects_fatal_denial(&stderr) {
+            _ = sleep(Duration::from_millis(50)), if adapter.polls_stderr_for_denial() => {
+                if denial_scanner.read_appended(&stderr_path).await.is_some()
+                    && adapter.detects_fatal_denial(denial_scanner.buffer())
+                {
                     fatal_denial = true;
                     terminate_child_tree(pid, libc::SIGTERM);
                     break match timeout(CHILD_SHUTDOWN_GRACE, &mut wait).await {
