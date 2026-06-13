@@ -19,6 +19,7 @@ const MAX_OBSERVE_MS: i64 = 120_000;
 const MAX_OBSERVE_EVENTS: usize = 500;
 const PROGRESS_TRANSCRIPT_TAIL_BYTES: u64 = 64 * 1024;
 const ACTOR_BUFFER: usize = 128;
+const FOREIGN_TASK_REFRESH: Duration = Duration::from_millis(500);
 const CHILD_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 /// Hard upper bound on how long to wait for a child to be reaped after SIGKILL.
 /// A process the OS cannot reap within this window is reported, never waited on
@@ -32,7 +33,7 @@ pub(crate) use supervision::{
 };
 
 mod registry;
-use registry::{load_registry, now_iso, save_registry};
+use registry::{load_registry, merge_registry, now_iso, save_registry};
 
 pub(crate) use registry::{normalize_legacy_registry_fields_exported, validate_registry_text};
 
@@ -190,7 +191,7 @@ impl TaskManagerHandle {
         detailed: bool,
     ) -> Result<Value, String> {
         let deadline = Instant::now() + Duration::from_millis(normalize_wait_ms(timeout_ms) as u64);
-        let mut watcher = self.subscribe(agent_id.clone()).await?;
+        let (mut watcher, locally_active) = self.subscribe(agent_id.clone()).await?;
         loop {
             let mut status = self.status(agent_id.clone(), detailed).await?;
             if status["isFinal"].as_bool().unwrap_or(false) {
@@ -201,7 +202,8 @@ impl TaskManagerHandle {
                 status["timedOut"] = json!(true);
                 return Ok(status);
             }
-            let _ = timeout(deadline - now, watcher.changed()).await;
+            let wait_for = refresh_wait_duration(deadline - now, locally_active);
+            let _ = timeout(wait_for, watcher.changed()).await;
         }
     }
 
@@ -217,7 +219,7 @@ impl TaskManagerHandle {
         let limit = normalize_observe_limit(limit);
         let timeout_ms = normalize_observe_ms(timeout_ms);
         let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
-        let mut watcher = self.subscribe(agent_id.clone()).await?;
+        let (mut watcher, locally_active) = self.subscribe(agent_id.clone()).await?;
         loop {
             let task: TaskRecord = self
                 .request(|reply| ActorCommand::Get(agent_id.clone(), reply))
@@ -240,7 +242,8 @@ impl TaskManagerHandle {
             if now >= deadline {
                 return Ok(observe_payload(task, transcript, true, detailed));
             }
-            let _ = timeout(deadline - now, watcher.changed()).await;
+            let wait_for = refresh_wait_duration(deadline - now, locally_active);
+            let _ = timeout(wait_for, watcher.changed()).await;
         }
     }
 
@@ -395,9 +398,17 @@ impl TaskManagerHandle {
             .map_err(|_| "task manager dropped response".to_string())?
     }
 
-    async fn subscribe(&self, agent_id: String) -> Result<watch::Receiver<u64>, String> {
+    async fn subscribe(&self, agent_id: String) -> Result<TaskSubscription, String> {
         self.request(|reply| ActorCommand::Subscribe(agent_id, reply))
             .await
+    }
+}
+
+fn refresh_wait_duration(remaining: Duration, locally_active: bool) -> Duration {
+    if locally_active {
+        remaining
+    } else {
+        remaining.min(FOREIGN_TASK_REFRESH)
     }
 }
 
@@ -450,10 +461,7 @@ enum ActorCommand {
     Spawn(Value, oneshot::Sender<Result<Value, String>>),
     List(Value, oneshot::Sender<Result<Value, String>>),
     Get(String, oneshot::Sender<Result<TaskRecord, String>>),
-    Subscribe(
-        String,
-        oneshot::Sender<Result<watch::Receiver<u64>, String>>,
-    ),
+    Subscribe(String, oneshot::Sender<Result<TaskSubscription, String>>),
     InspectResult(String, oneshot::Sender<Result<TaskRecord, String>>),
     Stop(String, oneshot::Sender<Result<Value, String>>),
     Remove(String, oneshot::Sender<Result<Value, String>>),
@@ -469,6 +477,8 @@ struct TaskActor {
     tx: mpsc::Sender<ActorCommand>,
 }
 
+type TaskSubscription = (watch::Receiver<u64>, bool);
+
 impl TaskActor {
     async fn run(mut self, mut rx: mpsc::Receiver<ActorCommand>) {
         while let Some(command) = rx.recv().await {
@@ -478,19 +488,31 @@ impl TaskActor {
                     let _ = reply.send(result);
                 }
                 ActorCommand::List(arguments, reply) => {
-                    let result = list_tasks(&self.registry, arguments);
+                    let result = match self.refresh_registry().await {
+                        Ok(()) => list_tasks(&self.registry, arguments),
+                        Err(error) => Err(error),
+                    };
                     let _ = reply.send(result);
                 }
                 ActorCommand::Get(agent_id, reply) => {
-                    let result = self.require_task(&agent_id).cloned();
+                    let result = match self.refresh_registry().await {
+                        Ok(()) => self.require_task(&agent_id).cloned(),
+                        Err(error) => Err(error),
+                    };
                     let _ = reply.send(result);
                 }
                 ActorCommand::Subscribe(agent_id, reply) => {
-                    let result = self.subscribe_task(&agent_id);
+                    let result = match self.refresh_registry().await {
+                        Ok(()) => self.subscribe_task(&agent_id),
+                        Err(error) => Err(error),
+                    };
                     let _ = reply.send(result);
                 }
                 ActorCommand::InspectResult(agent_id, reply) => {
-                    let result = self.inspect_result(&agent_id).await;
+                    let result = match self.refresh_registry().await {
+                        Ok(()) => self.inspect_result(&agent_id).await,
+                        Err(error) => Err(error),
+                    };
                     let _ = reply.send(result);
                 }
                 ActorCommand::Stop(agent_id, reply) => {
@@ -939,9 +961,13 @@ impl TaskActor {
             .ok_or_else(|| format!("Unknown agent: {agent_id}"))
     }
 
-    fn subscribe_task(&mut self, agent_id: &str) -> Result<watch::Receiver<u64>, String> {
+    fn subscribe_task(&mut self, agent_id: &str) -> Result<TaskSubscription, String> {
         self.require_task(agent_id)?;
-        Ok(self.ensure_watch_sender(agent_id).subscribe())
+        let locally_active = self.active.contains_key(agent_id);
+        Ok((
+            self.ensure_watch_sender(agent_id).subscribe(),
+            locally_active,
+        ))
     }
 
     fn ensure_watch_sender(&mut self, agent_id: &str) -> &watch::Sender<u64> {
@@ -967,6 +993,12 @@ impl TaskActor {
 
     async fn save(&self) -> Result<(), String> {
         save_registry(&self.state_dir, &self.registry).await
+    }
+
+    async fn refresh_registry(&mut self) -> Result<(), String> {
+        let disk_registry = load_registry(&self.state_dir).await?;
+        merge_registry(&mut self.registry, &disk_registry);
+        Ok(())
     }
 }
 

@@ -118,7 +118,7 @@ fn save_registry_blocking(state_dir: &Path, registry: &Registry) -> Result<(), S
     std_fs::rename(&tmp_path, &registry_path).map_err(|error| error.to_string())
 }
 
-fn merge_registry(target: &mut Registry, source: &Registry) {
+pub(super) fn merge_registry(target: &mut Registry, source: &Registry) {
     for (agent_id, incoming) in &source.tasks {
         let replace = target
             .tasks

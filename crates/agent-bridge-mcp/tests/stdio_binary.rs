@@ -957,6 +957,83 @@ fn stdio_binary_reload_refreshes_workspace_roots_from_pid_file() {
 }
 
 #[test]
+fn stdio_concurrent_clients_see_each_others_tasks() {
+    let env = fixture_env();
+    let mut first = McpClient::start(&env);
+    let mut second = McpClient::start(&env);
+    first.initialize(json!({}));
+    second.initialize(json!({}));
+    let initially_listed = second.tool("agent_list", json!({"limit": 10}));
+    assert!(initially_listed["agents"].as_array().unwrap().is_empty());
+
+    let spawned = first.tool(
+        "agent_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "review",
+            "prompt": "hello from first client",
+            "cwd": env.root,
+            "timeoutSeconds": 5
+        }),
+    );
+    let agent_id = spawned["agentId"].as_str().unwrap();
+    let completed = first.tool(
+        "agent_observe",
+        json!({"agentId": agent_id, "until": "final", "timeoutMs": 30000}),
+    );
+    assert_eq!(completed["status"], "succeeded");
+
+    let listed = second.tool("agent_list", json!({"limit": 10}));
+    let listed_ids = listed["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|agent| agent["agentId"].as_str())
+        .collect::<Vec<_>>();
+
+    assert!(
+        listed_ids.contains(&agent_id),
+        "second client list should include task spawned by first client: {listed}"
+    );
+}
+
+#[test]
+fn stdio_concurrent_clients_wait_for_each_others_tasks() {
+    let env = fixture_env();
+    let mut first = McpClient::start(&env);
+    let mut second = McpClient::start(&env);
+    first.initialize(json!({}));
+    second.initialize(json!({}));
+    let initially_listed = second.tool("agent_list", json!({"limit": 10}));
+    assert!(initially_listed["agents"].as_array().unwrap().is_empty());
+
+    let spawned = first.tool(
+        "agent_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "review",
+            "prompt": "final-then-timeout",
+            "cwd": env.root,
+            "timeoutSeconds": 5
+        }),
+    );
+    let agent_id = spawned["agentId"].as_str().unwrap();
+
+    let started = Instant::now();
+    let waited = second.tool(
+        "agent_observe",
+        json!({"agentId": agent_id, "until": "final", "timeoutMs": 30000}),
+    );
+
+    assert_eq!(waited["status"], "succeeded");
+    assert_eq!(waited.get("timedOut"), None);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "foreign-client wait should poll persisted state instead of sleeping until the full observe timeout"
+    );
+}
+
+#[test]
 fn stdio_agent_extension_readiness_reports_unavailable_without_metadata() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
