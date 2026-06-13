@@ -80,6 +80,7 @@ pub fn capabilities() -> Value {
             "supportsReply": false,
             "supportsResume": false,
             "supportsWorktreeIsolation": true,
+            "effort": ["low", "medium", "high", "xhigh"],
             "thinking": ["low", "medium", "high", "xhigh"],
             "launchProfiles": ["bridge", "bare"],
             "presentationActions": presentation_actions(),
@@ -456,10 +457,21 @@ pub trait ProviderAdapter: Sync {
                 task.mode.as_str()
             ));
         }
-        if let Some(effort) = task.effort
-            && !self.supported_effort().contains(&effort)
-        {
-            return Err("effort is only supported for claude and must be one of: low, medium, high, xhigh, max".to_string());
+        if let Some(effort) = task.effort {
+            let supported_effort = self.supported_effort();
+            if supported_effort.is_empty() {
+                return Err(format!(
+                    "effort is not supported for {}",
+                    task.provider.as_str()
+                ));
+            }
+            if !supported_effort.contains(&effort) {
+                return Err(format!(
+                    "{} effort must be one of: {}",
+                    task.provider.as_str(),
+                    supported_effort.join(", ")
+                ));
+            }
         }
         if let Some(thinking) = task.thinking
             && !self.supported_thinking().contains(&thinking)
@@ -632,8 +644,31 @@ impl ProviderAdapter for KimiAdapter {
 }
 
 impl ProviderAdapter for CodexAdapter {
+    fn supported_effort(&self) -> &'static [&'static str] {
+        &["low", "medium", "high", "xhigh"]
+    }
+
     fn supported_thinking(&self) -> &'static [&'static str] {
         &["low", "medium", "high", "xhigh"]
+    }
+
+    fn validate(&self, task: &ProviderTask<'_>) -> Result<(), String> {
+        if let Some(effort) = task.effort
+            && !self.supported_effort().contains(&effort)
+        {
+            return Err("codex effort must be one of: low, medium, high, xhigh".to_string());
+        }
+        if let Some(thinking) = task.thinking
+            && !self.supported_thinking().contains(&thinking)
+        {
+            return Err("codex thinking must be one of: low, medium, high, xhigh".to_string());
+        }
+        if let (Some(effort), Some(thinking)) = (task.effort, task.thinking)
+            && effort != thinking
+        {
+            return Err("codex effort and thinking must match when both are set".to_string());
+        }
+        Ok(())
     }
 
     fn polls_stderr_for_denial(&self) -> bool {
@@ -664,11 +699,11 @@ impl ProviderAdapter for CodexAdapter {
                 ],
                 codex_profile_flags(task.profile),
                 optional_arg("--model", task.model),
-                task.thinking
-                    .map(|thinking| {
+                codex_reasoning_effort(task)
+                    .map(|effort| {
                         vec![
                             "--config".to_string(),
-                            format!("model_reasoning_effort=\"{thinking}\""),
+                            format!("model_reasoning_effort=\"{effort}\""),
                         ]
                     })
                     .unwrap_or_default(),
@@ -685,6 +720,10 @@ impl ProviderAdapter for CodexAdapter {
             profile_diagnostics: profile_diagnostics(task.provider, task.profile),
         }
     }
+}
+
+fn codex_reasoning_effort<'a>(task: &'a ProviderTask<'a>) -> Option<&'a str> {
+    task.thinking.or(task.effort)
 }
 
 impl ProviderAdapter for ForgeAdapter {
@@ -1126,16 +1165,38 @@ mod tests {
     }
 
     #[test]
+    fn codex_build_command_accepts_effort_as_thinking_alias() {
+        let mut t = task(ProviderKind::Codex, TaskMode::Review);
+        t.effort = Some("high");
+        let command = build_command(&t).unwrap();
+        assert!(
+            command
+                .args
+                .iter()
+                .any(|arg| arg == "model_reasoning_effort=\"high\"")
+        );
+
+        let mut conflicting = task(ProviderKind::Codex, TaskMode::Review);
+        conflicting.effort = Some("high");
+        conflicting.thinking = Some("low");
+        let error = build_command(&conflicting).unwrap_err();
+        assert!(error.contains("codex effort and thinking must match"));
+    }
+
+    #[test]
     fn validate_options_enforces_provider_rules() {
         // Cursor rejects command mode.
         assert!(validate_options(&task(ProviderKind::Cursor, TaskMode::Command)).is_err());
-        // effort only for claude.
+        // effort is accepted only where the provider has a reasoning contract.
         let mut codex = task(ProviderKind::Codex, TaskMode::Research);
         codex.effort = Some("high");
-        assert!(validate_options(&codex).is_err());
+        assert!(validate_options(&codex).is_ok());
         let mut claude = task(ProviderKind::Claude, TaskMode::Research);
         claude.effort = Some("high");
         assert!(validate_options(&claude).is_ok());
+        let mut cursor_effort = task(ProviderKind::Cursor, TaskMode::Research);
+        cursor_effort.effort = Some("high");
+        assert!(validate_options(&cursor_effort).is_err());
         // thinking rules per provider.
         let mut kimi = task(ProviderKind::Kimi, TaskMode::Research);
         kimi.thinking = Some("off");

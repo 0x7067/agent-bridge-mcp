@@ -1034,6 +1034,39 @@ fn stdio_concurrent_clients_wait_for_each_others_tasks() {
 }
 
 #[test]
+fn stdio_concurrent_clients_can_stop_each_others_tasks() {
+    let env = fixture_env();
+    let mut first = McpClient::start(&env);
+    let mut second = McpClient::start(&env);
+    first.initialize(json!({}));
+    second.initialize(json!({}));
+    let initially_listed = second.tool("agent_list", json!({"limit": 10}));
+    assert!(initially_listed["agents"].as_array().unwrap().is_empty());
+
+    let spawned = first.tool(
+        "agent_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "review",
+            "prompt": "sleep-long",
+            "cwd": env.root,
+            "timeoutSeconds": 20
+        }),
+    );
+    let agent_id = spawned["agentId"].as_str().unwrap();
+
+    let stopped = second.tool("agent_stop", json!({"agentId": agent_id}));
+    assert_eq!(stopped["status"], "stopped");
+
+    let observed = first.tool(
+        "agent_observe",
+        json!({"agentId": agent_id, "until": "final", "timeoutMs": 30000}),
+    );
+    assert_eq!(observed["status"], "stopped");
+    assert_eq!(observed["isFinal"], true);
+}
+
+#[test]
 fn stdio_agent_extension_readiness_reports_unavailable_without_metadata() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
@@ -1338,6 +1371,10 @@ fn stdio_providers_preview_and_safety_checks() {
         json!(["bridge", "bare"])
     );
     assert_eq!(
+        providers["providers"]["codex"]["effort"],
+        json!(["low", "medium", "high", "xhigh"])
+    );
+    assert_eq!(
         providers["providers"]["codex"]["reducedConfiguration"]["configIsolation"],
         "supported"
     );
@@ -1426,6 +1463,26 @@ fn stdio_providers_preview_and_safety_checks() {
             .unwrap()
             .iter()
             .any(|arg| arg == "<prompt redacted>")
+    );
+
+    let codex_effort_preview = client.tool(
+        "agent_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "review",
+            "prompt": "codex effort prompt",
+            "cwd": env.root,
+            "effort": "high",
+            "dryRun": true
+        }),
+    );
+    assert!(
+        codex_effort_preview["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|arg| arg == "model_reasoning_effort=\"high\""),
+        "Codex effort should be accepted as a reasoning alias: {codex_effort_preview}"
     );
 
     let forge_preview = client.tool(

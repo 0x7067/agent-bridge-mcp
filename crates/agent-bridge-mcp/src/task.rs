@@ -671,14 +671,18 @@ impl TaskActor {
     }
 
     async fn stop(&mut self, agent_id: &str) -> Result<Value, String> {
+        self.refresh_registry().await?;
         let active = self.active.remove(agent_id);
         let task = self.require_agent_mut(agent_id)?;
         if active.is_none() {
             if is_final(task.status) {
                 return Ok(public_task(task));
             }
-            return Err(format!("agent is not running: {agent_id}"));
+            if task.pid.is_none() {
+                return Err(format!("agent is not running: {agent_id}"));
+            }
         }
+        let pid = active.as_ref().and_then(|active| active.pid).or(task.pid);
         transition_status(task, TaskStatus::Stopped)?;
         task.error_type = Some(ErrorType::Stopped);
         task.updated_at = now_iso();
@@ -695,13 +699,13 @@ impl TaskActor {
         let public = public_task(task);
         self.save().await?;
         self.signal_task(agent_id);
-        if let Some(mut active) = active {
-            if let Some(pid) = active.pid {
-                terminate_child_tree(pid, libc::SIGTERM);
-            }
-            if let Some(cancel) = active.cancel.take() {
-                let _ = cancel.send(());
-            }
+        if let Some(pid) = pid {
+            terminate_child_tree(pid, libc::SIGTERM);
+        }
+        if let Some(mut active) = active
+            && let Some(cancel) = active.cancel.take()
+        {
+            let _ = cancel.send(());
         }
         Ok(public)
     }
@@ -788,6 +792,7 @@ impl TaskActor {
     )]
     async fn complete(&mut self, completion: TaskCompletion) -> Result<(), String> {
         let finalize_started = Instant::now();
+        self.refresh_registry().await?;
         self.active.remove(&completion.agent_id);
 
         let retry_info = {
