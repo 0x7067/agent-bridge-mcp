@@ -841,17 +841,11 @@ fn stdio_binary_reload_refreshes_workspace_roots_from_pid_file() {
     client.initialize(json!({}));
 
     assert!(env.state_dir.join("server.pid").exists());
-    let second = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"))
-        .env("HOME", &env.root)
-        .env("AGENT_BRIDGE_STATE_DIR", &env.state_dir)
-        .env_remove("AGENT_BRIDGE_WORKSPACES")
-        .output()
-        .unwrap();
-    assert!(!second.status.success());
-    assert!(
-        String::from_utf8_lossy(&second.stderr).contains("already appears to be running"),
-        "stderr: {}",
-        String::from_utf8_lossy(&second.stderr)
+    let mut second_client = McpClient::start_without_workspace(&env);
+    let second_initialize = second_client.initialize(json!({}));
+    assert_eq!(
+        second_initialize["result"]["serverInfo"]["name"],
+        "agent-bridge-mcp"
     );
 
     let rejected_before_update = client.tool_error(

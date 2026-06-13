@@ -161,6 +161,7 @@ fn read_pid(path: &Path) -> Result<u32, String> {
 struct PidLock {
     path: PathBuf,
     pid: u32,
+    registered: bool,
 }
 
 impl PidLock {
@@ -169,21 +170,27 @@ impl PidLock {
         let path = state_dir.join("server.pid");
         if let Ok(pid) = read_pid(&path) {
             if process_holds_pid_lock(pid) {
-                return Err(format!(
-                    "Agent Bridge server already appears to be running with pid {pid}; stop it before starting another instance"
-                ));
+                return Ok(Self {
+                    path,
+                    pid: std::process::id(),
+                    registered: false,
+                });
             }
             let _ = std::fs::remove_file(&path);
         }
         let pid = std::process::id();
         std::fs::write(&path, format!("{pid}\n")).map_err(|error| error.to_string())?;
-        Ok(Self { path, pid })
+        Ok(Self {
+            path,
+            pid,
+            registered: true,
+        })
     }
 }
 
 impl Drop for PidLock {
     fn drop(&mut self) {
-        if read_pid(&self.path).ok() == Some(self.pid) {
+        if self.registered && read_pid(&self.path).ok() == Some(self.pid) {
             let _ = std::fs::remove_file(&self.path);
         }
     }

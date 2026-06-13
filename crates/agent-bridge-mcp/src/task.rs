@@ -60,6 +60,17 @@ fn max_active_tasks() -> usize {
         .unwrap_or(crate::config::DEFAULT_MAX_ACTIVE_TASKS)
 }
 
+#[cfg(unix)]
+fn owner_process_is_alive(pid: u32) -> bool {
+    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    result == 0 || std::io::Error::last_os_error().kind() == std::io::ErrorKind::PermissionDenied
+}
+
+#[cfg(not(unix))]
+fn owner_process_is_alive(_pid: u32) -> bool {
+    false
+}
+
 #[derive(Clone)]
 pub struct TaskManagerHandle {
     tx: mpsc::Sender<ActorCommand>,
@@ -91,6 +102,9 @@ impl TaskManagerHandle {
         // worktree.
         for task in registry.tasks.values_mut() {
             if matches!(task.status, TaskStatus::Queued | TaskStatus::Running) {
+                if task.owner_pid.is_some_and(owner_process_is_alive) {
+                    continue;
+                }
                 transition_status(task, TaskStatus::FailedStale)?;
                 task.error = Some(
                     "task was running when the MCP server restarted; resume is not supported in v1"
@@ -587,6 +601,7 @@ impl TaskActor {
             prompt_strategy: command.prompt_strategy.clone(),
             profile_diagnostics: Some(command.profile_diagnostics.clone()),
             pid: None,
+            owner_pid: Some(std::process::id()),
             created_at: created_at.clone(),
             updated_at: created_at,
             started_at: None,
@@ -1035,6 +1050,8 @@ pub struct TaskRecord {
     pub profile_diagnostics: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_pid: Option<u32>,
     pub created_at: String,
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1125,6 +1142,7 @@ mod tests {
             prompt_strategy: "bridge".to_string(),
             profile_diagnostics: None,
             pid: None,
+            owner_pid: None,
             created_at: now_iso(),
             updated_at: now_iso(),
             started_at: None,
@@ -1148,6 +1166,58 @@ mod tests {
             spawn_input: Value::Null,
             partial_results: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn save_registry_preserves_records_from_concurrent_snapshot() {
+        let state_dir = temp_dir("registry-merge");
+        let mut first_task = sample_task(TaskStatus::Succeeded);
+        first_task.agent_id = "agent_first".to_string();
+        first_task.updated_at = "2026-06-13T17:00:00.000Z".to_string();
+        let mut second_task = sample_task(TaskStatus::Failed);
+        second_task.agent_id = "agent_second".to_string();
+        second_task.updated_at = "2026-06-13T17:00:01.000Z".to_string();
+
+        let mut first = Registry {
+            tasks: BTreeMap::new(),
+        };
+        first.tasks.insert(first_task.agent_id.clone(), first_task);
+        let mut second = Registry {
+            tasks: BTreeMap::new(),
+        };
+        second
+            .tasks
+            .insert(second_task.agent_id.clone(), second_task);
+
+        save_registry(&state_dir, &first).await.unwrap();
+        save_registry(&state_dir, &second).await.unwrap();
+
+        let loaded = load_registry(&state_dir).await.unwrap();
+        assert!(loaded.tasks.contains_key("agent_first"));
+        assert!(loaded.tasks.contains_key("agent_second"));
+    }
+
+    #[tokio::test]
+    async fn start_preserves_running_task_owned_by_live_bridge() {
+        let state_dir = temp_dir("live-owner");
+        let mut task = sample_task(TaskStatus::Running);
+        task.agent_id = "agent_live_owner".to_string();
+        task.owner_pid = Some(std::process::id());
+
+        let mut registry = Registry {
+            tasks: BTreeMap::new(),
+        };
+        registry.tasks.insert(task.agent_id.clone(), task);
+        save_registry(&state_dir, &registry).await.unwrap();
+
+        let manager = TaskManagerHandle::start(state_dir).await.unwrap();
+        let status = manager
+            .status("agent_live_owner".to_string(), true)
+            .await
+            .unwrap();
+
+        assert_eq!(status["status"], "running");
+        assert_eq!(status["errorType"], Value::Null);
     }
 
     fn next_items(task: &Value) -> &Vec<Value> {
