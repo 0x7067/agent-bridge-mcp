@@ -11,7 +11,7 @@ use std::cmp::Ordering;
 use std::io::{BufRead, BufReader as StdBufReader, ErrorKind, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 pub(super) fn parse_transcript_line(line: &str) -> (&'static str, Value) {
     let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
         return ("provider_event", json!({}));
@@ -833,12 +833,20 @@ pub(super) struct CappedText {
 }
 
 pub(super) async fn read_capped_file(path: &Path, max_bytes: usize) -> Result<CappedText, String> {
-    match fs::read(path).await {
-        Ok(bytes) => {
+    match fs::File::open(path).await {
+        Ok(file) => {
+            let mut reader = file.take(max_bytes.saturating_add(1) as u64);
+            let mut bytes = Vec::new();
+            reader
+                .read_to_end(&mut bytes)
+                .await
+                .map_err(|error| error.to_string())?;
             let truncated = bytes.len() > max_bytes;
-            let capped = &bytes[..bytes.len().min(max_bytes)];
+            if truncated {
+                bytes.truncate(max_bytes);
+            }
             Ok(CappedText {
-                text: String::from_utf8_lossy(capped).to_string(),
+                text: String::from_utf8_lossy(&bytes).to_string(),
                 truncated,
             })
         }

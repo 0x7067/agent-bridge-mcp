@@ -1522,6 +1522,42 @@ mod tests {
         assert_eq!(progress["lastEventAt"], output_at);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_capped_file_returns_without_waiting_for_fifo_eof() {
+        use std::io::Write;
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = temp_dir("capped-fifo");
+        let fifo = dir.join("stdout.log");
+        let fifo_name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `fifo_name` is a NUL-terminated path derived from a temp path
+        // without interior NULs, and `mkfifo` does not retain the pointer.
+        assert_eq!(unsafe { libc::mkfifo(fifo_name.as_ptr(), 0o600) }, 0);
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let writer_fifo = fifo.clone();
+        let writer = std::thread::spawn(move || {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(writer_fifo)
+                .unwrap();
+            file.write_all(b"abcdef").unwrap();
+            file.flush().unwrap();
+            let _ = release_rx.recv();
+        });
+
+        let result =
+            tokio::time::timeout(Duration::from_millis(250), read_capped_file(&fifo, 3)).await;
+        let _ = release_tx.send(());
+        writer.join().unwrap();
+        let capped = result
+            .expect("bounded read should not wait for FIFO EOF")
+            .unwrap();
+
+        assert_eq!(capped.text, "abc");
+        assert!(capped.truncated);
+    }
+
     #[tokio::test]
     async fn load_registry_removes_known_temp_files() {
         let dir = temp_dir("registry-temp");
