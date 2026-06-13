@@ -4,6 +4,8 @@ use super::{MAX_LOG_BYTES, TaskCompletion};
 use crate::domain::{ErrorType, FailureCategory, PartialResult, ProviderKind, TaskStatus};
 use crate::provider::{self, ProviderCommand};
 use serde_json::{Value, json};
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -575,22 +577,17 @@ pub(super) async fn git_command(args: &[&str], cwd: &str) -> Result<std::process
 /// `final_result_detected` is false.
 pub(super) fn scan_partial_results(agent_dir: &str) -> Vec<PartialResult> {
     let path = PathBuf::from(agent_dir).join("transcript.jsonl");
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
+    let tail = match transcript_tail_lines(&path, 1024) {
+        Ok(tail) => tail,
         Err(_) => return Vec::new(),
     };
-    let lines: Vec<&str> = text.lines().collect();
-    let tail_start = lines.len().saturating_sub(1024);
-    let tail = &lines[tail_start..];
+    let values = tail
+        .iter()
+        .filter_map(|line| parse_transcript_line(line))
+        .collect::<Vec<_>>();
     // If any provider_result sits in the tail, the task achieved a final
     // conclusion and nothing in the tail counts as "partial".
-    for line in tail.iter() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
+    for value in values.iter() {
         let is_provider_result = value.get("type").and_then(Value::as_str) == Some("result")
             && value.get("result").and_then(Value::as_str).is_some();
         if is_provider_result {
@@ -598,13 +595,7 @@ pub(super) fn scan_partial_results(agent_dir: &str) -> Vec<PartialResult> {
         }
     }
     let mut results = Vec::new();
-    for line in tail.iter() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
+    for value in values {
         let source = value
             .get("source")
             .and_then(Value::as_str)
@@ -642,6 +633,49 @@ pub(super) fn scan_partial_results(agent_dir: &str) -> Vec<PartialResult> {
     results
 }
 
+fn transcript_tail_lines(path: &Path, max_lines: usize) -> std::io::Result<Vec<Vec<u8>>> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut tail = VecDeque::with_capacity(max_lines);
+    loop {
+        let mut line = Vec::new();
+        let read = reader.read_until(b'\n', &mut line)?;
+        if read == 0 {
+            break;
+        }
+        if tail.len() == max_lines {
+            tail.pop_front();
+        }
+        tail.push_back(line);
+    }
+    Ok(tail.into_iter().collect())
+}
+
+fn parse_transcript_line(line: &[u8]) -> Option<Value> {
+    let line = trim_ascii_whitespace(line);
+    if line.is_empty() {
+        return None;
+    }
+    let text = std::str::from_utf8(line).ok()?;
+    serde_json::from_str::<Value>(text).ok()
+}
+
+fn trim_ascii_whitespace(mut bytes: &[u8]) -> &[u8] {
+    while let Some((first, rest)) = bytes.split_first() {
+        if !first.is_ascii_whitespace() {
+            break;
+        }
+        bytes = rest;
+    }
+    while let Some((last, rest)) = bytes.split_last() {
+        if !last.is_ascii_whitespace() {
+            break;
+        }
+        bytes = rest;
+    }
+    bytes
+}
+
 pub(super) fn command_provider_hint(command: &ProviderCommand) -> ProviderKind {
     command.provider
 }
@@ -666,6 +700,11 @@ mod tests {
         for line in lines {
             writeln!(file, "{line}").unwrap();
         }
+    }
+
+    fn write_transcript_bytes(agent_dir: &str, bytes: &[u8]) {
+        let path = PathBuf::from(agent_dir).join("transcript.jsonl");
+        std::fs::write(path, bytes).unwrap();
     }
 
     #[test]
@@ -702,6 +741,27 @@ mod tests {
         assert_eq!(results[0].source, "stdout");
         assert_eq!(results[1].summary, "warn");
         assert_eq!(results[1].source, "stderr");
+    }
+
+    #[test]
+    fn scan_partial_results_skips_corrupted_lines_before_tail() {
+        let agent_dir = temp_agent_dir();
+        let mut bytes = b"\xff\n".to_vec();
+        for index in 0..=1024 {
+            bytes.extend_from_slice(
+                format!(
+                    "{{\"ts\":\"{index}\",\"source\":\"stdout\",\"kind\":\"provider_event\",\"raw\":\"event-{index}\"}}\n"
+                )
+                .as_bytes(),
+            );
+        }
+        write_transcript_bytes(&agent_dir, &bytes);
+
+        let results = scan_partial_results(&agent_dir);
+
+        assert_eq!(results.len(), 1024);
+        assert_eq!(results[0].summary, "event-1");
+        assert_eq!(results[1023].summary, "event-1024");
     }
 
     #[test]
