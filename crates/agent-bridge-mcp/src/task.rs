@@ -1446,6 +1446,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_transcript_skips_corrupted_lines_before_cursor() {
+        let agent_dir = temp_dir("transcript-corrupt-prefix");
+        let mut task = sample_task(TaskStatus::Running);
+        task.agent_dir = agent_dir.display().to_string();
+        let transcript_path = agent_dir.join("transcript.jsonl");
+        fs::write(
+            &transcript_path,
+            [
+                br#"{"kind":"provider_event","source":"stdout"}"#.as_slice(),
+                b"\n",
+                b"\xffnot utf8\n",
+                br#"{"kind":"provider_result","source":"stdout","text":"ready"}"#.as_slice(),
+                b"\n",
+            ]
+            .concat(),
+        )
+        .await
+        .unwrap();
+
+        let transcript = read_transcript(&task, 2, 10).await.unwrap();
+
+        assert_eq!(transcript["available"], true);
+        assert_eq!(transcript["nextCursor"], 3);
+        assert_eq!(transcript["truncated"], false);
+        let events = transcript["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["kind"], "provider_result");
+        assert_eq!(events[0]["index"], 2);
+    }
+
+    #[test]
+    fn transcript_evidence_skips_corrupted_lines() {
+        let agent_dir = temp_dir("transcript-evidence-corrupt-line");
+        let transcript_path = agent_dir.join("transcript.jsonl");
+        std::fs::write(
+            &transcript_path,
+            [
+                b"\xffnot utf8\n".as_slice(),
+                br#"{"kind":"provider_result","source":"stdout","text":"ready"}"#.as_slice(),
+                b"\n",
+            ]
+            .concat(),
+        )
+        .unwrap();
+
+        let evidence = transcript_evidence(&agent_dir.display().to_string());
+
+        assert_eq!(evidence, (true, true, false));
+    }
+
+    #[test]
+    fn progress_snapshot_skips_corrupted_lines() {
+        let agent_dir = temp_dir("progress-snapshot-corrupt-line");
+        let mut task = sample_task(TaskStatus::Running);
+        task.agent_dir = agent_dir.display().to_string();
+        let output_at = "2026-06-13T12:34:56.000Z";
+        std::fs::write(
+            agent_dir.join("transcript.jsonl"),
+            [
+                b"\xffnot utf8\n".as_slice(),
+                br#"{"kind":"provider_event","source":"stdout","ts":"2026-06-13T12:34:56.000Z"}"#
+                    .as_slice(),
+                b"\n",
+            ]
+            .concat(),
+        )
+        .unwrap();
+
+        let progress = public_task(&task)["progress"].clone();
+
+        assert_eq!(progress["lastOutputAt"], output_at);
+        assert_eq!(progress["lastEventAt"], output_at);
+    }
+
+    #[tokio::test]
     async fn load_registry_removes_known_temp_files() {
         let dir = temp_dir("registry-temp");
         let tmp = dir.join("registry.json.tmp-test");

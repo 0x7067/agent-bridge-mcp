@@ -8,9 +8,10 @@ use crate::provider::{self};
 use chrono::Utc;
 use serde_json::{Value, json};
 use std::cmp::Ordering;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader as StdBufReader, ErrorKind, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use tokio::fs;
+use tokio::io::{AsyncBufReadExt, BufReader};
 pub(super) fn parse_transcript_line(line: &str) -> (&'static str, Value) {
     let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
         return ("provider_event", json!({}));
@@ -31,53 +32,73 @@ pub(super) async fn read_transcript(
     limit: usize,
 ) -> Result<Value, String> {
     let path = PathBuf::from(&task.agent_dir).join("transcript.jsonl");
-    if !path.exists() {
-        return Ok(json!({
-            "agentId": task.agent_id,
-            "available": false,
-            "events": [],
-            "nextCursor": cursor,
-            "message": "transcript not available"
-        }));
-    }
-    let text = fs::read_to_string(&path)
-        .await
-        .map_err(|error| error.to_string())?;
-    let all_lines: Vec<&str> = text.lines().collect();
     let max_events = limit.clamp(1, 500);
+    let file = match fs::File::open(&path).await {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok(json!({
+                "agentId": task.agent_id,
+                "available": false,
+                "events": [],
+                "nextCursor": cursor,
+                "message": "transcript not available"
+            }));
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut reader = BufReader::new(file);
     let mut events = Vec::new();
-    for (index, line) in all_lines.iter().enumerate().skip(cursor).take(max_events) {
-        let mut event: Value =
-            serde_json::from_str(line).unwrap_or_else(|_| json!({"kind": "malformed"}));
-        event = redact_value(event, &provider_env_redactions(task.provider));
-        event["index"] = json!(index);
-        events.push(event);
+    let mut line = Vec::new();
+    let mut line_index = 0usize;
+    let mut truncated = false;
+    loop {
+        line.clear();
+        let bytes = reader
+            .read_until(b'\n', &mut line)
+            .await
+            .map_err(|error| error.to_string())?;
+        if bytes == 0 {
+            break;
+        }
+        if line_index >= cursor {
+            if events.len() >= max_events {
+                truncated = true;
+                break;
+            }
+            trim_jsonl_line(&mut line);
+            let mut event =
+                parse_jsonl_value(&line).unwrap_or_else(|| json!({"kind": "malformed"}));
+            event = redact_value(event, &provider_env_redactions(task.provider));
+            event["index"] = json!(line_index);
+            events.push(event);
+        }
+        line_index += 1;
     }
-    let next_cursor = (cursor + events.len()).min(all_lines.len());
+    let next_cursor = if events.is_empty() {
+        cursor.min(line_index)
+    } else {
+        cursor + events.len()
+    };
     Ok(json!({
         "agentId": task.agent_id,
         "available": true,
         "events": events,
         "nextCursor": next_cursor,
-        "truncated": next_cursor < all_lines.len()
+        "truncated": truncated
     }))
 }
 
 pub(super) fn transcript_evidence(agent_dir: &str) -> (bool, bool, bool) {
     let path = PathBuf::from(agent_dir).join("transcript.jsonl");
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Ok(file) = std::fs::File::open(path) else {
         return (false, false, false);
     };
+    let mut reader = StdBufReader::new(file);
     let mut has_event = false;
     let mut has_provider_output = false;
     let mut has_result = false;
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
+    let mut line = Vec::new();
+    for_each_jsonl_value(&mut reader, &mut line, |value| {
         has_event = true;
         let kind = value.get("kind").and_then(Value::as_str);
         let source = value.get("source").and_then(Value::as_str);
@@ -87,7 +108,7 @@ pub(super) fn transcript_evidence(agent_dir: &str) -> (bool, bool, bool) {
         if kind == Some("provider_result") {
             has_result = true;
         }
-    }
+    });
     (has_event, has_result, has_provider_output && !has_result)
 }
 
@@ -288,26 +309,22 @@ pub(super) fn transcript_progress_snapshot(task: &TaskRecord) -> TranscriptProgr
             last_output_at: None,
         };
     }
-    let mut text = String::new();
-    if file.read_to_string(&mut text).is_err() {
-        return TranscriptProgressSnapshot {
-            last_event_at: None,
-            last_output_at: None,
-        };
-    }
-    if start > 0
-        && let Some(index) = text.find('\n')
-    {
-        text = text[index + 1..].to_string();
+    let mut reader = StdBufReader::new(file);
+    let mut line = Vec::new();
+    if start > 0 {
+        line.clear();
+        if reader.read_until(b'\n', &mut line).is_err() {
+            return TranscriptProgressSnapshot {
+                last_event_at: None,
+                last_output_at: None,
+            };
+        }
     }
     let mut snapshot = TranscriptProgressSnapshot {
         last_event_at: None,
         last_output_at: None,
     };
-    for line in text.lines() {
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
+    for_each_jsonl_value(&mut reader, &mut line, |value| {
         let timestamp = value
             .get("ts")
             .or_else(|| value.get("timestamp"))
@@ -324,8 +341,43 @@ pub(super) fn transcript_progress_snapshot(task: &TaskRecord) -> TranscriptProgr
                 snapshot.last_output_at = Some(timestamp);
             }
         }
-    }
+    });
     snapshot
+}
+
+fn for_each_jsonl_value(
+    reader: &mut impl BufRead,
+    line: &mut Vec<u8>,
+    mut visit: impl FnMut(Value),
+) {
+    loop {
+        line.clear();
+        let Ok(bytes) = reader.read_until(b'\n', line) else {
+            break;
+        };
+        if bytes == 0 {
+            break;
+        }
+        trim_jsonl_line(line);
+        if let Some(value) = parse_jsonl_value(line) {
+            visit(value);
+        }
+    }
+}
+
+fn trim_jsonl_line(line: &mut Vec<u8>) {
+    while matches!(line.last(), Some(b'\n' | b'\r')) {
+        line.pop();
+    }
+}
+
+fn parse_jsonl_value(line: &[u8]) -> Option<Value> {
+    if line.iter().all(u8::is_ascii_whitespace) {
+        return None;
+    }
+    std::str::from_utf8(line)
+        .ok()
+        .and_then(|line| serde_json::from_str::<Value>(line).ok())
 }
 
 pub(super) fn observe_payload(
