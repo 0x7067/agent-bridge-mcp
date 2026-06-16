@@ -43,14 +43,14 @@ provider credentials, or host keychain permissions.
 
 First-class provider adapters:
 
-| Provider | Local CLI | Notes |
+| Provider | ACP command | Notes |
 | --- | --- | --- |
-| `claude` | `claude` | Runs through the Agent Bridge-owned interactive PTY host runner. |
-| `codex` | `codex exec` | Uses noninteractive Codex execution. |
-| `cursor` | `cursor-agent -p` | Uses Cursor Agent prompt mode. |
-| `kimi` | `pi -p` | Uses the local Pi/Kimi CLI. |
-| `forge` | `forge -p` | Uses Forge direct prompt mode. |
-| `antigravity` | `agy --print` | Uses Antigravity CLI print mode. |
+| `claude` | `CLAUDE_ACP_BIN` or `claude-agent` | Launches through ACP. |
+| `codex` | `CODEX_ACP_BIN` | Required ACP command. |
+| `cursor` | `CURSOR_ACP_BIN` | Required ACP command. |
+| `kimi` | `KIMI_ACP_BIN` or `kimi acp` | Launches through ACP. |
+| `forge` | `FORGE_ACP_BIN` | Required ACP command. |
+| `antigravity` | `ANTIGRAVITY_ACP_BIN` | Required ACP command. |
 
 Supported task modes are `research`, `review`, `implement`, and `command`.
 Provider/mode combinations are validated before launch.
@@ -59,11 +59,11 @@ Provider/mode combinations are validated before launch.
 
 - Rust toolchain with Cargo.
 - `git` on `PATH`.
-- Optional provider CLIs depending on which providers you want to use:
-  `claude`, `codex`, `cursor-agent`, `pi`, `forge`, and/or `agy`.
-- For Claude provider tasks: run the Claude host runner outside restricted
-  sandboxes and point the MCP server at its Unix socket with
-  `AGENT_BRIDGE_CLAUDE_HOST_SOCKET`.
+- Optional ACP-capable provider commands depending on which providers you want
+  to use. Extra launch arguments can be supplied with the matching
+  `*_ACP_ARGS` variable.
+- The Claude host-runner diagnostic surface may still be configured with
+  `AGENT_BRIDGE_CLAUDE_HOST_SOCKET`, but provider task launches use ACP.
 
 ## Build And Test
 
@@ -183,7 +183,7 @@ Use this flow for Cursor:
 3. Confirm Cursor loads the `agent-bridge` server from `.cursor/mcp.json`.
 4. Call `doctor` from Cursor. For provider readiness only, call it with
    `focus: "providers"`; add `smoke: true` only when you want to launch-check
-   local provider CLIs.
+   local ACP provider commands.
 5. Preview a minimal Cursor provider task without spawning it by calling
    `agent_spawn` with `dryRun: true`, `provider: "cursor"`, `mode: "research"`,
    `cwd` set to this repo, and a short prompt.
@@ -194,36 +194,10 @@ environment interpolation such as `${env:NAME}` for machine-local values.
 
 ## Claude Host Runner
 
-Claude tasks use an Agent Bridge-owned host runner so interactive Claude Code can
-run in a PTY while the MCP server stays a stdio process.
-
-Start the host runner in a trusted shell:
-
-```bash
-mkdir -p ~/.agent-bridge-mcp/run
-AGENT_BRIDGE_WORKSPACES="/path/to/workspaces" \
-  agent-bridge-mcp claude-host-runner ~/.agent-bridge-mcp/run/claude-host.sock
-```
-
-Expose the same socket to the MCP server:
-
-```json
-{
-  "mcpServers": {
-    "agent-bridge": {
-      "command": "agent-bridge-mcp",
-      "env": {
-        "AGENT_BRIDGE_WORKSPACES": "/path/to/workspaces",
-        "AGENT_BRIDGE_STATE_DIR": "~/.agent-bridge-mcp/state",
-        "AGENT_BRIDGE_CLAUDE_HOST_SOCKET": "~/.agent-bridge-mcp/run/claude-host.sock"
-      }
-    }
-  }
-}
-```
-
-Run `doctor` with `focus: "providers"` and `smoke: true` when validating a
-Claude setup.
+The Claude host-runner subcommand remains available for legacy diagnostics, but
+provider task launches use ACP. New Claude provider setup should configure
+`CLAUDE_ACP_BIN` and optional `CLAUDE_ACP_ARGS`, then run `doctor` with
+`focus: "providers"` and `smoke: true` to validate launch readiness.
 
 ## Recommended Workflow
 

@@ -49,6 +49,8 @@ use review::{
 mod complete;
 use complete::{append_transcript_event, git_snapshot, provider_env_redactions, run_git};
 
+pub(crate) mod acp;
+
 mod spawn;
 use spawn::{
     apply_launch_outcome, create_worktree, default_launch_profile, launch_task, safe_cwd,

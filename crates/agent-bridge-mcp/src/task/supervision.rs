@@ -224,13 +224,13 @@ pub(super) struct ChildIoDrains {
 }
 
 #[derive(Default)]
-struct StderrDenialScanner {
+pub(super) struct StderrDenialScanner {
     offset: u64,
     buffer: Vec<u8>,
 }
 
 impl StderrDenialScanner {
-    async fn read_appended(&mut self, path: &Path) -> Option<Vec<u8>> {
+    pub(super) async fn read_appended(&mut self, path: &Path) -> Option<Vec<u8>> {
         let metadata = fs::metadata(path).await.ok()?;
         if metadata.len() < self.offset {
             self.offset = 0;
@@ -257,7 +257,7 @@ impl StderrDenialScanner {
         Some(appended)
     }
 
-    fn buffer(&self) -> &[u8] {
+    pub(super) fn buffer(&self) -> &[u8] {
         &self.buffer
     }
 }

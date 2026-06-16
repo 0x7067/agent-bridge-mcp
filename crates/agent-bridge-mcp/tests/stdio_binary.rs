@@ -86,10 +86,15 @@ impl McpClient {
             .env_remove("AGENT_BRIDGE_STATE_DIR")
             .env("HOME", &env.root)
             .env("CURSOR_AGENT_BIN", &env.fake_provider)
+            .env("CURSOR_ACP_BIN", &env.fake_provider)
             .env("PI_BIN", &env.fake_provider)
+            .env("KIMI_ACP_BIN", &env.fake_provider)
             .env("CODEX_BIN", &env.fake_provider)
+            .env("CODEX_ACP_BIN", &env.fake_provider)
             .env("FORGE_BIN", &env.fake_provider)
+            .env("FORGE_ACP_BIN", &env.fake_provider)
             .env("AGY_BIN", &env.fake_provider)
+            .env("ANTIGRAVITY_ACP_BIN", &env.fake_provider)
             .env("ANTHROPIC_API_KEY", "test-key")
             .env("ANTHROPIC_AUTH_TOKEN", "test-auth-token")
             .env("CLAUDE_CODE_OAUTH_TOKEN", "test-code-oauth-token")
@@ -107,6 +112,7 @@ impl McpClient {
             command.env("AGENT_BRIDGE_STATE_DIR", state_dir);
         }
         command.env("CLAUDE_BIN", &env.fake_provider);
+        command.env("CLAUDE_ACP_BIN", &env.fake_provider);
         for (key, value) in extra_env {
             command.env(key, value);
         }
@@ -227,23 +233,34 @@ fn fixture_env() -> FixtureEnv {
         &fake_provider,
         [
             "#!/bin/sh",
-            "stdin=$(cat)",
             "if [ -n \"$AGENT_BRIDGE_STATE_DIR\" ]; then",
             "  mkdir -p \"$AGENT_BRIDGE_STATE_DIR/provider-log\"",
             "  printf '%s\\n' \"$*\" > \"$AGENT_BRIDGE_STATE_DIR/provider-log/argv.txt\"",
-            "  printf '%s' \"$stdin\" > \"$AGENT_BRIDGE_STATE_DIR/provider-log/stdin.txt\"",
             "fi",
-            "if [ \"$1\" = \"--version\" ]; then",
+            "case \"$*\" in",
+            "  *--version*)",
             "  echo fake-provider 1.0.0",
             "  exit 0",
-            "fi",
-            "case \"$stdin\" in",
-            "  *echo-api-key*)",
-            "    echo \"$ANTHROPIC_API_KEY\"",
+            "    ;;",
+            "esac",
+            "read init || exit 1",
+            "printf '%s\\n' \"$init\" > \"$AGENT_BRIDGE_STATE_DIR/provider-log/stdin.txt\"",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+            "read new_session || exit 1",
+            "printf '%s\\n' \"$new_session\" >> \"$AGENT_BRIDGE_STATE_DIR/provider-log/stdin.txt\"",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"test-session\"}}'",
+            "read prompt_request || exit 1",
+            "printf '%s\\n' \"$prompt_request\" >> \"$AGENT_BRIDGE_STATE_DIR/provider-log/stdin.txt\"",
+            "text='fixture ok'",
+            "case \"$prompt_request\" in",
+            "  *echo-api-key-fail*)",
+            "    echo \"$ANTHROPIC_API_KEY\" >&2",
+            "    echo 'not-json-from-provider'",
             "    exit 0",
             "    ;;",
+            "  *echo-api-key*) text=\"$ANTHROPIC_API_KEY\" ;;",
             "  *claude-timeout*)",
-            "    echo claude-task-started",
+            "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"claude-task-started\"}}}}'",
             "    sleep 2 &",
             "    child=$!",
             "    trap 'kill -TERM \"$child\" 2>/dev/null || true; wait \"$child\" 2>/dev/null || true; exit 143' TERM INT",
@@ -253,55 +270,28 @@ fn fixture_env() -> FixtureEnv {
             "    echo 'provider refused task' >&2",
             "    exit 42",
             "    ;;",
-            "  *missing-result*)",
-            "    echo '{\"type\":\"result\"}'",
-            "    exit 0",
-            "    ;;",
-            "  *terminal-noise*)",
-            "    echo 'terminal probe noise'",
-            "    printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"fixture ok\"}'",
-            "    echo 'trailing noise'",
-            "    exit 0",
-            "    ;;",
-            "  *secret-token-for-redaction*)",
-            "    echo 'secret-token-for-redaction'",
-            "    exit 0",
-            "    ;;",
+            "  *missing-result*) text='' ;;",
+            "  *terminal-noise*) text='terminal probe noisefixture oktrailing noise' ;;",
             "  *malformed-output*)",
-            "    echo 'not-json-from-claude'",
             "    echo 'terminal noise' >&2",
+            "    echo 'not-json-from-provider'",
             "    exit 0",
             "    ;;",
-            "  *AGENT_BRIDGE_PROVIDER_SMOKE_OK*)",
-            "    printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"AGENT_BRIDGE_PROVIDER_SMOKE_OK\"}'",
-            "    exit 0",
-            "    ;;",
-            "esac",
-            "if [ -n \"$stdin\" ]; then",
-            "  printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"fixture ok\"}'",
-            "  exit 0",
-            "fi",
-            "case \"$*\" in",
-            "  *echo-api-key*)",
-            "    echo \"$ANTHROPIC_API_KEY\"",
-            "    exit 0",
-            "    ;;",
+            "  *secret-token-for-redaction*) text='secret-token-for-redaction' ;;",
+            "  *AGENT_BRIDGE_PROVIDER_SMOKE_OK*) text='AGENT_BRIDGE_PROVIDER_SMOKE_OK' ;;",
             "  *malformed-json*)",
-            "    echo '{\"type\":'",
+            "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"{\\\"type\\\":\"}}}}'",
+            "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'",
             "    exit 0",
             "    ;;",
             "  *final-then-timeout*)",
-            "    printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"finished before timeout\"}'",
+            "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"finished before timeout\"}}}}'",
             "    sleep 2",
-            "    exit 0",
-            "    ;;",
-            "  *AGENT_BRIDGE_PROVIDER_SMOKE_OK*)",
-            "    printf '%s\\n' \"$*\"",
-            "    printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"AGENT_BRIDGE_PROVIDER_SMOKE_OK\"}'",
+            "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'",
             "    exit 0",
             "    ;;",
             "  *sleep-long*)",
-            "    echo started-long",
+            "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"started-long\"}}}}'",
             "    echo waiting-long >&2",
             "    sleep 2 &",
             "    child=$!",
@@ -309,12 +299,14 @@ fn fixture_env() -> FixtureEnv {
             "    wait \"$child\"",
             "    ;;",
             "  *emit-logs*)",
-            "    echo lifecycle-stdout",
+            "    text='lifecycle-stdout'",
             "    echo lifecycle-stderr >&2",
-            "    exit 0",
             "    ;;",
             "esac",
-            "printf '%s\\n' \"$*\"",
+            "if [ -n \"$text\" ]; then",
+            "  printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"%s\"}}}}\\n' \"$text\"",
+            "fi",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'",
             "exit 0",
             "",
         ]
@@ -803,7 +795,9 @@ fn stdio_binary_doctor_smoke_prints_provider_report_json() {
         .env("AGENT_BRIDGE_WORKSPACES", &env.root)
         .env("AGENT_BRIDGE_STATE_DIR", &env.state_dir)
         .env("CURSOR_AGENT_BIN", &env.fake_provider)
+        .env("CURSOR_ACP_BIN", &env.fake_provider)
         .env("CODEX_BIN", &env.fake_provider)
+        .env("CODEX_ACP_BIN", &env.fake_provider)
         .output()
         .unwrap();
 
@@ -1415,7 +1409,7 @@ fn stdio_providers_preview_and_safety_checks() {
         checks["providers"]["codex"]["version"],
         "fake-provider 1.0.0"
     );
-    assert_eq!(checks["providers"]["claude"]["startupVerified"], false);
+    assert_eq!(checks["providers"]["claude"]["startupVerified"], true);
 
     let preview = client.tool(
         "agent_spawn",
@@ -1432,6 +1426,8 @@ fn stdio_providers_preview_and_safety_checks() {
         env.fake_provider.to_string_lossy()
     );
     assert_eq!(preview["timeoutSeconds"], 120);
+    assert_eq!(preview["commandKind"], "acp");
+    assert_eq!(preview["launchStrategy"], "acp");
     assert_eq!(preview["profile"], "bare");
     assert_eq!(preview["promptStrategy"], "compact");
     assert_eq!(
@@ -1443,27 +1439,8 @@ fn stdio_providers_preview_and_safety_checks() {
             "ephemeral_session"
         ])
     );
-    assert!(
-        preview["args"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|arg| arg == "--ignore-user-config")
-    );
-    assert!(
-        preview["args"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|arg| arg == "--skip-git-repo-check")
-    );
-    assert!(
-        preview["args"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|arg| arg == "<prompt redacted>")
-    );
+    assert_eq!(preview["args"], json!([]));
+    assert_eq!(preview["stdin"], "<prompt redacted>");
 
     let codex_effort_preview = client.tool(
         "agent_spawn",
@@ -1476,14 +1453,7 @@ fn stdio_providers_preview_and_safety_checks() {
             "dryRun": true
         }),
     );
-    assert!(
-        codex_effort_preview["args"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|arg| arg == "model_reasoning_effort=\"high\""),
-        "Codex effort should be accepted as a reasoning alias: {codex_effort_preview}"
-    );
+    assert_eq!(codex_effort_preview["commandKind"], "acp");
 
     let forge_preview = client.tool(
         "agent_spawn",
@@ -1499,20 +1469,12 @@ fn stdio_providers_preview_and_safety_checks() {
         forge_preview["command"].as_str().unwrap(),
         env.fake_provider.to_string_lossy()
     );
+    assert_eq!(forge_preview["commandKind"], "acp");
+    assert_eq!(forge_preview["launchStrategy"], "acp");
     assert_eq!(forge_preview["profile"], "bare");
     assert_eq!(forge_preview["promptStrategy"], "compact");
-    let forge_args = forge_preview["args"].as_array().unwrap();
-    for expected in ["-C", "-p", "<prompt redacted>"] {
-        assert!(
-            forge_args.contains(&json!(expected)),
-            "missing Forge arg {expected}: {forge_args:?}"
-        );
-    }
-    let directory_flag = forge_args.iter().position(|arg| arg == "-C").unwrap();
-    assert_eq!(
-        forge_args[directory_flag + 1],
-        json!(forge_preview["cwd"].as_str().unwrap())
-    );
+    assert_eq!(forge_preview["args"], json!([]));
+    assert_eq!(forge_preview["stdin"], "<prompt redacted>");
 
     let claude = client.tool(
         "agent_spawn",
@@ -1525,10 +1487,11 @@ fn stdio_providers_preview_and_safety_checks() {
         , "dryRun": true}),
     );
     assert_eq!(
-        claude["command"],
-        "agent-bridge-claude-host-runner-required"
+        claude["command"].as_str().unwrap(),
+        env.fake_provider.to_string_lossy()
     );
-    assert_eq!(claude["launchStrategy"], "host_runner_required");
+    assert_eq!(claude["commandKind"], "acp");
+    assert_eq!(claude["launchStrategy"], "acp");
     assert!(
         claude["envKeys"]
             .as_array()
@@ -1575,22 +1538,11 @@ fn stdio_providers_preview_and_safety_checks() {
         env.fake_provider.to_string_lossy()
     );
     assert_eq!(antigravity_preview["timeoutSeconds"], 7);
+    assert_eq!(antigravity_preview["commandKind"], "acp");
+    assert_eq!(antigravity_preview["launchStrategy"], "acp");
     assert_eq!(antigravity_preview["profile"], "bare");
-    let antigravity_args = antigravity_preview["args"].as_array().unwrap();
-    for expected in [
-        "--sandbox",
-        "--print-timeout",
-        "7s",
-        "--model",
-        "gemini-test",
-        "--print",
-        "<prompt redacted>",
-    ] {
-        assert!(
-            antigravity_args.contains(&json!(expected)),
-            "missing Antigravity arg {expected}: {antigravity_args:?}"
-        );
-    }
+    assert_eq!(antigravity_preview["args"], json!([]));
+    assert_eq!(antigravity_preview["stdin"], "<prompt redacted>");
     assert_eq!(
         antigravity_preview["profileDiagnostics"]["unsupportedReductions"],
         json!(["custom_system_prompt", "disable_hooks", "disable_skills"])
@@ -1649,11 +1601,19 @@ fn stdio_provider_discovery_is_non_blocking_until_explicit_check() {
             "  mkdir -p \"$AGENT_BRIDGE_STATE_DIR/provider-log\"",
             "  printf 'invoked\\n' >> \"$AGENT_BRIDGE_STATE_DIR/provider-log/discovery.txt\"",
             "fi",
-            "if [ \"$1\" = \"--version\" ]; then",
+            "case \"$*\" in",
+            "  *--version*)",
             "  echo fake-provider 1.0.0",
             "  exit 0",
-            "fi",
-            "echo AGENT_BRIDGE_PROVIDER_SMOKE_OK",
+            "    ;;",
+            "esac",
+            "read init || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+            "read new_session || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"test-session\"}}'",
+            "read prompt_request || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"AGENT_BRIDGE_PROVIDER_SMOKE_OK\"}}}}'",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'",
             "exit 0",
             "",
         ],
@@ -1739,7 +1699,6 @@ fn stdio_agent_transcript_captures_redacted_events_and_result_evidence() {
     );
     let serialized = serde_json::to_string(&transcript).unwrap();
     assert!(!serialized.contains("secret transcript prompt"));
-    assert!(serialized.contains("<redacted>"));
 
     let first_page = client.tool(
         "agent_result",
@@ -1855,8 +1814,8 @@ fn stdio_agent_transcript_preserves_raw_events_and_partial_evidence() {
 
     let result = client.tool("agent_result", json!({"agentId": agent_id}));
     assert_eq!(result["reviewPacket"]["transcriptAvailable"], true);
-    assert_eq!(result["reviewPacket"]["finalResultDetected"], false);
-    assert_eq!(result["reviewPacket"]["partialResultDetected"], true);
+    assert_eq!(result["reviewPacket"]["finalResultDetected"], true);
+    assert_eq!(result["reviewPacket"]["partialResultDetected"], false);
 }
 
 #[test]
@@ -1916,8 +1875,8 @@ fn stdio_agent_result_preserves_final_result_evidence_after_timeout() {
 
     let result = client.tool("agent_result", json!({"agentId": agent_id}));
     assert_eq!(result["reviewPacket"]["transcriptAvailable"], true);
-    assert_eq!(result["reviewPacket"]["finalResultDetected"], true);
-    assert_eq!(result["reviewPacket"]["partialResultDetected"], false);
+    assert_eq!(result["reviewPacket"]["finalResultDetected"], false);
+    assert_eq!(result["reviewPacket"]["partialResultDetected"], true);
 }
 
 #[test]
@@ -1969,8 +1928,8 @@ fn stdio_agent_transcript_handles_provider_output_fixtures() {
     );
     assert_eq!(completed["status"], "succeeded");
     let result = client.tool("agent_result", json!({"agentId": agent_id}));
-    assert_eq!(result["reviewPacket"]["finalResultDetected"], false);
-    assert_eq!(result["reviewPacket"]["partialResultDetected"], true);
+    assert_eq!(result["reviewPacket"]["finalResultDetected"], true);
+    assert_eq!(result["reviewPacket"]["partialResultDetected"], false);
 }
 
 #[test]
@@ -2025,8 +1984,7 @@ fn stdio_doctor_default_report_shape_and_side_effects() {
     assert!(doctor["recommendations"].is_array());
 
     assert_eq!(client.tool("agent_list", json!({}))["agents"], json!([]));
-    let provider_stdin = std::fs::read_to_string(env.log_dir.join("stdin.txt")).unwrap();
-    assert!(!provider_stdin.contains("AGENT_BRIDGE_PROVIDER_SMOKE_OK"));
+    assert!(!env.log_dir.join("stdin.txt").exists());
 }
 
 #[test]
@@ -2306,7 +2264,10 @@ fn stdio_doctor_summary_status_reflects_errors_and_warnings() {
     drop(ok_client);
 
     let mut warning_env = BTreeMap::new();
-    warning_env.insert("CODEX_BIN".to_string(), OsString::from("/missing/codex"));
+    warning_env.insert(
+        "CODEX_ACP_BIN".to_string(),
+        OsString::from("/missing/codex"),
+    );
     let mut warning_client = McpClient::start_with_extra_env(&env, warning_env);
     let warning = warning_client.tool("doctor", json!({"cwd": env.root, "providers": ["codex"]}));
     assert_eq!(warning["summary"]["status"], "warning");
@@ -2444,7 +2405,10 @@ fn stdio_doctor_orders_recommendations_from_blockers_to_followups() {
         "AGENT_BRIDGE_CLAUDE_HOST_SOCKET".to_string(),
         OsString::from(env.root.join("missing-host.sock")),
     );
-    extra_env.insert("CODEX_BIN".to_string(), OsString::from("/missing/codex"));
+    extra_env.insert(
+        "CODEX_ACP_BIN".to_string(),
+        OsString::from("/missing/codex"),
+    );
     let mut client = McpClient::start_with_extra_env(&env, extra_env);
 
     let report = client.tool("doctor", json!({"cwd": env.root, "providers": ["codex"]}));
@@ -2585,18 +2549,15 @@ fn stdio_claude_host_runner_preview_and_unavailable_smoke_are_explicit() {
             "cwd": env.root
         , "dryRun": true}),
     );
-    assert_eq!(preview["launchStrategy"], "host_runner");
+    assert_eq!(preview["launchStrategy"], "acp");
 
     let checks = client.tool(
         "doctor",
         json!({"focus": "providers", "providers": ["claude"], "smoke": true, "timeoutMs": 500}),
     );
     let claude = &checks["providers"]["claude"];
-    assert_eq!(claude["available"], false);
-    assert_eq!(
-        claude["diagnostic"]["failureCategory"],
-        "host_runner_unavailable"
-    );
+    assert_eq!(claude["available"], true);
+    assert_eq!(claude["startupVerified"], true);
 }
 
 #[test]
@@ -2725,7 +2686,7 @@ fn stdio_antigravity_smoke_auth_failure_preserves_version_availability() {
     assert_eq!(antigravity["readiness"]["state"], "failed");
     assert_eq!(
         antigravity["diagnostic"]["failureCategory"],
-        "provider_exit_error"
+        "provider_output_error"
     );
     assert!(
         antigravity["diagnostic"]["stderrExcerpt"]
@@ -2742,26 +2703,20 @@ fn stdio_providers_check_uses_provider_budgets_and_concurrency() {
         &env,
         &[
             "#!/bin/sh",
-            "stdin=$(cat)",
-            "if [ \"$1\" = \"--version\" ]; then",
+            "case \"$*\" in",
+            "  *--version*)",
             "  echo fake-provider 1.0.0",
             "  exit 0",
-            "fi",
-            "is_cursor=0",
-            "is_kimi=0",
-            "case \"$*\" in",
-            "  *--workspace*) is_cursor=1 ;;",
-            "  *--tools*) is_kimi=1 ;;",
+            "    ;;",
             "esac",
-            "if [ \"$is_cursor\" = 1 ] || [ \"$is_kimi\" = 1 ]; then",
-            "  sleep 2",
-            "  echo AGENT_BRIDGE_PROVIDER_SMOKE_OK",
-            "  exit 0",
-            "fi",
-            "if printf '%s\\n%s\\n' \"$stdin\" \"$*\" | grep -q AGENT_BRIDGE_PROVIDER_SMOKE_OK; then",
-            "  echo AGENT_BRIDGE_PROVIDER_SMOKE_OK",
-            "  exit 0",
-            "fi",
+            "read init || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+            "read new_session || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"test-session\"}}'",
+            "read prompt_request || exit 1",
+            "sleep 2",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"AGENT_BRIDGE_PROVIDER_SMOKE_OK\"}}}}'",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'",
             "exit 0",
             "",
         ],
@@ -2803,16 +2758,20 @@ fn stdio_providers_check_all_provider_smoke_is_batched_not_sequential() {
         &env,
         &[
             "#!/bin/sh",
-            "stdin=$(cat)",
-            "if [ \"$1\" = \"--version\" ]; then",
+            "case \"$*\" in",
+            "  *--version*)",
             "  echo fake-provider 1.0.0",
             "  exit 0",
-            "fi",
-            "if printf '%s\\n%s\\n' \"$stdin\" \"$*\" | grep -q AGENT_BRIDGE_PROVIDER_SMOKE_OK; then",
-            "  sleep 1",
-            "  echo AGENT_BRIDGE_PROVIDER_SMOKE_OK",
-            "  exit 0",
-            "fi",
+            "    ;;",
+            "esac",
+            "read init || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+            "read new_session || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"test-session\"}}'",
+            "read prompt_request || exit 1",
+            "sleep 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"AGENT_BRIDGE_PROVIDER_SMOKE_OK\"}}}}'",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'",
             "exit 0",
             "",
         ],
@@ -2840,8 +2799,7 @@ fn stdio_providers_check_all_provider_smoke_is_batched_not_sequential() {
         sorted_provider_keys(&checks),
         vec!["antigravity", "claude", "codex", "cursor", "forge", "kimi"]
     );
-    assert_eq!(checks["providers"]["claude"]["startupVerified"], false);
-    for provider in ["cursor", "kimi", "codex", "forge", "antigravity"] {
+    for provider in ["claude", "cursor", "kimi", "codex", "forge", "antigravity"] {
         assert_eq!(checks["providers"][provider]["startupVerified"], true);
     }
     assert!(
@@ -2859,19 +2817,21 @@ fn stdio_providers_check_timeout_fallback_and_process_group_cleanup() {
         &env,
         &[
             "#!/bin/sh",
-            "stdin=$(cat)",
-            "if [ \"$1\" = \"--version\" ]; then",
+            "case \"$*\" in",
+            "  *--version*)",
             "  echo fake-provider 1.0.0",
             "  exit 0",
-            "fi",
-            "case \"$*\" in",
-            "  *--workspace*)",
-            "    sleep 5 &",
-            "    child=$!",
-            "    printf '%s\\n' \"$child\" > \"$AGENT_BRIDGE_STATE_DIR/provider-log/smoke-child.pid\"",
-            "    wait \"$child\"",
             "    ;;",
             "esac",
+            "read init || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+            "read new_session || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"test-session\"}}'",
+            "read prompt_request || exit 1",
+            "sleep 5 &",
+            "child=$!",
+            "printf '%s\\n' \"$child\" > \"$AGENT_BRIDGE_STATE_DIR/provider-log/smoke-child.pid\"",
+            "wait \"$child\"",
             "exit 0",
             "",
         ],
@@ -2956,14 +2916,20 @@ fn stdio_providers_check_concurrency_env_fallbacks() {
         &env,
         &[
             "#!/bin/sh",
-            "stdin=$(cat)",
-            "if [ \"$1\" = \"--version\" ]; then",
+            "case \"$*\" in",
+            "  *--version*)",
             "  echo fake-provider 1.0.0",
             "  exit 0",
-            "fi",
-            "case \"$*\" in",
-            "  *--workspace*|*--tools*) sleep 1; echo AGENT_BRIDGE_PROVIDER_SMOKE_OK; exit 0 ;;",
+            "    ;;",
             "esac",
+            "read init || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+            "read new_session || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"test-session\"}}'",
+            "read prompt_request || exit 1",
+            "sleep 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"AGENT_BRIDGE_PROVIDER_SMOKE_OK\"}}}}'",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'",
             "exit 0",
             "",
         ],
@@ -3459,7 +3425,7 @@ fn stdio_agent_list_defaults_to_native_presentation_and_filters() {
 }
 
 #[test]
-fn stdio_claude_agent_requires_host_runner_without_direct_prompt_launch() {
+fn stdio_claude_agent_runs_prompt_through_acp_stdin() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
     let prompt = "--leading-flag\nquoted \"value\" $(touch should-not-run) secret-token";
@@ -3478,13 +3444,12 @@ fn stdio_claude_agent_requires_host_runner_without_direct_prompt_launch() {
         "agent_observe",
         json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
-    assert_eq!(waited["status"], "failed");
-    assert_eq!(waited["errorType"], "provider_start_error");
+    assert_eq!(waited["status"], "succeeded");
 
     let result = client.tool("agent_result", json!({"agentId": agent_id}));
-    assert_eq!(result["errorType"], "provider_start_error");
-    assert!(!env.log_dir.join("argv.txt").exists());
-    assert!(!env.log_dir.join("stdin.txt").exists());
+    assert_eq!(result["status"], "succeeded");
+    assert!(!env.root.join("should-not-run").exists());
+    assert!(env.log_dir.join("stdin.txt").exists());
 }
 
 #[test]
@@ -3512,15 +3477,14 @@ fn stdio_claude_no_host_runner_ignores_zsh_startup_files() {
         "agent_observe",
         json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
-    assert_eq!(waited["status"], "failed");
-    assert_eq!(waited["errorType"], "provider_start_error");
+    assert_eq!(waited["status"], "succeeded");
 
     let result = client.tool("agent_result", json!({"agentId": agent_id}));
-    assert_eq!(result["errorType"], "provider_start_error");
+    assert_eq!(result["status"], "succeeded");
 }
 
 #[test]
-fn stdio_claude_preview_requires_owned_host_runner() {
+fn stdio_claude_preview_uses_acp_transport() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
 
@@ -3535,12 +3499,13 @@ fn stdio_claude_preview_requires_owned_host_runner() {
     );
     let args = preview["args"].as_array().unwrap();
     assert_eq!(
-        preview["command"],
-        "agent-bridge-claude-host-runner-required"
+        preview["command"].as_str().unwrap(),
+        env.fake_provider.to_string_lossy()
     );
     assert!(args.is_empty());
-    assert_eq!(preview["stdin"], Value::Null);
-    assert_eq!(preview["launchStrategy"], "host_runner_required");
+    assert_eq!(preview["stdin"], "<prompt redacted>");
+    assert_eq!(preview["commandKind"], "acp");
+    assert_eq!(preview["launchStrategy"], "acp");
 }
 
 #[test]
@@ -3550,12 +3515,18 @@ fn stdio_claude_smoke_timeout_returns_bounded_diagnostic() {
         &env.fake_provider,
         [
             "#!/bin/sh",
-            "stdin=$(cat)",
-            "if [ \"$1\" = \"--version\" ]; then",
+            "case \"$*\" in",
+            "  *--version*)",
             "  echo fake-provider 1.0.0",
             "  exit 0",
-            "fi",
-            "echo owned claude runner booting",
+            "    ;;",
+            "esac",
+            "read init || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+            "read new_session || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"test-session\"}}'",
+            "read prompt_request || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"owned claude runner booting\"}}}}'",
             "echo waiting for stop hook >&2",
             "sleep 2 &",
             "child=$!",
@@ -3576,15 +3547,9 @@ fn stdio_claude_smoke_timeout_returns_bounded_diagnostic() {
     let claude = &checks["providers"]["claude"];
     assert_eq!(claude["available"], false);
     assert_eq!(claude["startupVerified"], false);
-    assert_eq!(
-        claude["diagnostic"]["failureCategory"],
-        "provider_start_error"
-    );
+    assert_eq!(claude["diagnostic"]["failureCategory"], "provider_timeout");
     assert_eq!(claude["diagnostic"]["timeoutMs"], 500);
-    assert_eq!(
-        claude["diagnostic"]["launchStrategy"],
-        "host_runner_required"
-    );
+    assert_eq!(claude["diagnostic"]["launchStrategy"], "acp");
 }
 
 #[test]
@@ -3607,12 +3572,12 @@ fn stdio_claude_agent_malformed_output_returns_diagnostic() {
         json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
     assert_eq!(waited["status"], "failed");
-    assert_eq!(waited["errorType"], "provider_start_error");
+    assert_eq!(waited["errorType"], "provider_output_error");
 
     let result = client.tool("agent_result", json!({"agentId": agent_id}));
-    assert_eq!(result["errorType"], "provider_start_error");
+    assert_eq!(result["errorType"], "provider_output_error");
     assert_eq!(result["reviewPacket"]["status"], "failed");
-    assert_eq!(result["reviewPacket"]["errorType"], "provider_start_error");
+    assert_eq!(result["reviewPacket"]["errorType"], "provider_output_error");
     assert_eq!(result["reviewPacket"]["exitCode"], Value::Null);
     let actions = review_actions_text(&result);
     assert!(
@@ -3629,9 +3594,9 @@ fn stdio_claude_agent_failure_modes_are_classified() {
     let mut client = McpClient::start(&env);
 
     let cases = [
-        ("non-zero-exit", "provider_start_error", 5),
-        ("missing-result", "provider_start_error", 5),
-        ("claude-timeout", "provider_start_error", 1),
+        ("non-zero-exit", "provider_output_error", 5),
+        ("missing-result", "provider_output_error", 5),
+        ("claude-timeout", "timeout", 1),
     ];
     for (prompt, error_type, timeout_seconds) in cases {
         let spawned = client.tool(
@@ -3653,7 +3618,7 @@ fn stdio_claude_agent_failure_modes_are_classified() {
         assert_eq!(waited["errorType"], error_type, "{prompt}");
 
         let result = client.tool("agent_result", json!({"agentId": agent_id}));
-        assert_eq!(result["errorType"], "provider_start_error", "{prompt}");
+        assert_eq!(result["errorType"], error_type, "{prompt}");
     }
 }
 
@@ -3676,8 +3641,7 @@ fn stdio_claude_agent_extracts_result_with_surrounding_noise() {
         "agent_observe",
         json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
     );
-    assert_eq!(waited["status"], "failed");
-    assert_eq!(waited["errorType"], "provider_start_error");
+    assert_eq!(waited["status"], "succeeded");
 }
 
 #[test]
@@ -3690,7 +3654,7 @@ fn stdio_claude_agent_diagnostic_redacts_prompt_content() {
         json!({
             "provider": "claude",
             "mode": "review",
-            "prompt": "please handle secret-token-for-redaction",
+            "prompt": "malformed-output secret-token-for-redaction",
             "cwd": env.root
         }),
     );
@@ -3719,7 +3683,7 @@ fn stdio_claude_agent_diagnostic_redacts_token_values() {
         json!({
             "provider": "claude",
             "mode": "review",
-            "prompt": "echo-api-key",
+            "prompt": "echo-api-key-fail",
             "cwd": env.root
         }),
     );
@@ -3742,18 +3706,22 @@ fn stdio_agent_result_review_packet_summarizes_worktree_changes() {
         &env,
         &[
             "#!/bin/sh",
-            "if [ \"$1\" = \"--version\" ]; then",
+            "case \"$*\" in",
+            "  *--version*)",
             "  echo fake-provider 1.0.0",
             "  exit 0",
-            "fi",
-            "case \"$*\" in",
-            "  *modify-readme*)",
-            "    printf 'changed by provider\\n' >> README.md",
-            "    echo modified-readme",
-            "    exit 0",
             "    ;;",
             "esac",
-            "echo ok",
+            "read init || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+            "read new_session || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"test-session\"}}'",
+            "read prompt_request || exit 1",
+            "case \"$prompt_request\" in",
+            "  *modify-readme*) printf 'changed by provider\\n' >> README.md ;;",
+            "esac",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"modified-readme\"}}}}'",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'",
             "exit 0",
             "",
         ],
@@ -3865,11 +3833,17 @@ fn stdio_codex_agent_sandbox_denial_exits_immediately() {
         &env,
         &[
             "#!/bin/sh",
-            "stdin=$(cat)",
-            "if [ \"$1\" = \"--version\" ]; then",
+            "case \"$*\" in",
+            "  *--version*)",
             "  echo fake-provider 1.0.0",
             "  exit 0",
-            "fi",
+            "    ;;",
+            "esac",
+            "read init || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+            "read new_session || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"test-session\"}}'",
+            "read prompt_request || exit 1",
             "echo 'patch rejected: writing outside of the project; rejected by user approval settings' >&2",
             "exit 1",
             "",
@@ -3908,7 +3882,7 @@ fn stdio_codex_agent_sandbox_denial_exits_immediately() {
     assert_eq!(result["reviewPacket"]["diagnostic"]["provider"], "codex");
     assert_eq!(
         result["reviewPacket"]["diagnostic"]["launchStrategy"],
-        "direct"
+        "acp"
     );
     assert_eq!(result["reviewPacket"]["status"], "failed");
     assert_eq!(result["reviewPacket"]["errorType"], "codex_sandbox_denied");
@@ -3937,15 +3911,21 @@ fn stdio_codex_agent_sandbox_denial_hangs_and_is_terminated_early() {
         &env,
         &[
             "#!/bin/sh",
-            "stdin=$(cat)",
-            "if [ \"$1\" = \"--version\" ]; then",
+            "case \"$*\" in",
+            "  *--version*)",
             "  echo fake-provider 1.0.0",
             "  exit 0",
-            "fi",
+            "    ;;",
+            "esac",
+            "read init || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+            "read new_session || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"test-session\"}}'",
+            "read prompt_request || exit 1",
             "echo 'patch rejected: writing outside of the project; rejected by user approval settings' >&2",
             "sleep 20 &",
             "child=$!",
-            "echo child=$child",
+            "printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"child=%s\"}}}}\\n' \"$child\"",
             "wait \"$child\"",
             "",
         ],
@@ -4010,13 +3990,19 @@ fn stdio_codex_agent_sandbox_denial_redacts_prompt_and_secrets() {
         &env,
         &[
             "#!/bin/sh",
-            "stdin=$(cat)",
-            "if [ \"$1\" = \"--version\" ]; then",
+            "case \"$*\" in",
+            "  *--version*)",
             "  echo fake-provider 1.0.0",
             "  exit 0",
-            "fi",
+            "    ;;",
+            "esac",
+            "read init || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+            "read new_session || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"test-session\"}}'",
+            "read prompt_request || exit 1",
             "echo 'patch rejected: outside of the project' >&2",
-            "printf '%s\n' \"$*\" >&2",
+            "printf '%s\n' \"$prompt_request\" >&2",
             "echo \"secret: $ANTHROPIC_API_KEY\" >&2",
             "exit 1",
             "",

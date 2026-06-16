@@ -320,6 +320,7 @@ fn agent_list_response(mut raw: Value) -> Value {
 }
 
 struct ProbeResult {
+    success: bool,
     status: Option<std::process::ExitStatus>,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
@@ -337,6 +338,7 @@ fn probe_failure(
     duration_ms: u64,
 ) -> ProbeResult {
     ProbeResult {
+        success: false,
         status: None,
         stdout: Vec::new(),
         stderr: Vec::new(),
@@ -439,6 +441,24 @@ async fn run_probe(
     timeout_ms: u64,
     phase: &'static str,
 ) -> ProbeResult {
+    if command.is_acp() && phase == "smoke" {
+        let output = crate::task::acp::run_acp_probe(command, timeout_ms).await;
+        return ProbeResult {
+            success: output.ok,
+            status: None,
+            stdout: output.stdout,
+            stderr: output.stderr,
+            failure_category: if output.ok {
+                None
+            } else if output.timed_out {
+                Some(FailureCategory::ProviderTimeout)
+            } else {
+                Some(FailureCategory::ProviderOutputError)
+            },
+            error: output.error,
+            duration_ms: output.duration_ms,
+        };
+    }
     if let Some(result) = probe_via_host(command, provider).await {
         return result;
     }
@@ -507,6 +527,8 @@ async fn run_probe(
         None => Vec::new(),
     };
     ProbeResult {
+        success: status.as_ref().is_some_and(|status| status.success())
+            && failure_category.is_none(),
         status,
         stdout,
         stderr,
@@ -519,6 +541,7 @@ async fn run_probe(
 fn host_probe_result(response: crate::claude_host::HostResponse, duration_ms: u64) -> ProbeResult {
     if !response.ok {
         return ProbeResult {
+            success: false,
             status: None,
             stdout: Vec::new(),
             stderr: Vec::new(),
@@ -542,8 +565,13 @@ fn host_probe_result(response: crate::claude_host::HostResponse, duration_ms: u6
                 .as_ref()
                 .map(|result| result.final_text.clone())
                 .unwrap_or_default();
+            let status = host_exit_status(exit_code, signal.as_deref());
+            let success = failure_category.is_none()
+                && result.is_some()
+                && status.as_ref().is_some_and(|status| status.success());
             ProbeResult {
-                status: host_exit_status(exit_code, signal.as_deref()),
+                success,
+                status,
                 stdout: success_text.into_bytes(),
                 stderr: pty_output_excerpt.into_bytes(),
                 failure_category,
@@ -552,6 +580,7 @@ fn host_probe_result(response: crate::claude_host::HostResponse, duration_ms: u6
             }
         }
         _ => ProbeResult {
+            success: false,
             status: None,
             stdout: Vec::new(),
             stderr: Vec::new(),
@@ -643,9 +672,9 @@ fn provider_diagnostic(
     let mut diagnostic = json!({
         "failureCategory": output.failure_category.unwrap_or(FailureCategory::ProviderOutputError),
         "provider": provider.as_str(),
-        "commandKind": command_kind(provider, command),
-        "commandPath": command_path(provider, command),
-        "launchStrategy": launch_strategy(provider),
+        "commandKind": command_kind(command),
+        "commandPath": command_path(command),
+        "launchStrategy": launch_strategy(command),
         "startupVerified": startup_verified,
         "timeoutMs": timeout_ms,
         "elapsedMs": output.duration_ms,
@@ -700,19 +729,16 @@ fn smoke_output_is_accepted(provider: ProviderKind, stdout: &[u8]) -> bool {
     }
 }
 
-fn command_kind(provider: ProviderKind, command: &provider::ProviderCommand) -> String {
-    if provider != ProviderKind::Claude {
-        return provider.as_str().to_string();
-    }
+fn command_kind(command: &provider::ProviderCommand) -> String {
     command
         .command_kind
         .as_deref()
-        .unwrap_or("owned-interactive-claude")
+        .unwrap_or(command.provider.as_str())
         .to_string()
 }
 
-fn command_path(provider: ProviderKind, command: &provider::ProviderCommand) -> String {
-    if provider == ProviderKind::Claude && command.command == "/bin/zsh" {
+fn command_path(command: &provider::ProviderCommand) -> String {
+    if command.provider == ProviderKind::Claude && command.command == "/bin/zsh" {
         return command
             .args
             .get(3)
@@ -722,8 +748,11 @@ fn command_path(provider: ProviderKind, command: &provider::ProviderCommand) -> 
     command.command.clone()
 }
 
-fn launch_strategy(provider: ProviderKind) -> &'static str {
-    if provider != ProviderKind::Claude {
+fn launch_strategy(command: &provider::ProviderCommand) -> &'static str {
+    if command.is_acp() {
+        return "acp";
+    }
+    if command.provider != ProviderKind::Claude {
         return "direct";
     }
     if crate::claude_host::socket_path_from_env().is_some() {
@@ -796,31 +825,29 @@ fn task_preview(arguments: Value) -> Result<Value, String> {
     let env = provider::provider_env(input.provider);
     let args: Vec<String> = command
         .args
-        .into_iter()
+        .iter()
         .map(|arg| {
             if arg.contains(&input.prompt) {
                 "<prompt redacted>".to_string()
             } else {
-                arg
+                arg.clone()
             }
         })
         .collect();
     let env_keys: Vec<String> = env.keys().cloned().collect();
-    let mut preview = json!({
+    Ok(json!({
         "command": command.command,
         "cwd": command.cwd,
         "timeoutSeconds": command.timeout_seconds,
         "args": args,
         "stdin": command.stdin.as_ref().map(|_| "<prompt redacted>"),
         "envKeys": env_keys,
+        "commandKind": command_kind(&command),
+        "launchStrategy": launch_strategy(&command),
         "profile": command.profile,
         "promptStrategy": command.prompt_strategy,
         "profileDiagnostics": command.profile_diagnostics
-    });
-    if input.provider == ProviderKind::Claude {
-        preview["launchStrategy"] = json!(launch_strategy(input.provider));
-    }
-    Ok(preview)
+    }))
 }
 
 fn validate_preview_input(input: &TaskPreviewInput) -> Result<(), String> {

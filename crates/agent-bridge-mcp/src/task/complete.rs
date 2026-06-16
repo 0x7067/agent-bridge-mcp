@@ -379,7 +379,7 @@ pub(super) fn agent_diagnostic(
         "provider": command_provider_hint(command).as_str(),
         "commandKind": command_kind(command),
         "commandPath": command_path(command),
-        "launchStrategy": launch_strategy(command.provider),
+        "launchStrategy": launch_strategy(command),
         "startupVerified": false,
         "timeoutMs": timeout_ms,
         "exitCode": exit_code,
@@ -412,8 +412,11 @@ pub(super) fn command_kind(command: &ProviderCommand) -> String {
         .to_string()
 }
 
-pub(super) fn launch_strategy(provider: ProviderKind) -> &'static str {
-    if provider != ProviderKind::Claude {
+pub(super) fn launch_strategy(command: &ProviderCommand) -> &'static str {
+    if command.is_acp() {
+        return "acp";
+    }
+    if command.provider != ProviderKind::Claude {
         return "direct";
     }
     if crate::claude_host::socket_path_from_env().is_some() {

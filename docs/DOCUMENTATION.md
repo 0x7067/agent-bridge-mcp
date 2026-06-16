@@ -48,14 +48,14 @@ Links: [Data Model](DATA-MODEL.md), [Backend Codemap](CODEMAPS/backend.md)
 
 ### Provider Adapters
 
-Six first-class providers are supported, each with a typed adapter defining command construction, environment filtering, denial detection, and output cadence:
+Six first-class providers are supported, each with a typed adapter defining ACP command configuration, environment filtering, denial detection, and output cadence:
 
-- **Claude** — Interactive via owned PTY host runner (Unix socket)
-- **Codex** — Noninteractive fork/exec; detects sandbox denials
-- **Cursor** — Noninteractive fork/exec; JSON-final output cadence
-- **Kimi** — Noninteractive fork/exec; supports thinking levels
-- **Forge** — Noninteractive fork/exec; direct prompt mode
-- **Antigravity** — Noninteractive fork/exec; research/review modes with `--sandbox`
+- **Claude** — ACP command, default `claude-agent`
+- **Codex** — ACP command via `CODEX_ACP_BIN`; detects sandbox denials
+- **Cursor** — ACP command via `CURSOR_ACP_BIN`
+- **Kimi** — ACP command, default `kimi acp`; supports thinking levels
+- **Forge** — ACP command via `FORGE_ACP_BIN`
+- **Antigravity** — ACP command via `ANTIGRAVITY_ACP_BIN`
 
 Links: [Integrations](INTEGRATIONS.md), [Integrations Codemap](CODEMAPS/integrations.md), [ADR-0002](ADR/0002-harden-task-lifecycle.md), [ADR-0005](ADR/0005-claude-pty-host-runner.md)
 

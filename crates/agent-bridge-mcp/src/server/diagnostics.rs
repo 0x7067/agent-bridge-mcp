@@ -1650,42 +1650,31 @@ async fn providers_check(arguments: Value) -> Result<Value, String> {
     let mut results = serde_json::Map::new();
     let mut smoke_candidates = Vec::new();
     for provider in selected.iter().copied() {
-        let command = provider::version_command(provider);
-        let output = run_probe(&command, provider, VERSION_TIMEOUT_MS, "version").await;
-        let checked_at = checked_at_iso();
-        let value = match output.status {
-            Some(status) if status.success() && output.failure_category.is_none() => {
-                let mut value = json!({
-                    "available": true,
-                    "command": command.command,
-                    "version": String::from_utf8_lossy(&output.stdout).trim(),
-                    "probe": if input.smoke { "version+smoke" } else { "version" },
+        let command = match provider::version_command(provider) {
+            Ok(command) => command,
+            Err(error) => {
+                let checked_at = checked_at_iso();
+                let diagnostic = json!({
+                    "failureCategory": FailureCategory::ProviderStartError.as_str(),
+                    "provider": provider.as_str(),
+                    "commandKind": "acp",
+                    "commandPath": null,
+                    "launchStrategy": "acp",
                     "startupVerified": false,
-                    "launchable": false,
-                    "checkedAt": checked_at,
-                    "versionDurationMs": output.duration_ms
+                    "timeoutMs": VERSION_TIMEOUT_MS,
+                    "elapsedMs": 0,
+                    "phase": "version",
+                    "error": error,
                 });
-                set_readiness(&mut value, "stale", "version", false, false, None);
-                value
-            }
-            _ => {
-                let diagnostic = provider_diagnostic(
-                    provider,
-                    &command,
-                    &output,
-                    VERSION_TIMEOUT_MS,
-                    false,
-                    "version",
-                );
                 let mut value = json!({
                     "available": false,
-                    "command": command.command,
+                    "command": null,
                     "probe": "version",
                     "startupVerified": false,
                     "launchable": false,
                     "checkedAt": checked_at,
-                    "error": probe_error_text(&output),
-                    "versionDurationMs": output.duration_ms,
+                    "error": diagnostic["error"],
+                    "versionDurationMs": 0,
                     "diagnostic": diagnostic
                 });
                 let diagnostic = value["diagnostic"].clone();
@@ -1697,8 +1686,55 @@ async fn providers_check(arguments: Value) -> Result<Value, String> {
                     false,
                     Some(diagnostic),
                 );
-                value
+                results.insert(provider.as_str().to_string(), value);
+                continue;
             }
+        };
+        let output = run_probe(&command, provider, VERSION_TIMEOUT_MS, "version").await;
+        let checked_at = checked_at_iso();
+        let value = if output.success {
+            let mut value = json!({
+                "available": true,
+                "command": command.command.clone(),
+                "version": String::from_utf8_lossy(&output.stdout).trim(),
+                "probe": if input.smoke { "version+smoke" } else { "version" },
+                "startupVerified": false,
+                "launchable": false,
+                "checkedAt": checked_at,
+                "versionDurationMs": output.duration_ms
+            });
+            set_readiness(&mut value, "stale", "version", false, false, None);
+            value
+        } else {
+            let diagnostic = provider_diagnostic(
+                provider,
+                &command,
+                &output,
+                VERSION_TIMEOUT_MS,
+                false,
+                "version",
+            );
+            let mut value = json!({
+                "available": false,
+                "command": command.command.clone(),
+                "probe": "version",
+                "startupVerified": false,
+                "launchable": false,
+                "checkedAt": checked_at,
+                "error": probe_error_text(&output),
+                "versionDurationMs": output.duration_ms,
+                "diagnostic": diagnostic
+            });
+            let diagnostic = value["diagnostic"].clone();
+            set_readiness(
+                &mut value,
+                "failed",
+                "version",
+                false,
+                false,
+                Some(diagnostic),
+            );
+            value
         };
         if input.smoke && value["available"].as_bool() == Some(true) {
             smoke_candidates.push((provider, value));
@@ -1880,10 +1916,7 @@ async fn smoke_one_provider(
     ) {
         Ok((smoke_command, strategy)) => {
             let mut output = run_probe(&smoke_command, provider, timeout_ms, "smoke").await;
-            if output
-                .status
-                .as_ref()
-                .is_some_and(|status| status.success())
+            if output.success
                 && output.failure_category.is_none()
                 && !smoke_output_is_accepted(provider, &output.stdout)
             {
@@ -1891,53 +1924,46 @@ async fn smoke_one_provider(
                 output.error =
                     Some("provider smoke output did not contain expected token".to_string());
             }
-            match output.status {
-                Some(status) if status.success() && output.failure_category.is_none() => {
-                    let mut value = base_value;
-                    value["startupVerified"] = json!(true);
-                    value["launchable"] = json!(true);
-                    value["checkedAt"] = json!(checked_at_iso());
-                    value["smokeDurationMs"] = json!(output.duration_ms);
-                    value["smokePromptStrategy"] = json!(strategy);
-                    if provider == ProviderKind::Claude {
-                        value["launchStrategy"] = json!(launch_strategy(provider));
-                    }
-                    set_readiness(&mut value, "ready", "version+smoke", true, true, None);
-                    value
+            if output.success && output.failure_category.is_none() {
+                let mut value = base_value;
+                value["startupVerified"] = json!(true);
+                value["launchable"] = json!(true);
+                value["checkedAt"] = json!(checked_at_iso());
+                value["smokeDurationMs"] = json!(output.duration_ms);
+                value["smokePromptStrategy"] = json!(strategy);
+                value["launchStrategy"] = json!(launch_strategy(&smoke_command));
+                set_readiness(&mut value, "ready", "version+smoke", true, true, None);
+                value
+            } else {
+                let mut value = base_value;
+                if provider != ProviderKind::Antigravity {
+                    value["available"] = json!(false);
                 }
-                _ => {
-                    let mut value = base_value;
-                    if provider != ProviderKind::Antigravity {
-                        value["available"] = json!(false);
-                    }
-                    value["startupVerified"] = json!(false);
-                    value["launchable"] = json!(false);
-                    value["checkedAt"] = json!(checked_at_iso());
-                    value["smokeDurationMs"] = json!(output.duration_ms);
-                    value["smokePromptStrategy"] = json!(strategy);
-                    if provider == ProviderKind::Claude {
-                        value["launchStrategy"] = json!(launch_strategy(provider));
-                    }
-                    value["error"] = json!(probe_error_text(&output));
-                    value["diagnostic"] = provider_diagnostic(
-                        provider,
-                        &smoke_command,
-                        &output,
-                        timeout_ms,
-                        false,
-                        "smoke",
-                    );
-                    let diagnostic = value["diagnostic"].clone();
-                    set_readiness(
-                        &mut value,
-                        "failed",
-                        "version+smoke",
-                        false,
-                        false,
-                        Some(diagnostic),
-                    );
-                    value
-                }
+                value["startupVerified"] = json!(false);
+                value["launchable"] = json!(false);
+                value["checkedAt"] = json!(checked_at_iso());
+                value["smokeDurationMs"] = json!(output.duration_ms);
+                value["smokePromptStrategy"] = json!(strategy);
+                value["launchStrategy"] = json!(launch_strategy(&smoke_command));
+                value["error"] = json!(probe_error_text(&output));
+                value["diagnostic"] = provider_diagnostic(
+                    provider,
+                    &smoke_command,
+                    &output,
+                    timeout_ms,
+                    false,
+                    "smoke",
+                );
+                let diagnostic = value["diagnostic"].clone();
+                set_readiness(
+                    &mut value,
+                    "failed",
+                    "version+smoke",
+                    false,
+                    false,
+                    Some(diagnostic),
+                );
+                value
             }
         }
         Err(error) => {

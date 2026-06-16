@@ -129,6 +129,10 @@ pub(super) async fn launch_task(
         tracing::field::display(command.provider.as_str()),
     );
     span.record("mode", tracing::field::display(mode.as_str()));
+    if command.is_acp() {
+        return super::acp::launch_acp_task(agent_id, mode, command, agent_dir, tx, watch_sender)
+            .await;
+    }
     if command.provider == ProviderKind::Claude
         && let (Some(socket_path), Some(claude_command)) = (
             crate::claude_host::socket_path_from_env(),

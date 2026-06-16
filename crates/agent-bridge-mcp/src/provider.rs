@@ -24,6 +24,12 @@ pub struct ProviderCommand {
     pub profile_diagnostics: Value,
 }
 
+impl ProviderCommand {
+    pub fn is_acp(&self) -> bool {
+        self.command_kind.as_deref() == Some("acp")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderTask<'a> {
     pub provider: ProviderKind,
@@ -187,7 +193,7 @@ pub fn output_cadence(provider: ProviderKind) -> Value {
             "recommendedSilentBudgetMs": 120000,
             "fallbackAfterMs": 180000,
             "advisory": true,
-            "note": "Antigravity print-mode output cadence is provider-dependent."
+            "note": "Antigravity ACP output cadence is provider-dependent."
         }),
     }
 }
@@ -261,16 +267,18 @@ fn reduced_configuration(provider: ProviderKind) -> Value {
 }
 
 pub fn validate_options(task: &ProviderTask<'_>) -> Result<(), String> {
+    acp_command_config(task.provider)?;
     adapter_for(task.provider).validate(task)
 }
 
-pub fn version_command(provider: ProviderKind) -> ProviderCommand {
-    ProviderCommand {
+pub fn version_command(provider: ProviderKind) -> Result<ProviderCommand, String> {
+    let (command, args) = acp_command_config(provider)?;
+    Ok(ProviderCommand {
         provider,
-        command_kind: provider_command_kind(provider),
+        command_kind: Some("acp".to_string()),
         claude_host: None,
-        command: resolve_command(provider),
-        args: vec!["--version".to_string()],
+        command,
+        args: [args, vec!["--version".to_string()]].concat(),
         stdin: None,
         redactions: Vec::new(),
         cwd: env::current_dir()
@@ -282,32 +290,26 @@ pub fn version_command(provider: ProviderKind) -> ProviderCommand {
         profile: LaunchProfile::Bridge,
         prompt_strategy: "version".to_string(),
         profile_diagnostics: profile_diagnostics(provider, LaunchProfile::Bridge),
-    }
+    })
 }
 
-/// Builds a non-Claude smoke `ProviderCommand`, filling the boilerplate that is
-/// identical across providers (minimal prompt strategy, smoke-prompt redaction,
-/// empty env, no stdin) so each provider arm only supplies `command` and `args`.
-fn minimal_smoke_command(
-    task: &ProviderTask,
-    command: String,
-    args: Vec<String>,
-) -> ProviderCommand {
-    ProviderCommand {
+fn acp_smoke_command(task: &ProviderTask) -> Result<ProviderCommand, String> {
+    let (command, args) = acp_command_config(task.provider)?;
+    Ok(ProviderCommand {
         provider: task.provider,
-        command_kind: None,
+        command_kind: Some("acp".to_string()),
         claude_host: None,
         command,
         args,
-        stdin: None,
+        stdin: Some(PROVIDER_SMOKE_PROMPT.to_string()),
         redactions: vec![PROVIDER_SMOKE_PROMPT.to_string()],
         cwd: task.cwd.to_string(),
         timeout_seconds: task.timeout_seconds,
         env: BTreeMap::new(),
         profile: task.profile,
-        prompt_strategy: "minimal".to_string(),
+        prompt_strategy: "acp-smoke".to_string(),
         profile_diagnostics: profile_diagnostics(task.provider, task.profile),
-    }
+    })
 }
 
 pub fn smoke_command(
@@ -328,87 +330,20 @@ pub fn smoke_command(
         profile: LaunchProfile::Bridge,
     };
     validate_options(&task)?;
-    let command = match provider {
-        ProviderKind::Claude => build_claude_command(&task, PROVIDER_SMOKE_PROMPT.to_string()),
-        ProviderKind::Cursor => minimal_smoke_command(
-            &task,
-            env_or("CURSOR_AGENT_BIN", "cursor-agent"),
-            [
-                vec![
-                    "-p".to_string(),
-                    "--output-format".to_string(),
-                    "json".to_string(),
-                    "--workspace".to_string(),
-                    task.cwd.to_string(),
-                ],
-                cursor_mode_flags(task.mode),
-                vec![
-                    "--trust".to_string(),
-                    "--".to_string(),
-                    PROVIDER_SMOKE_PROMPT.to_string(),
-                ],
-            ]
-            .concat(),
-        ),
-        ProviderKind::Kimi => minimal_smoke_command(
-            &task,
-            env_or("PI_BIN", "pi"),
-            vec![
-                "-p".to_string(),
-                "--no-session".to_string(),
-                "--no-context-files".to_string(),
-                "--tools".to_string(),
-                kimi_tools(task.mode).to_string(),
-                PROVIDER_SMOKE_PROMPT.to_string(),
-            ],
-        ),
-        ProviderKind::Codex => minimal_smoke_command(
-            &task,
-            env_or("CODEX_BIN", "codex"),
-            vec![
-                "exec".to_string(),
-                "--cd".to_string(),
-                task.cwd.to_string(),
-                "--skip-git-repo-check".to_string(),
-                "--json".to_string(),
-                "--sandbox".to_string(),
-                codex_sandbox(task.mode).to_string(),
-                "--config".to_string(),
-                "shell_environment_policy.inherit=\"all\"".to_string(),
-                PROVIDER_SMOKE_PROMPT.to_string(),
-            ],
-        ),
-        ProviderKind::Forge => minimal_smoke_command(
-            &task,
-            env_or("FORGE_BIN", "forge"),
-            vec![
-                "-C".to_string(),
-                task.cwd.to_string(),
-                "-p".to_string(),
-                PROVIDER_SMOKE_PROMPT.to_string(),
-            ],
-        ),
-        ProviderKind::Antigravity => minimal_smoke_command(
-            &task,
-            env_or("AGY_BIN", "agy"),
-            antigravity_args(&task, PROVIDER_SMOKE_PROMPT.to_string()),
-        ),
-    };
-    Ok((command, "minimal"))
+    Ok((acp_smoke_command(&task)?, "acp"))
 }
 
 pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String> {
     validate_options(task)?;
     let rendered_prompt = render_task_prompt(task);
-    Ok(adapter_for(task.provider).build_command(task, rendered_prompt))
+    let (command, args) = acp_command_config(task.provider)?;
+    Ok(build_acp_command(task, rendered_prompt, command, args))
 }
 
 /// Per-provider behavior behind a single interface, so core code dispatches
 /// command construction generically instead of branching on `ProviderKind`.
 /// Each provider's CLI contract lives in its own implementation.
 pub trait ProviderAdapter: Sync {
-    fn build_command(&self, task: &ProviderTask<'_>, rendered_prompt: String) -> ProviderCommand;
-
     /// Modes this provider accepts. Defaults to accepting every mode.
     fn supports_mode(&self, _mode: TaskMode) -> bool {
         true
@@ -506,37 +441,115 @@ pub fn adapter_for(provider: ProviderKind) -> &'static dyn ProviderAdapter {
     }
 }
 
+fn build_acp_command(
+    task: &ProviderTask<'_>,
+    rendered_prompt: String,
+    command: String,
+    args: Vec<String>,
+) -> ProviderCommand {
+    ProviderCommand {
+        provider: task.provider,
+        command_kind: Some("acp".to_string()),
+        claude_host: None,
+        command,
+        args,
+        stdin: Some(rendered_prompt.clone()),
+        redactions: vec![rendered_prompt, task.prompt.to_string()],
+        cwd: task.cwd.to_string(),
+        timeout_seconds: task.timeout_seconds,
+        env: BTreeMap::new(),
+        profile: task.profile,
+        prompt_strategy: prompt_strategy(task.profile).to_string(),
+        profile_diagnostics: profile_diagnostics(task.provider, task.profile),
+    }
+}
+
+fn acp_command_config(provider: ProviderKind) -> Result<(String, Vec<String>), String> {
+    acp_command_config_with(provider, |name| env::var(name).ok())
+}
+
+fn acp_command_config_with(
+    provider: ProviderKind,
+    get_env: impl Fn(&str) -> Option<String>,
+) -> Result<(String, Vec<String>), String> {
+    let (bin_var, args_var, default_command, default_args): (
+        &str,
+        &str,
+        Option<&str>,
+        Vec<String>,
+    ) = match provider {
+        ProviderKind::Claude => (
+            "CLAUDE_ACP_BIN",
+            "CLAUDE_ACP_ARGS",
+            Some("claude-agent"),
+            vec![],
+        ),
+        ProviderKind::Kimi => (
+            "KIMI_ACP_BIN",
+            "KIMI_ACP_ARGS",
+            Some("kimi"),
+            vec!["acp".to_string()],
+        ),
+        ProviderKind::Codex => ("CODEX_ACP_BIN", "CODEX_ACP_ARGS", None, vec![]),
+        ProviderKind::Cursor => ("CURSOR_ACP_BIN", "CURSOR_ACP_ARGS", None, vec![]),
+        ProviderKind::Forge => ("FORGE_ACP_BIN", "FORGE_ACP_ARGS", None, vec![]),
+        ProviderKind::Antigravity => ("ANTIGRAVITY_ACP_BIN", "ANTIGRAVITY_ACP_ARGS", None, vec![]),
+    };
+    let command = get_env(bin_var)
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| default_command.map(str::to_string))
+        .ok_or_else(|| {
+            format!(
+                "{bin_var} is required for {} ACP launches",
+                provider.as_str()
+            )
+        })?;
+    let mut args = default_args;
+    if let Some(extra_args) = get_env(args_var).filter(|value| !value.trim().is_empty()) {
+        args.extend(split_env_args(&extra_args)?);
+    }
+    Ok((command, args))
+}
+
+fn split_env_args(input: &str) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for ch in input.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '\'' | '"' if quote == Some(ch) => quote = None,
+            '\'' | '"' if quote.is_none() => quote = Some(ch),
+            ch if ch.is_whitespace() && quote.is_none() => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            ch => current.push(ch),
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    if quote.is_some() {
+        return Err("ACP args contain an unterminated quote".to_string());
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    Ok(args)
+}
+
 impl ProviderAdapter for ClaudeAdapter {
     fn supported_effort(&self) -> &'static [&'static str] {
         &["low", "medium", "high", "xhigh", "max"]
     }
-
-    fn enforces_output_parseable(&self) -> bool {
-        true
-    }
-
-    fn output_is_acceptable(&self, stdout: &[u8]) -> bool {
-        claude_output_is_parseable(stdout)
-    }
-
-    fn build_command(&self, task: &ProviderTask<'_>, rendered_prompt: String) -> ProviderCommand {
-        build_claude_command(task, rendered_prompt)
-    }
-}
-
-/// A successful Claude run must emit at least one JSON line carrying a non-empty
-/// `result` field; otherwise the output is treated as unparseable.
-fn claude_output_is_parseable(stdout: &[u8]) -> bool {
-    let text = String::from_utf8_lossy(stdout);
-    text.lines().any(|line| {
-        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
-            return false;
-        };
-        value
-            .get("result")
-            .and_then(Value::as_str)
-            .is_some_and(|result| !result.is_empty())
-    })
 }
 
 /// Codex can exit zero while reporting a fatal sandbox/approval/patch denial in
@@ -574,72 +587,11 @@ impl ProviderAdapter for CursorAdapter {
     fn supports_mode(&self, mode: TaskMode) -> bool {
         mode != TaskMode::Command
     }
-
-    fn build_command(&self, task: &ProviderTask<'_>, rendered_prompt: String) -> ProviderCommand {
-        ProviderCommand {
-            provider: task.provider,
-            command_kind: None,
-            claude_host: None,
-            command: env_or("CURSOR_AGENT_BIN", "cursor-agent"),
-            args: [
-                vec![
-                    "-p".to_string(),
-                    "--output-format".to_string(),
-                    "json".to_string(),
-                    "--workspace".to_string(),
-                    task.cwd.to_string(),
-                ],
-                cursor_mode_flags(task.mode),
-                optional_arg("--model", task.model),
-                vec!["--trust".to_string(), "--".to_string(), rendered_prompt],
-            ]
-            .concat(),
-            stdin: None,
-            redactions: Vec::new(),
-            cwd: task.cwd.to_string(),
-            timeout_seconds: task.timeout_seconds,
-            env: BTreeMap::new(),
-            profile: task.profile,
-            prompt_strategy: prompt_strategy(task.profile).to_string(),
-            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
-        }
-    }
 }
 
 impl ProviderAdapter for KimiAdapter {
     fn supported_thinking(&self) -> &'static [&'static str] {
         &["off", "minimal", "low", "medium", "high", "xhigh"]
-    }
-
-    fn build_command(&self, task: &ProviderTask<'_>, rendered_prompt: String) -> ProviderCommand {
-        ProviderCommand {
-            provider: task.provider,
-            command_kind: None,
-            claude_host: None,
-            command: env_or("PI_BIN", "pi"),
-            args: [
-                vec![
-                    "-p".to_string(),
-                    "--no-session".to_string(),
-                    "--no-context-files".to_string(),
-                    "--tools".to_string(),
-                    kimi_tools(task.mode).to_string(),
-                ],
-                kimi_profile_flags(task.profile),
-                optional_arg("--model", task.model),
-                optional_arg("--thinking", task.thinking),
-                vec![rendered_prompt],
-            ]
-            .concat(),
-            stdin: None,
-            redactions: Vec::new(),
-            cwd: task.cwd.to_string(),
-            timeout_seconds: task.timeout_seconds,
-            env: BTreeMap::new(),
-            profile: task.profile,
-            prompt_strategy: prompt_strategy(task.profile).to_string(),
-            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
-        }
     }
 }
 
@@ -678,98 +630,11 @@ impl ProviderAdapter for CodexAdapter {
     fn detects_fatal_denial(&self, stderr: &[u8]) -> bool {
         codex_denial_text(stderr)
     }
-
-    fn build_command(&self, task: &ProviderTask<'_>, rendered_prompt: String) -> ProviderCommand {
-        ProviderCommand {
-            provider: task.provider,
-            command_kind: None,
-            claude_host: None,
-            command: env_or("CODEX_BIN", "codex"),
-            args: [
-                vec![
-                    "exec".to_string(),
-                    "--cd".to_string(),
-                    task.cwd.to_string(),
-                    "--skip-git-repo-check".to_string(),
-                    "--json".to_string(),
-                    "--sandbox".to_string(),
-                    codex_sandbox(task.mode).to_string(),
-                    "--config".to_string(),
-                    "shell_environment_policy.inherit=\"all\"".to_string(),
-                ],
-                codex_profile_flags(task.profile),
-                optional_arg("--model", task.model),
-                codex_reasoning_effort(task)
-                    .map(|effort| {
-                        vec![
-                            "--config".to_string(),
-                            format!("model_reasoning_effort=\"{effort}\""),
-                        ]
-                    })
-                    .unwrap_or_default(),
-                vec![rendered_prompt.clone()],
-            ]
-            .concat(),
-            stdin: None,
-            redactions: vec![rendered_prompt, task.prompt.to_string()],
-            cwd: task.cwd.to_string(),
-            timeout_seconds: task.timeout_seconds,
-            env: BTreeMap::new(),
-            profile: task.profile,
-            prompt_strategy: prompt_strategy(task.profile).to_string(),
-            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
-        }
-    }
 }
 
-fn codex_reasoning_effort<'a>(task: &'a ProviderTask<'a>) -> Option<&'a str> {
-    task.thinking.or(task.effort)
-}
+impl ProviderAdapter for ForgeAdapter {}
 
-impl ProviderAdapter for ForgeAdapter {
-    fn build_command(&self, task: &ProviderTask<'_>, rendered_prompt: String) -> ProviderCommand {
-        ProviderCommand {
-            provider: task.provider,
-            command_kind: None,
-            claude_host: None,
-            command: env_or("FORGE_BIN", "forge"),
-            args: vec![
-                "-C".to_string(),
-                task.cwd.to_string(),
-                "-p".to_string(),
-                rendered_prompt.clone(),
-            ],
-            stdin: None,
-            redactions: vec![rendered_prompt, task.prompt.to_string()],
-            cwd: task.cwd.to_string(),
-            timeout_seconds: task.timeout_seconds,
-            env: BTreeMap::new(),
-            profile: task.profile,
-            prompt_strategy: prompt_strategy(task.profile).to_string(),
-            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
-        }
-    }
-}
-
-impl ProviderAdapter for AntigravityAdapter {
-    fn build_command(&self, task: &ProviderTask<'_>, rendered_prompt: String) -> ProviderCommand {
-        ProviderCommand {
-            provider: task.provider,
-            command_kind: None,
-            claude_host: None,
-            command: env_or("AGY_BIN", "agy"),
-            args: antigravity_args(task, rendered_prompt.clone()),
-            stdin: None,
-            redactions: vec![rendered_prompt, task.prompt.to_string()],
-            cwd: task.cwd.to_string(),
-            timeout_seconds: task.timeout_seconds,
-            env: BTreeMap::new(),
-            profile: task.profile,
-            prompt_strategy: prompt_strategy(task.profile).to_string(),
-            profile_diagnostics: profile_diagnostics(task.provider, task.profile),
-        }
-    }
-}
+impl ProviderAdapter for AntigravityAdapter {}
 
 pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
     let names = match provider {
@@ -793,6 +658,8 @@ pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
             "SSL_CERT_FILE",
             "CLAUDE_CONFIG_DIR",
             "CLAUDE_BIN",
+            "CLAUDE_ACP_BIN",
+            "CLAUDE_ACP_ARGS",
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
             "ANTHROPIC_OAUTH_TOKEN",
@@ -813,14 +680,20 @@ pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
             "LC_ALL",
             "CLAUDE_CONFIG_DIR",
             "CLAUDE_BIN",
+            "CLAUDE_ACP_BIN",
+            "CLAUDE_ACP_ARGS",
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
             "ANTHROPIC_OAUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
             "ANTHROPIC_BASE_URL",
             "CURSOR_AGENT_BIN",
+            "CURSOR_ACP_BIN",
+            "CURSOR_ACP_ARGS",
             "CURSOR_API_KEY",
             "PI_BIN",
+            "KIMI_ACP_BIN",
+            "KIMI_ACP_ARGS",
             "PI_CODING_AGENT_DIR",
             "PI_CODING_AGENT_SESSION_DIR",
             "KIMI_API_KEY",
@@ -830,10 +703,16 @@ pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
             "TOGETHER_API_KEY",
             "OPENAI_BASE_URL",
             "CODEX_BIN",
+            "CODEX_ACP_BIN",
+            "CODEX_ACP_ARGS",
             "CODEX_HOME",
             "FORGE_BIN",
+            "FORGE_ACP_BIN",
+            "FORGE_ACP_ARGS",
             "FORGE_HOME",
             "AGY_BIN",
+            "ANTIGRAVITY_ACP_BIN",
+            "ANTIGRAVITY_ACP_ARGS",
             "OPENAI_API_KEY",
             "AGENT_BRIDGE_WORKSPACES",
             "AGENT_BRIDGE_STATE_DIR",
@@ -849,49 +728,6 @@ pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn build_claude_command(task: &ProviderTask<'_>, rendered_prompt: String) -> ProviderCommand {
-    ProviderCommand {
-        provider: task.provider,
-        command_kind: Some("owned-interactive-claude".to_string()),
-        claude_host: Some(ClaudeHostCommand {
-            cwd: task.cwd.to_string(),
-            timeout_seconds: task.timeout_seconds,
-            mode: task.mode,
-            prompt: rendered_prompt.clone(),
-            model: task.model.map(str::to_string),
-            effort: task.effort.map(str::to_string),
-        }),
-        command: "agent-bridge-claude-host-runner-required".to_string(),
-        args: Vec::new(),
-        stdin: None,
-        redactions: vec![rendered_prompt, task.prompt.to_string()],
-        cwd: task.cwd.to_string(),
-        timeout_seconds: task.timeout_seconds,
-        env: BTreeMap::new(),
-        profile: task.profile,
-        prompt_strategy: prompt_strategy(task.profile).to_string(),
-        profile_diagnostics: profile_diagnostics(task.provider, task.profile),
-    }
-}
-
-fn provider_command_kind(provider: ProviderKind) -> Option<String> {
-    match provider {
-        ProviderKind::Claude => Some("owned-interactive-claude".to_string()),
-        _ => None,
-    }
-}
-
-fn resolve_command(provider: ProviderKind) -> String {
-    match provider {
-        ProviderKind::Claude => env_or("CLAUDE_BIN", "claude"),
-        ProviderKind::Cursor => env_or("CURSOR_AGENT_BIN", "cursor-agent"),
-        ProviderKind::Kimi => env_or("PI_BIN", "pi"),
-        ProviderKind::Codex => env_or("CODEX_BIN", "codex"),
-        ProviderKind::Forge => env_or("FORGE_BIN", "forge"),
-        ProviderKind::Antigravity => env_or("AGY_BIN", "agy"),
-    }
-}
-
 fn render_task_prompt(task: &ProviderTask<'_>) -> String {
     if task.profile == LaunchProfile::Bare {
         let safety = match task.mode {
@@ -899,12 +735,14 @@ fn render_task_prompt(task: &ProviderTask<'_>) -> String {
             TaskMode::Implement => "Make only the requested code changes.",
             TaskMode::Command => "Run only bounded command-oriented work.",
         };
+        let delegation_boundary = nested_delegation_boundary(task.mode);
         return format!(
-            "Delegated task.\nMode: {}\nProvider: {}\nCwd: {}\n{}\nReturn: summary, evidence, changed files if any, risks, next steps.\n\nUser instruction:\n{}",
+            "Delegated task.\nMode: {}\nProvider: {}\nCwd: {}\n{}{}\nReturn: summary, evidence, changed files if any, risks, next steps.\n\nUser instruction:\n{}",
             task.mode.as_str(),
             task.provider.as_str(),
             task.cwd,
             safety,
+            delegation_boundary,
             task.prompt
         );
     }
@@ -913,10 +751,11 @@ fn render_task_prompt(task: &ProviderTask<'_>) -> String {
         .map(|title| format!("Title: {title}\n"))
         .unwrap_or_default();
     format!(
-        "{title}Mode: {}\nProvider: {}\nInstruction: {}\n\n{}\n\nReturn a concise final report with: summary, changed files if any, evidence, risks, and next steps.",
+        "{title}Mode: {}\nProvider: {}\nInstruction: {}\n{}\n\n{}\n\nReturn a concise final report with: summary, changed files if any, evidence, risks, and next steps.",
         task.mode.as_str(),
         task.provider.as_str(),
         mode_description(task.mode),
+        nested_delegation_boundary(task.mode),
         task.prompt
     )
 }
@@ -925,31 +764,6 @@ fn prompt_strategy(profile: LaunchProfile) -> &'static str {
     match profile {
         LaunchProfile::Bridge => "bridge",
         LaunchProfile::Bare => "compact",
-    }
-}
-
-fn codex_profile_flags(profile: LaunchProfile) -> Vec<String> {
-    match profile {
-        LaunchProfile::Bridge => Vec::new(),
-        LaunchProfile::Bare => vec![
-            "--ignore-user-config".to_string(),
-            "--ignore-rules".to_string(),
-            "--ephemeral".to_string(),
-        ],
-    }
-}
-
-fn kimi_profile_flags(profile: LaunchProfile) -> Vec<String> {
-    match profile {
-        LaunchProfile::Bridge => Vec::new(),
-        LaunchProfile::Bare => vec![
-            "--no-extensions".to_string(),
-            "--no-skills".to_string(),
-            "--no-prompt-templates".to_string(),
-            "--no-themes".to_string(),
-            "--system-prompt".to_string(),
-            "You are a delegated provider task. Follow the user instruction exactly.".to_string(),
-        ],
     }
 }
 
@@ -1011,7 +825,7 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
             "appliedReductions": ["compact_prompt"],
             "unsupportedReductions": ["custom_system_prompt", "disable_hooks", "disable_skills"],
             "bestEffortReductions": ["config_isolation", "memory_session", "context_files"],
-            "note": "antigravity bare uses compact prompting; CLI help does not expose reliable print-mode flags for disabling ambient settings"
+            "note": "antigravity bare uses compact prompting; inspect ACP agent support for ambient-setting reductions"
         }),
     }
 }
@@ -1027,56 +841,13 @@ fn mode_description(mode: TaskMode) -> &'static str {
     }
 }
 
-fn cursor_mode_flags(mode: TaskMode) -> Vec<String> {
+fn nested_delegation_boundary(mode: TaskMode) -> &'static str {
     match mode {
-        TaskMode::Research | TaskMode::Review => vec!["--mode".to_string(), "ask".to_string()],
-        _ => Vec::new(),
+        TaskMode::Research | TaskMode::Review => {
+            "\nDo not call Agent Bridge or spawn/use other provider or subagent review tools; return your own bounded report directly."
+        }
+        TaskMode::Implement | TaskMode::Command => "",
     }
-}
-
-fn kimi_tools(mode: TaskMode) -> &'static str {
-    match mode {
-        TaskMode::Implement => "read,bash,edit,write,grep,find,ls",
-        TaskMode::Command => "read,bash,grep,find,ls",
-        _ => "read,grep,find,ls",
-    }
-}
-
-fn codex_sandbox(mode: TaskMode) -> &'static str {
-    match mode {
-        TaskMode::Research | TaskMode::Review => "read-only",
-        _ => "workspace-write",
-    }
-}
-
-fn antigravity_args(task: &ProviderTask<'_>, prompt: String) -> Vec<String> {
-    [
-        vec![
-            "--print-timeout".to_string(),
-            format!("{}s", task.timeout_seconds),
-        ],
-        optional_arg("--model", task.model),
-        antigravity_sandbox_flags(task.mode),
-        vec!["--print".to_string(), prompt],
-    ]
-    .concat()
-}
-
-fn antigravity_sandbox_flags(mode: TaskMode) -> Vec<String> {
-    match mode {
-        TaskMode::Research | TaskMode::Review => vec!["--sandbox".to_string()],
-        TaskMode::Implement | TaskMode::Command => Vec::new(),
-    }
-}
-
-fn optional_arg(flag: &str, value: Option<&str>) -> Vec<String> {
-    value
-        .map(|value| vec![flag.to_string(), value.to_string()])
-        .unwrap_or_default()
-}
-
-fn env_or(name: &str, fallback: &str) -> String {
-    env::var(name).unwrap_or_else(|_| fallback.to_string())
 }
 
 #[cfg(test)]
@@ -1099,104 +870,112 @@ mod tests {
     }
 
     #[test]
-    fn minimal_smoke_command_fills_shared_boilerplate() {
-        let t = task(ProviderKind::Codex, TaskMode::Research);
-        let command = minimal_smoke_command(&t, "mybin".to_string(), vec!["exec".to_string()]);
+    fn read_only_prompts_prohibit_nested_delegation() {
+        let review = render_task_prompt(&task(ProviderKind::Codex, TaskMode::Review));
+        assert!(review.contains("Do not call Agent Bridge"));
+        assert!(review.contains("return your own bounded report directly"));
+
+        let research = render_task_prompt(&task(ProviderKind::Codex, TaskMode::Research));
+        assert!(research.contains("Do not call Agent Bridge"));
+
+        let implement = render_task_prompt(&task(ProviderKind::Codex, TaskMode::Implement));
+        assert!(!implement.contains("Do not call Agent Bridge"));
+    }
+
+    #[test]
+    fn acp_config_uses_defaults_and_required_bins() {
+        let missing = |_name: &str| None;
+        assert_eq!(
+            acp_command_config_with(ProviderKind::Claude, missing).unwrap(),
+            ("claude-agent".to_string(), vec![])
+        );
+        assert_eq!(
+            acp_command_config_with(ProviderKind::Kimi, missing).unwrap(),
+            ("kimi".to_string(), vec!["acp".to_string()])
+        );
+        for provider in [
+            ProviderKind::Codex,
+            ProviderKind::Cursor,
+            ProviderKind::Forge,
+            ProviderKind::Antigravity,
+        ] {
+            assert!(
+                acp_command_config_with(provider, missing)
+                    .unwrap_err()
+                    .contains("_ACP_BIN is required")
+            );
+        }
+    }
+
+    #[test]
+    fn acp_config_parses_optional_args() {
+        let env = |name: &str| match name {
+            "CODEX_ACP_BIN" => Some("codex-acp".to_string()),
+            "CODEX_ACP_ARGS" => Some("--model \"gpt 5\" --flag".to_string()),
+            _ => None,
+        };
+        let (command, args) = acp_command_config_with(ProviderKind::Codex, env).unwrap();
+        assert_eq!(command, "codex-acp");
+        assert_eq!(args, vec!["--model", "gpt 5", "--flag"]);
+    }
+
+    #[test]
+    fn build_command_uses_acp_transport() {
+        let t = task(ProviderKind::Codex, TaskMode::Implement);
+        let command = build_acp_command(
+            &t,
+            "rendered prompt".to_string(),
+            "codex-acp".to_string(),
+            vec!["--json".to_string()],
+        );
 
         assert_eq!(command.provider, ProviderKind::Codex);
-        assert_eq!(command.command, "mybin");
-        assert_eq!(command.args, vec!["exec".to_string()]);
-        assert_eq!(command.prompt_strategy, "minimal");
-        assert_eq!(command.cwd, "/tmp/work");
-        assert_eq!(command.timeout_seconds, 30);
-        assert!(command.env.is_empty());
-        assert!(command.stdin.is_none());
-        assert!(command.command_kind.is_none());
+        assert_eq!(command.command_kind.as_deref(), Some("acp"));
+        assert!(command.is_acp());
+        assert_eq!(command.command, "codex-acp");
+        assert_eq!(command.args, vec!["--json"]);
+        assert_eq!(command.stdin.as_deref(), Some("rendered prompt"));
+        assert_eq!(command.prompt_strategy, "bridge");
         assert!(command.claude_host.is_none());
-        assert!(
-            command
-                .redactions
-                .iter()
-                .any(|r| r == PROVIDER_SMOKE_PROMPT)
-        );
     }
 
     #[test]
-    fn build_command_dispatches_to_each_provider() {
-        let cases = [
-            (ProviderKind::Cursor, "cursor-agent"),
-            (ProviderKind::Kimi, "pi"),
-            (ProviderKind::Codex, "codex"),
-            (ProviderKind::Forge, "forge"),
-            (ProviderKind::Antigravity, "agy"),
-        ];
-        for (provider, expected) in cases {
-            let command = build_command(&task(provider, TaskMode::Research)).unwrap();
-            assert_eq!(command.provider, provider);
-            assert_eq!(command.command, expected);
-        }
-        // Claude routes through the owned interactive host runner.
-        let claude = build_command(&task(ProviderKind::Claude, TaskMode::Research)).unwrap();
-        assert_eq!(
-            claude.command_kind.as_deref(),
-            Some("owned-interactive-claude")
-        );
-    }
-
-    #[test]
-    fn codex_build_command_carries_sandbox_and_thinking() {
-        let mut t = task(ProviderKind::Codex, TaskMode::Implement);
-        t.thinking = Some("high");
-        let command = build_command(&t).unwrap();
-        assert!(command.args.iter().any(|arg| arg == "exec"));
-        assert!(
-            command
-                .args
-                .iter()
-                .any(|arg| arg == "--skip-git-repo-check")
-        );
-        assert!(command.args.iter().any(|arg| arg == "workspace-write"));
-        assert!(
-            command
-                .args
-                .iter()
-                .any(|arg| arg == "model_reasoning_effort=\"high\"")
-        );
-    }
-
-    #[test]
-    fn codex_build_command_accepts_effort_as_thinking_alias() {
+    fn codex_options_accept_effort_as_thinking_alias() {
         let mut t = task(ProviderKind::Codex, TaskMode::Review);
         t.effort = Some("high");
-        let command = build_command(&t).unwrap();
-        assert!(
-            command
-                .args
-                .iter()
-                .any(|arg| arg == "model_reasoning_effort=\"high\"")
-        );
+        adapter_for(ProviderKind::Codex).validate(&t).unwrap();
 
         let mut conflicting = task(ProviderKind::Codex, TaskMode::Review);
         conflicting.effort = Some("high");
         conflicting.thinking = Some("low");
-        let error = build_command(&conflicting).unwrap_err();
+        let error = adapter_for(ProviderKind::Codex)
+            .validate(&conflicting)
+            .unwrap_err();
         assert!(error.contains("codex effort and thinking must match"));
     }
 
     #[test]
     fn validate_options_enforces_provider_rules() {
         // Cursor rejects command mode.
-        assert!(validate_options(&task(ProviderKind::Cursor, TaskMode::Command)).is_err());
+        assert!(
+            adapter_for(ProviderKind::Cursor)
+                .validate(&task(ProviderKind::Cursor, TaskMode::Command))
+                .is_err()
+        );
         // effort is accepted only where the provider has a reasoning contract.
         let mut codex = task(ProviderKind::Codex, TaskMode::Research);
         codex.effort = Some("high");
-        assert!(validate_options(&codex).is_ok());
+        assert!(adapter_for(ProviderKind::Codex).validate(&codex).is_ok());
         let mut claude = task(ProviderKind::Claude, TaskMode::Research);
         claude.effort = Some("high");
         assert!(validate_options(&claude).is_ok());
         let mut cursor_effort = task(ProviderKind::Cursor, TaskMode::Research);
         cursor_effort.effort = Some("high");
-        assert!(validate_options(&cursor_effort).is_err());
+        assert!(
+            adapter_for(ProviderKind::Cursor)
+                .validate(&cursor_effort)
+                .is_err()
+        );
         // thinking rules per provider.
         let mut kimi = task(ProviderKind::Kimi, TaskMode::Research);
         kimi.thinking = Some("off");
@@ -1205,7 +984,7 @@ mod tests {
         assert!(validate_options(&kimi).is_err());
         let mut cursor = task(ProviderKind::Cursor, TaskMode::Research);
         cursor.thinking = Some("low");
-        assert!(validate_options(&cursor).is_err());
+        assert!(adapter_for(ProviderKind::Cursor).validate(&cursor).is_err());
     }
 
     #[test]
@@ -1244,13 +1023,8 @@ mod tests {
     }
 
     #[test]
-    fn claude_adapter_enforces_output_parseability_via_trait() {
-        let adapter = adapter_for(ProviderKind::Claude);
-        assert!(adapter.enforces_output_parseable());
-        assert!(adapter.output_is_acceptable(b"{\"result\":\"done\"}"));
-        assert!(!adapter.output_is_acceptable(b"not json"));
-        assert!(!adapter.output_is_acceptable(b"{\"result\":\"\"}"));
-        // Other providers do not enforce parseability.
+    fn acp_adapters_do_not_parse_legacy_cli_output() {
+        assert!(!adapter_for(ProviderKind::Claude).enforces_output_parseable());
         assert!(!adapter_for(ProviderKind::Codex).enforces_output_parseable());
         assert!(adapter_for(ProviderKind::Codex).output_is_acceptable(b"anything"));
     }
