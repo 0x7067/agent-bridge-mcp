@@ -3576,8 +3576,28 @@ fn stdio_claude_agent_runs_prompt_through_acp_stdin() {
 
     let result = client.tool("agent_result", json!({"agentId": agent_id}));
     assert_eq!(result["status"], "succeeded");
+    assert!(result.get("stdout").is_none());
+    assert!(result.get("stderr").is_none());
+    assert!(result.get("gitDiff").is_none());
+    assert!(result.get("transcript").is_none());
+
+    let raw = client.tool(
+        "agent_result",
+        json!({"agentId": agent_id, "sections": ["stdout", "stderr", "transcript"]}),
+    );
+    assert!(raw.get("stdout").is_some());
+    assert!(raw.get("stderr").is_some());
+    assert!(raw.get("transcript").is_some());
+
     assert!(!env.root.join("should-not-run").exists());
-    assert!(env.log_dir.join("stdin.txt").exists());
+    let stdin = std::fs::read_to_string(env.log_dir.join("stdin.txt")).unwrap();
+    assert!(stdin.contains("Return only the task-relevant final answer"));
+    assert!(stdin.contains("Do not echo source text"));
+    assert!(stdin.contains("narrate progress/polling/waiting"));
+    assert!(stdin.contains("include generic checklists"));
+    assert!(stdin.contains("omit empty sections"));
+    assert!(!stdin.contains("Return a concise final report"));
+    assert!(!stdin.contains("summary, changed files if any, evidence, risks, and next steps"));
 }
 
 #[test]

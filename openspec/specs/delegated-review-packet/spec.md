@@ -33,6 +33,10 @@ The system SHALL keep review packets as summaries of existing result fields rath
 - **WHEN** a review packet is generated
 - **THEN** it does not parse provider prose, does not claim tests passed, and does not remove or change any existing `agent_result` fields.
 
+#### Scenario: Raw evidence remains opt-in
+- **WHEN** a caller needs source excerpts, logs, diffs, transcripts, or diagnostics that were not part of the provider's lean final answer
+- **THEN** the caller requests explicit `agent_result` evidence sections instead of relying on provider final-output padding.
+
 ### Requirement: Review packets summarize transcript availability
 The system SHALL include transcript availability and transcript-derived result evidence in delegated review packets without turning provider prose into verification claims.
 
@@ -62,4 +66,3 @@ The system SHALL include recovery guidance in `reviewPacket` for failed Codex ta
 #### Scenario: Review packet remains derived evidence
 - **WHEN** a Codex denial review packet is generated
 - **THEN** it summarizes available status, diagnostics, logs, and exit metadata without parsing provider prose as proof of project correctness
-

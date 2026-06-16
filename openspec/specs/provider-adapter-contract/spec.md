@@ -29,6 +29,10 @@ The system SHALL build provider command descriptors through provider adapters wh
 - **WHEN** a provider adapter changes internal command arguments or prompt transport to avoid data leakage or improve reliability
 - **THEN** the adapter preserves public task prompt semantics, preview redaction, cwd, timeout, task metadata, and lifecycle response compatibility.
 
+#### Scenario: Rendering the provider final-output contract
+- **WHEN** any provider adapter renders a task prompt for any launch profile
+- **THEN** the prompt uses the shared lean-only final-output contract and forbids source echo, progress narration, generic checklists, speculative polish, and prompt restatement unless explicitly requested.
+
 #### Scenario: Using adapter-owned launch strategy
 - **WHEN** a provider adapter marks a command for a provider-specific launch strategy such as Claude host-runner execution
 - **THEN** preview, smoke checks, and task spawning use that launch strategy without changing the public task lifecycle API shape.
@@ -76,6 +80,10 @@ The system SHALL keep launch-profile command construction, prompt rendering, env
 #### Scenario: Adapter builds profile command
 - **WHEN** a caller previews or spawns a task with a launch profile
 - **THEN** the selected provider adapter builds the command descriptor, prompt transport, environment, and profile diagnostics for that profile.
+
+#### Scenario: Launch profile does not change final-output shape
+- **WHEN** a caller uses `bridge`, `bare`, or `unblocked`
+- **THEN** the profile may change provider launch configuration but does not introduce a verbose provider final-report mode.
 
 #### Scenario: Adapter owns unblocked flags
 - **WHEN** a provider adapter advertises the `unblocked` launch profile

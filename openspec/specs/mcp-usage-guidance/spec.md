@@ -40,6 +40,10 @@ The system SHALL state in server-discoverable guidance that provider output is e
 - **WHEN** a client reads guidance through prompts or resources
 - **THEN** the guidance tells the caller to inspect task output and run the relevant project verification before claiming work complete.
 
+#### Scenario: Lean provider-output guidance
+- **WHEN** a client reads guidance through prompts or resources
+- **THEN** the guidance says spawned providers use a lean-only final-output contract and callers should not wait for source echo, progress narration, generic checklists, or polish once useful evidence is available.
+
 ### Requirement: Guidance exposes operator workflow prompts
 The system SHALL expose MCP prompt templates for host-runner lifecycle operation and dogfood delegation workflows.
 
@@ -146,4 +150,3 @@ The system SHALL teach callers how to observe long-running and silent provider t
 - **WHEN** a client reads caller workflow guidance
 - **THEN** the guidance uses canonical `agent_*` lifecycle tool names
 - **AND** it does not mix in public `task_*` lifecycle names for the same workflow.
-

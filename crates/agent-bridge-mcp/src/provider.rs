@@ -7,6 +7,15 @@ use std::env;
 const PROVIDER_SMOKE_PROMPT: &str = "Reply with exactly: AGENT_BRIDGE_PROVIDER_SMOKE_OK";
 const UNBLOCKED_SMOKE_MARKER: &str = ".agent-bridge-unblocked-smoke";
 pub const PROVIDER_SMOKE_TOKEN: &str = "AGENT_BRIDGE_PROVIDER_SMOKE_OK";
+const LEAN_RETURN_CONTRACT: &str = concat!(
+    "Return contract:\n",
+    "- Return only the task-relevant final answer.\n",
+    "- Do not echo source text, narrate progress/polling/waiting, include generic checklists, ",
+    "speculate or polish, or restate the prompt unless explicitly asked.\n",
+    "- If blocked, return only the blocker and the one missing fact needed to proceed.\n",
+    "- Include changed files, verification evidence, risks, blockers, or next steps only when ",
+    "they exist; omit empty sections."
+);
 const STANDARD_PROFILES: &[LaunchProfile] = &[LaunchProfile::Bridge, LaunchProfile::Bare];
 const UNBLOCKED_PROFILES: &[LaunchProfile] = &[
     LaunchProfile::Bridge,
@@ -816,34 +825,25 @@ pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
 }
 
 fn render_task_prompt(task: &ProviderTask<'_>) -> String {
-    if task.profile == LaunchProfile::Bare {
-        let safety = match task.mode {
-            TaskMode::Research | TaskMode::Review => "Do not edit files.",
-            TaskMode::Implement => "Make only the requested code changes.",
-            TaskMode::Command => "Run only bounded command-oriented work.",
-        };
-        let delegation_boundary = nested_delegation_boundary(task.mode);
-        return format!(
-            "Delegated task.\nMode: {}\nProvider: {}\nCwd: {}\n{}{}\nReturn: summary, evidence, changed files if any, risks, next steps.\n\nUser instruction:\n{}",
-            task.mode.as_str(),
-            task.provider.as_str(),
-            task.cwd,
-            safety,
-            delegation_boundary,
-            task.prompt
-        );
-    }
     let title = task
         .title
         .map(|title| format!("Title: {title}\n"))
         .unwrap_or_default();
+    let safety = match task.mode {
+        TaskMode::Research | TaskMode::Review => "Do not edit files.",
+        TaskMode::Implement => "Make only the requested code changes.",
+        TaskMode::Command => "Run only bounded command-oriented work.",
+    };
     format!(
-        "{title}Mode: {}\nProvider: {}\nInstruction: {}\n{}\n\n{}\n\nReturn a concise final report with: summary, changed files if any, evidence, risks, and next steps.",
+        "{title}Delegated task.\nMode: {}\nProvider: {}\nCwd: {}\nInstruction: {}\nSafety: {}{}\n\nUser instruction:\n{}\n\n{}",
         task.mode.as_str(),
         task.provider.as_str(),
+        task.cwd,
         mode_description(task.mode),
+        safety,
         nested_delegation_boundary(task.mode),
-        task.prompt
+        task.prompt,
+        LEAN_RETURN_CONTRACT,
     )
 }
 
@@ -863,7 +863,7 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
             "appliedReductions": [],
             "unsupportedReductions": [],
             "bestEffortReductions": [],
-            "note": "standard Agent Bridge prompt and provider configuration"
+            "note": "standard provider configuration with the shared lean task contract"
         });
     }
     if profile == LaunchProfile::Unblocked {
@@ -888,7 +888,7 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
             "appliedReductions": ["compact_prompt", "ignore_user_config", "ignore_rules", "ephemeral_session"],
             "unsupportedReductions": ["custom_system_prompt", "disable_hooks"],
             "bestEffortReductions": ["context_files"],
-            "note": "bare means provider-specific reduced configuration; inspect applied reductions"
+            "note": "bare means provider-specific reduced configuration; the shared lean task contract still applies"
         }),
         ProviderKind::Forge => json!({
             "profile": "bare",
@@ -896,7 +896,7 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
             "appliedReductions": ["compact_prompt"],
             "unsupportedReductions": ["custom_system_prompt", "disable_hooks"],
             "bestEffortReductions": ["disable_skills", "config_isolation", "memory_session", "context_files"],
-            "note": "forge bare uses compact prompting; CLI help does not expose reliable flags for disabling ambient settings"
+            "note": "forge bare uses reduced provider configuration; CLI help does not expose reliable flags for disabling ambient settings"
         }),
         ProviderKind::Kimi => json!({
             "profile": "bare",
@@ -904,7 +904,7 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
             "appliedReductions": ["compact_prompt", "custom_system_prompt", "no_session", "no_extensions", "no_skills", "no_prompt_templates", "no_themes", "no_context_files"],
             "unsupportedReductions": [],
             "bestEffortReductions": [],
-            "note": "bare means provider-specific reduced configuration; inspect applied reductions"
+            "note": "bare means provider-specific reduced configuration; the shared lean task contract still applies"
         }),
         ProviderKind::Claude => json!({
             "profile": "bare",
@@ -928,7 +928,7 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
             "appliedReductions": ["compact_prompt"],
             "unsupportedReductions": ["custom_system_prompt", "disable_hooks", "disable_skills"],
             "bestEffortReductions": ["config_isolation", "memory_session", "context_files"],
-            "note": "antigravity bare uses compact prompting; inspect ACP agent support for ambient-setting reductions"
+            "note": "antigravity bare uses reduced provider configuration; inspect ACP agent support for ambient-setting reductions"
         }),
     }
 }
@@ -937,10 +937,8 @@ fn mode_description(mode: TaskMode) -> &'static str {
     match mode {
         TaskMode::Research => "Read and analyze. Do not edit files.",
         TaskMode::Review => "Review the requested code or plan. Do not edit files.",
-        TaskMode::Implement => {
-            "Make the requested code changes, keep scope tight, and report verification evidence."
-        }
-        TaskMode::Command => "Run the requested bounded command-oriented task and report evidence.",
+        TaskMode::Implement => "Make the requested code changes and keep scope tight.",
+        TaskMode::Command => "Run the requested bounded command-oriented task.",
     }
 }
 
@@ -983,6 +981,40 @@ mod tests {
 
         let implement = render_task_prompt(&task(ProviderKind::Codex, TaskMode::Implement));
         assert!(!implement.contains("Do not call Agent Bridge"));
+    }
+
+    #[test]
+    fn prompts_use_shared_lean_return_contract_for_all_profiles() {
+        for profile in [
+            LaunchProfile::Bridge,
+            LaunchProfile::Bare,
+            LaunchProfile::Unblocked,
+        ] {
+            let mut t = task(ProviderKind::Claude, TaskMode::Review);
+            t.profile = profile;
+            let prompt = render_task_prompt(&t);
+
+            assert!(prompt.contains("Return only the task-relevant final answer."));
+            assert!(prompt.contains("Do not echo source text"));
+            assert!(prompt.contains("narrate progress/polling/waiting"));
+            assert!(prompt.contains("include generic checklists"));
+            assert!(prompt.contains("restate the prompt unless explicitly asked"));
+            assert!(prompt.contains("Include changed files, verification evidence, risks, blockers, or next steps only when they exist"));
+            assert!(!prompt.contains("Return a concise final report"));
+            assert!(!prompt.contains("summary, evidence, changed files if any, risks, next steps"));
+        }
+    }
+
+    #[test]
+    fn lean_return_contract_preserves_mode_boundaries() {
+        let research = render_task_prompt(&task(ProviderKind::Codex, TaskMode::Research));
+        assert!(research.contains("Do not edit files."));
+        assert!(research.contains("User instruction:\ndo the thing"));
+
+        let implement = render_task_prompt(&task(ProviderKind::Codex, TaskMode::Implement));
+        assert!(implement.contains("Make only the requested code changes."));
+        assert!(implement.contains("Make the requested code changes and keep scope tight."));
+        assert!(implement.contains("verification evidence"));
     }
 
     #[test]

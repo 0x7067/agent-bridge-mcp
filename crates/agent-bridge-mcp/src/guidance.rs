@@ -8,7 +8,7 @@ const CLAUDE_HOST_LIFECYCLE_URI: &str = "agent-bridge://guidance/claude-host-lif
 const DOGFOOD_WORKFLOWS_URI: &str = "agent-bridge://guidance/dogfood-workflows";
 const CODE_EXECUTION_URI: &str = "agent-bridge://guidance/code-execution";
 
-pub const INITIALIZATION_INSTRUCTIONS: &str = r#"Agent Bridge delegates review, research, command, and implementation work to provider agents. Provider output is evidence only: the caller still owns project verification before claiming work is done. Eight-tool workflow: run doctor when setup or readiness is uncertain (focus:"providers" for a readiness-only check; smoke:true to verify launchability), call agent_spawn (dryRun:true previews the launch without spawning), monitor with agent_observe (until:"final" blocks to finality, limit:0 returns state only, events are the transcript), inspect final evidence with agent_result (request stdout/stderr/diff/transcript sections on demand), verify locally, then call agent_remove only after reviewing managed worktrees. Use agent_list for active/recent summaries and agent_stop when the agent is no longer useful. Responses are lean by default; pass verbosity:"detailed" for debug metadata. Follow structuredContent and the single next action list when present."#;
+pub const INITIALIZATION_INSTRUCTIONS: &str = r#"Agent Bridge delegates review, research, command, and implementation work to provider agents. Provider output is evidence only: the caller still owns project verification before claiming work is done. Eight-tool workflow: run doctor when setup or readiness is uncertain (focus:"providers" for a readiness-only check; smoke:true to verify launchability), call agent_spawn (dryRun:true previews the command shape; spawned providers receive the lean-only final-output contract), monitor with agent_observe (until:"final" blocks to finality, limit:0 returns state only, events are the transcript), inspect final evidence with agent_result (request stdout/stderr/diff/transcript sections on demand), verify locally, then call agent_remove only after reviewing managed worktrees. Use agent_list for active/recent summaries and agent_stop when the agent is no longer useful. Tool responses are lean by default; pass verbosity:"detailed" for debug metadata. Follow structuredContent and the single next action list when present."#;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -195,6 +195,7 @@ Suggested flow:
 3. Use agent_observe for progress-aware polling; until:"final" blocks to finality when only the outcome matters.
 4. Read agent_result once the task is final and inspect reviewPacket; request sections:["stdout","stderr","diff","transcript"] for raw evidence on demand.
 5. Treat provider output as evidence; the main caller remains responsible for deciding whether findings are valid.
+6. Stop or ignore provider agents once they have returned useful evidence; do not wait for source echo, progress narration, generic checklists, or polish.
 
 Use agent_list for active/recent summaries."#;
 
@@ -202,7 +203,7 @@ const IMPLEMENTATION_PROMPT: &str = r#"Use Agent Bridge for isolated implementat
 
 Suggested flow:
 1. Call doctor first when setup, workspace, state, provider, or host-runner readiness is uncertain (focus:"providers" for a readiness-only check).
-2. Call agent_spawn with mode "implement", a clear task prompt, cwd under an allowed workspace, and isolation "worktree" by default; set dryRun:true to preview command, cwd, environment, profile, and isolation without spawning.
+2. Call agent_spawn with mode "implement", a clear task prompt, cwd under an allowed workspace, and isolation "worktree" by default; set dryRun:true to preview command, cwd, environment, profile, and isolation without spawning. Provider prompts use the lean-only final-output contract.
 3. Use agent_observe for progress-aware monitoring (until:"final" to block to finality, limit:0 for a quick state check).
 4. When final, call agent_result and inspect reviewPacket, then request sections:["stdout","stderr","diff","transcript"] and changedFiles as needed.
 5. The main caller remains responsible for running relevant tests, lint, typecheck, build, or OpenSpec validation before claiming work complete.
@@ -260,7 +261,7 @@ const COMPARE_PROVIDERS_PROMPT: &str = r#"Compare Agent Bridge providers safely.
 
 Suggested flow:
 1. Call doctor focus:"providers" for the selected providers only when readiness needs focused verification; use smoke only when startup readiness matters.
-2. Spawn equivalent read-only review or research tasks with short prompts and bounded timeouts. Use profile "bridge" for normal Agent Bridge guidance and profile "bare" for compact reduced-configuration experiments; reserve profile "unblocked" for explicit workspace-permission reach checks after dry-run review. Set agent_spawn dryRun:true to confirm command shape, cwd, launch strategy, selected profile, profileDiagnostics, and provider options before spawning.
+2. Spawn equivalent read-only review or research tasks with short prompts and bounded timeouts. All profiles use the same lean-only final-output contract; use profile "bare" only for reduced-configuration experiments, and reserve profile "unblocked" for explicit workspace-permission reach checks after dry-run review. Set agent_spawn dryRun:true to confirm command shape, cwd, launch strategy, selected profile, profileDiagnostics, and provider options before spawning.
 3. Use agent_observe for progress and agent_result for final evidence for each task; until:"final" blocks to finality when only the outcome matters.
 4. Compare reviewPacket, agent_result sections:["transcript","stdout","stderr"], diagnostics, exit metadata, profileDiagnostics, and provider prose as evidence.
 5. Keep correctness decisions and project verification in the main caller."#;
@@ -271,7 +272,7 @@ Use Agent Bridge when a separate coding agent can provide useful research, revie
 
 Primary flow:
 1. Call `doctor` when setup, workspace, state, provider, host-runner, client registration, or binary freshness is uncertain. Use `focus: "providers"` for a readiness-only check and `smoke: true` when startup readiness matters.
-2. Call `agent_spawn` for the real delegated provider agent. Set `dryRun: true` to preview command, cwd, environment, profile, and isolation without spawning.
+2. Call `agent_spawn` for the real delegated provider agent. Set `dryRun: true` to preview command, cwd, environment, profile, and isolation without spawning. Every spawned provider receives the same lean-only final-output contract.
 3. Call `agent_observe` with a bounded timeout to wait for transcript and lifecycle progress. `until: "final"` blocks to finality, `limit: 0` returns lifecycle state only, and the `events` stream is the agent transcript.
 4. Once final, call `agent_result` for `reviewPacket`, `changedFiles`, exit metadata, and the single `next` action list. Request `sections: ["stdout","stderr","diff","transcript"]` to fetch raw evidence on demand.
 5. Treat provider output and completion as evidence for the main caller, not as final verification.
@@ -282,7 +283,7 @@ Notes:
 - Inspect `doctor.binary` for read-only freshness evidence about the running, installed, and release Agent Bridge binaries. It may recommend shell build/install commands, but it does not build, copy, install, or delete binaries.
 - Inspect `doctor.taskExtensionReadiness` only as passive evidence about task-like client metadata observed during `initialize` or request `_meta`. It always reports `serverAdvertisesTasks: false`; protocol-level `tasks/*`, `CreateTaskResult`, listing, cancellation, and notifications remain unavailable until a future implementation change.
 - Use `AGENT_BRIDGE_WORKSPACES` for workspace policy. `AGENT_BRIDGE_STATE_DIR` is optional; when omitted, runtime state and doctor diagnostics use `~/.agent-bridge-mcp/state`.
-- Responses are lean by default (each field once, no GUI chrome). Pass `verbosity: "detailed"` on `agent_observe`/`agent_result` for debug metadata.
+- Tool responses are lean by default (each field once, no GUI chrome). Provider final output is lean-only across launch profiles. Pass `verbosity: "detailed"` on `agent_observe`/`agent_result` for debug metadata.
 - Use `agent_list` for bounded active/recent agent summaries.
 - Provider agents are not interactive or resumable in v1.
 
@@ -300,6 +301,7 @@ const SAFETY_RESOURCE: &str = r#"# Agent Bridge Safety Guidance
 - Use `command` mode only for bounded command-oriented work with explicit expected evidence.
 - Do not remove a managed worktree until the final result, git status, diff, and changed files have been inspected.
 - If a task appears stalled, use bounded `agent_observe` (including `until: "final"` and `limit: 0` for a state check) and `agent_stop` only after deciding the agent is no longer useful.
+- Stop or ignore provider agents once they have produced useful evidence; do not spend context waiting for source echo, progress narration, generic checklists, or polish.
 - Use `agent_result` `sections: ["transcript"]` for behavior analysis, provider comparison, and final/partial result evidence; it does not replace raw logs or main-thread verification.
 - For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms, use bounded `agent_observe` and final `agent_result`; inspect cwd, workspace policy, prompt scope, and isolation before retrying.
 - Do not loosen Codex sandbox permissions as a reflex or repeat an unchanged request after denial diagnostics.
@@ -374,7 +376,7 @@ For Codex patch rejected, sandbox denial, approval denial, outside of the projec
 
 ## provider comparison
 
-Run equivalent read-only prompts against selected providers. For Agent Bridge behavior analysis, run paired profile "bridge" and profile "bare" tasks where useful; use profile "unblocked" only when the comparison is specifically about workspace-permission reach. Compare `reviewPacket`, `agent_result` `sections: ["transcript"]`, diagnostics, exit metadata, `profileDiagnostics`, and provider prose as evidence; keep final conclusions and verification responsibility with the main caller.
+Run equivalent read-only prompts against selected providers. For Agent Bridge behavior analysis, run paired profile "bridge" and profile "bare" tasks where useful; use profile "unblocked" only when the comparison is specifically about workspace-permission reach. All profiles use the lean-only final-output contract. Compare `reviewPacket`, `agent_result` `sections: ["transcript"]`, diagnostics, exit metadata, `profileDiagnostics`, and provider prose as evidence; keep final conclusions and verification responsibility with the main caller.
 "#;
 
 const CODE_EXECUTION_RESOURCE: &str = r#"# Agent Bridge Code-Execution-Friendly Delegation
@@ -391,8 +393,10 @@ Principles:
   default. Request `sections: ["stdout","stderr","diff","transcript"]` only when you need
   raw evidence, and page it with `maxBytes`, `stdoutLine`, `stderrLine`, and the transcript
   `cursor`/`limit`. Large logs and diffs stay out of context until you ask for them.
-- Keep responses lean by default; pass `verbosity: "detailed"` only when you need debug
-  metadata (timestamps, launch profile, prompt strategy, diagnostics).
+- Keep tool responses lean by default; pass `verbosity: "detailed"` only when you need
+  debug metadata (timestamps, launch profile, prompt strategy, diagnostics). Provider
+  final output is lean-only; do not spend context on source echo, progress narration,
+  generic checklists, or polish.
 - Read tool annotations (`readOnlyHint`, `destructiveHint`) to tier and defer the
   diagnostic and control tools when your client supports on-demand tool loading.
 - Provider output is evidence only. Run caller-owned verification before claiming the

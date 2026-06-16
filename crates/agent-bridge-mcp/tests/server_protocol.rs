@@ -56,6 +56,7 @@ async fn initialize_returns_public_server_info() {
     assert_eq!(result["serverInfo"]["name"], "agent-bridge-mcp");
     let instructions = result["instructions"].as_str().unwrap();
     assert!(instructions.contains("Provider output is evidence only"));
+    assert!(instructions.contains("lean-only final-output contract"));
     assert!(
         instructions[..512.min(instructions.len())]
             .contains("caller still owns project verification")
@@ -100,6 +101,7 @@ async fn guidance_prompts_are_listed_and_retrievable() {
     assert!(text.contains("agent_spawn"));
     assert!(text.contains("agent_observe"));
     assert!(text.contains("agent_result"));
+    assert!(text.contains("lean-only final-output contract"));
     assert_before(text, "agent_spawn", "agent_observe");
     assert!(text.contains("main caller remains responsible"));
     for removed in REMOVED_TOOLS {
@@ -174,6 +176,7 @@ async fn guidance_resources_are_listed_and_read_from_allowlist() {
     assert!(text.contains("reviewPacket"));
     assert!(text.contains("agent_remove"));
     assert!(text.contains("Primary flow"));
+    assert!(text.contains("lean-only final-output contract"));
     assert_before(text, "agent_spawn", "agent_observe");
     assert_before(text, "agent_observe", "agent_result");
     for removed in REMOVED_TOOLS {
@@ -206,6 +209,7 @@ async fn guidance_resources_are_listed_and_read_from_allowlist() {
     assert!(text.contains("isolated implementation"));
     assert!(text.contains("provider comparison"));
     assert!(text.contains("Use `agent_observe` as the primary progress path"));
+    assert!(text.contains("lean-only final-output contract"));
 }
 
 #[tokio::test]
@@ -222,6 +226,8 @@ async fn code_execution_guidance_resource_is_available() {
     assert!(text.contains("sections"));
     assert!(text.contains("out of context"));
     assert!(text.contains("verification"));
+    assert!(text.contains("final output is lean-only"));
+    assert!(text.contains("source echo"));
 }
 
 fn assert_codex_denial_guidance(text: &str, surface: &str) {
@@ -387,7 +393,9 @@ async fn tool_descriptions_describe_consolidated_surface() {
             .unwrap_or_else(|| panic!("missing description for {name}"))
     };
 
+    assert!(description("agent_spawn").contains("lean-only final-output contract"));
     assert!(description("agent_spawn").contains("Primary follow-ups"));
+    assert!(!description("agent_spawn").contains("verbose"));
     assert!(description("agent_spawn").contains("dryRun"));
     assert!(description("agent_observe").contains("Primary progress path"));
     assert!(description("agent_observe").contains("until"));
@@ -440,6 +448,12 @@ async fn public_tool_input_schemas_remain_strict_and_compatible() {
         assert!(
             schema("agent_spawn")["properties"].get(property).is_some(),
             "agent_spawn missing {property}"
+        );
+    }
+    for property in ["outputVerbosity", "outputFormat", "verboseFinalReport"] {
+        assert!(
+            schema("agent_spawn")["properties"].get(property).is_none(),
+            "agent_spawn should not expose {property}"
         );
     }
 

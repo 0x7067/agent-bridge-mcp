@@ -89,7 +89,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "agent_spawn",
-            "description": "Start a provider agent. Primary follow-ups are agent_observe for progress and agent_result for final evidence. Set dryRun: true to preview the command, cwd, environment, profile, and isolation without spawning (replaces the former agent_preview tool).",
+            "description": "Start a provider agent with the lean-only final-output contract. Primary follow-ups are agent_observe for progress and agent_result for final evidence. Set dryRun: true to preview the command, cwd, environment, profile, and isolation without spawning (replaces the former agent_preview tool).",
             "inputSchema": object_schema(spawn_properties(&provider_enum, &mode_enum, &profile_enum), vec!["provider", "mode", "prompt"]),
             "annotations": {"title": "Start a provider agent", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": true}
         }),
