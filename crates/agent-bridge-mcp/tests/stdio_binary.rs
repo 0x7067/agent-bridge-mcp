@@ -278,6 +278,12 @@ fn fixture_env() -> FixtureEnv {
             "    exit 0",
             "    ;;",
             "  *secret-token-for-redaction*) text='secret-token-for-redaction' ;;",
+            "  *.agent-bridge-unblocked-smoke*)",
+            "    printf 'agent-bridge-smoke' > .agent-bridge-unblocked-smoke || exit 1",
+            "    test \"$(cat .agent-bridge-unblocked-smoke)\" = 'agent-bridge-smoke' || exit 1",
+            "    rm -f .agent-bridge-unblocked-smoke",
+            "    text='AGENT_BRIDGE_PROVIDER_SMOKE_OK'",
+            "    ;;",
             "  *AGENT_BRIDGE_PROVIDER_SMOKE_OK*) text='AGENT_BRIDGE_PROVIDER_SMOKE_OK' ;;",
             "  *malformed-json*)",
             "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"{\\\"type\\\":\"}}}}'",
@@ -494,6 +500,10 @@ fn stdio_protocol_and_tool_schema_smoke() {
         90000
     );
     assert_eq!(
+        doctor["inputSchema"]["properties"]["profile"]["enum"],
+        json!(["bridge", "bare", "unblocked"])
+    );
+    assert_eq!(
         doctor["outputSchema"]["properties"]["launchReadiness"]["type"],
         "object"
     );
@@ -503,7 +513,7 @@ fn stdio_protocol_and_tool_schema_smoke() {
     );
     assert_eq!(
         agent_spawn["inputSchema"]["properties"]["profile"]["enum"],
-        json!(["bridge", "bare"])
+        json!(["bridge", "bare", "unblocked"])
     );
     assert_eq!(
         agent_spawn["inputSchema"]["required"],
@@ -1365,6 +1375,10 @@ fn stdio_providers_preview_and_safety_checks() {
         json!(["bridge", "bare"])
     );
     assert_eq!(
+        providers["providers"]["claude"]["launchProfiles"],
+        json!(["bridge", "bare", "unblocked"])
+    );
+    assert_eq!(
         providers["providers"]["codex"]["effort"],
         json!(["low", "medium", "high", "xhigh"])
     );
@@ -1395,6 +1409,10 @@ fn stdio_providers_preview_and_safety_checks() {
     assert_eq!(
         providers["providers"]["antigravity"]["reducedConfiguration"]["hooks"],
         "unsupported"
+    );
+    assert_eq!(
+        providers["providers"]["antigravity"]["launchProfiles"],
+        json!(["bridge", "bare", "unblocked"])
     );
     assert_eq!(
         providers["providers"]["antigravity"]["readOnlyEnforcement"]["review"],
@@ -1521,6 +1539,28 @@ fn stdio_providers_preview_and_safety_checks() {
             .any(|key| key == "CLAUDE_CODE_OAUTH_TOKEN")
     );
 
+    let claude_unblocked = client.tool(
+        "agent_spawn",
+        json!({
+            "provider": "claude",
+            "mode": "implement",
+            "prompt": "unblocked prompt",
+            "cwd": env.root,
+            "profile": "unblocked",
+            "dryRun": true
+        }),
+    );
+    assert_eq!(claude_unblocked["profile"], "unblocked");
+    assert_eq!(claude_unblocked["promptStrategy"], "unblocked");
+    assert_eq!(
+        claude_unblocked["args"],
+        json!(["--permission-mode", "bypassPermissions"])
+    );
+    assert_eq!(
+        claude_unblocked["profileDiagnostics"]["permissionBypass"],
+        "--permission-mode bypassPermissions"
+    );
+
     let antigravity_preview = client.tool(
         "agent_spawn",
         json!({
@@ -1547,6 +1587,39 @@ fn stdio_providers_preview_and_safety_checks() {
         antigravity_preview["profileDiagnostics"]["unsupportedReductions"],
         json!(["custom_system_prompt", "disable_hooks", "disable_skills"])
     );
+
+    let antigravity_unblocked = client.tool(
+        "agent_spawn",
+        json!({
+            "provider": "antigravity",
+            "mode": "implement",
+            "prompt": "unblocked antigravity prompt",
+            "cwd": env.root,
+            "profile": "unblocked",
+            "dryRun": true
+        }),
+    );
+    assert_eq!(
+        antigravity_unblocked["args"],
+        json!(["--dangerously-skip-permissions"])
+    );
+    assert_eq!(
+        antigravity_unblocked["profileDiagnostics"]["permissionBypass"],
+        "--dangerously-skip-permissions"
+    );
+
+    let codex_unblocked = client.tool_error(
+        "agent_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "implement",
+            "prompt": "unsupported unblocked prompt",
+            "cwd": env.root,
+            "profile": "unblocked",
+            "dryRun": true
+        }),
+    );
+    assert!(codex_unblocked.contains("codex does not support profile: unblocked"));
 
     let antigravity_implement = client.tool(
         "agent_spawn",
@@ -2650,6 +2723,61 @@ fn stdio_providers_check_filters_and_validates_readiness_inputs() {
         json!({"focus": "providers", "smoke": true, "providerTimeoutMs": {"openai": 1000}}),
     );
     assert!(unknown_budget_provider.contains("provider must be one of"));
+}
+
+#[test]
+fn stdio_unblocked_provider_smoke_uses_profile_flags_and_workspace_probe() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let checks = client.tool(
+        "doctor",
+        json!({
+            "focus": "providers",
+            "smoke": true,
+            "providers": ["claude"],
+            "profile": "unblocked",
+            "cwd": env.root,
+            "providerTimeoutMs": {"claude": 5000}
+        }),
+    );
+
+    let claude = &checks["providers"]["claude"];
+    assert_eq!(claude["profile"], "unblocked");
+    assert_eq!(claude["startupVerified"], true);
+    assert_eq!(claude["launchable"], true);
+    assert_eq!(claude["readiness"]["state"], "ready");
+    assert_eq!(claude["smokePromptStrategy"], "unblocked");
+    assert!(
+        !env.root.join(".agent-bridge-unblocked-smoke").exists(),
+        "smoke marker should be removed after the provider proves write/read/delete"
+    );
+
+    let argv = std::fs::read_to_string(env.log_dir.join("argv.txt")).unwrap();
+    assert!(argv.contains("--permission-mode"));
+    assert!(argv.contains("bypassPermissions"));
+    let stdin = std::fs::read_to_string(env.log_dir.join("stdin.txt")).unwrap();
+    assert!(stdin.contains(".agent-bridge-unblocked-smoke"));
+}
+
+#[test]
+fn stdio_unblocked_provider_smoke_keeps_workspace_validation_authoritative() {
+    let env = fixture_env();
+    let outside = temp_dir("agent-bridge-outside");
+    let mut client = McpClient::start(&env);
+
+    let error = client.tool_error(
+        "doctor",
+        json!({
+            "focus": "providers",
+            "smoke": true,
+            "providers": ["claude"],
+            "profile": "unblocked",
+            "cwd": outside
+        }),
+    );
+
+    assert!(error.contains("cwd is outside configured workspaces"));
 }
 
 #[test]

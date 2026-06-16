@@ -1,6 +1,6 @@
 # Data Model
 
-**Last verified:** 2026-06-07
+**Last verified:** 2026-06-16
 **Schema source:** `crates/agent-bridge-mcp/src/task.rs` (lines 926–980+)
 
 ## Core Entities
@@ -26,7 +26,7 @@
 | `agentDir` | String | Private directory storing stdout.log, stderr.log, transcript.jsonl |
 | `pid` | Optional uint32 | OS process ID of the spawned provider child |
 | `timeoutSeconds` | int64 | Wall-clock budget allocated to the provider |
-| `profile` | Enum (`Bridge`,`Bare`) | Launch strategy hint (e.g., bare = no wrapper script) |
+| `profile` | Enum (`Bridge`,`Bare`,`Unblocked`) | Launch strategy hint; `unblocked` applies provider-specific permission bypass flags after workspace validation |
 | `exitCode` | Optional int32 | OS exit code of the provider process |
 | `signal` | Optional string | Signal name if the process terminated by signal |
 | `error` | Optional string | Human-readable error summary |

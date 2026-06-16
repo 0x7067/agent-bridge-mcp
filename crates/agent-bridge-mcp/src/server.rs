@@ -1,4 +1,6 @@
-use crate::domain::{FailureCategory, Isolation, ProviderKind, TimeoutSeconds, WorktreeName};
+use crate::domain::{
+    FailureCategory, Isolation, LaunchProfile, ProviderKind, TimeoutSeconds, WorktreeName,
+};
 use crate::guidance;
 use crate::mcp::{JsonRpcId, JsonRpcRequest, JsonRpcResponse};
 use crate::provider::{self, ProviderTask};
@@ -222,6 +224,7 @@ fn reject_unknown_arguments(name: ToolName, arguments: &Value) -> Result<(), Str
             "aggregateTimeoutMs",
             "providerTimeoutMs",
             "cwd",
+            "profile",
         ][..],
         ToolName::AgentSpawn => &[
             "provider",

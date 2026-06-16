@@ -77,6 +77,10 @@ The system SHALL keep launch-profile command construction, prompt rendering, env
 - **WHEN** a caller previews or spawns a task with a launch profile
 - **THEN** the selected provider adapter builds the command descriptor, prompt transport, environment, and profile diagnostics for that profile.
 
+#### Scenario: Adapter owns unblocked flags
+- **WHEN** a provider adapter advertises the `unblocked` launch profile
+- **THEN** that adapter owns the provider-specific permission-bypass arguments and the profile diagnostics that identify them.
+
 #### Scenario: No provider skill dependency
 - **WHEN** a provider adapter implements a launch profile
 - **THEN** it does not read repo-owned provider skills or require provider skill files to construct or run the task.

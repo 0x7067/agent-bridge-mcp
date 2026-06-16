@@ -7,6 +7,7 @@ Threat model and protective mechanisms for a single-operator desktop MCP server.
 - No RBAC, no sessions, no JWT — security boundary is the OS user and filesystem.
 - Workspace confinement prevents tasks from escaping designated directory roots.
 - Children run with cleared env + provider-specific allowlists to minimize secret exposure.
+- `profile: "unblocked"` is opt-in and only adds provider-specific permission-bypass flags after workspace validation succeeds.
 - Prompt text is injected via PTY (Claude) or stdin, never `argv`.
 - Diagnostic redaction strips keywords matching `KEY`, `TOKEN`, `SECRET` from transcripts.
 
@@ -26,6 +27,7 @@ Threat model and protective mechanisms for a single-operator desktop MCP server.
 
 - Configured via `AGENT_BRIDGE_WORKSPACES` (colon-separated roots).
 - Enforced in `task/spawn.rs` (`safe_cwd`): rejects paths outside roots or containing `..`.
+- Unblocked provider launches still pass this check; the profile changes provider permission prompts, not Agent Bridge's workspace envelope.
 
 ### Input Sanitization
 

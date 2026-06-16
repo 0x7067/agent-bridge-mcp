@@ -16,6 +16,8 @@ struct ProvidersCheckInput {
     providers: Option<Vec<ProviderKind>>,
     aggregate_timeout_ms: Option<i64>,
     provider_timeout_ms: Option<BTreeMap<String, i64>>,
+    cwd: Option<String>,
+    profile: Option<LaunchProfile>,
 }
 
 #[derive(Deserialize)]
@@ -29,6 +31,7 @@ struct DoctorInput {
     aggregate_timeout_ms: Option<i64>,
     provider_timeout_ms: Option<BTreeMap<String, i64>>,
     cwd: Option<String>,
+    profile: Option<LaunchProfile>,
 }
 
 pub(super) async fn doctor(arguments: Value) -> Result<Value, String> {
@@ -362,6 +365,12 @@ fn doctor_provider_arguments(input: &DoctorInput) -> Value {
     }
     if let Some(provider_timeout_ms) = input.provider_timeout_ms.as_ref() {
         arguments.insert("providerTimeoutMs".to_string(), json!(provider_timeout_ms));
+    }
+    if let Some(cwd) = input.cwd.as_ref() {
+        arguments.insert("cwd".to_string(), json!(cwd));
+    }
+    if let Some(profile) = input.profile {
+        arguments.insert("profile".to_string(), json!(profile));
     }
     Value::Object(arguments)
 }
@@ -1647,6 +1656,15 @@ async fn providers_check(arguments: Value) -> Result<Value, String> {
     let selected = selected_providers(input.providers.as_deref())?;
     validate_provider_budgets(&input)?;
     let aggregate_timeout_ms = aggregate_timeout_ms(input.aggregate_timeout_ms)?;
+    let profile = input.profile.unwrap_or(LaunchProfile::Bridge);
+    let smoke_cwd = if input.smoke {
+        Some(match input.cwd.as_deref() {
+            Some(cwd) => safe_cwd(Some(cwd))?,
+            None => default_cwd(),
+        })
+    } else {
+        None
+    };
     let mut results = serde_json::Map::new();
     let mut smoke_candidates = Vec::new();
     for provider in selected.iter().copied() {
@@ -1703,6 +1721,7 @@ async fn providers_check(arguments: Value) -> Result<Value, String> {
                 "checkedAt": checked_at,
                 "versionDurationMs": output.duration_ms
             });
+            value["profile"] = json!(profile);
             set_readiness(&mut value, "stale", "version", false, false, None);
             value
         } else {
@@ -1743,7 +1762,14 @@ async fn providers_check(arguments: Value) -> Result<Value, String> {
         }
     }
     if input.smoke {
-        let smoked = run_smoke_checks(smoke_candidates, &input, aggregate_timeout_ms).await;
+        let smoked = run_smoke_checks(
+            smoke_candidates,
+            &input,
+            aggregate_timeout_ms,
+            smoke_cwd.unwrap_or_else(default_cwd),
+            profile,
+        )
+        .await;
         for (provider, value) in smoked {
             results.insert(provider.as_str().to_string(), value);
         }
@@ -1835,6 +1861,8 @@ async fn run_smoke_checks(
     candidates: Vec<(ProviderKind, Value)>,
     input: &ProvidersCheckInput,
     aggregate_timeout_ms: u64,
+    cwd: String,
+    profile: LaunchProfile,
 ) -> Vec<(ProviderKind, Value)> {
     let order: Vec<ProviderKind> = candidates.iter().map(|(provider, _)| *provider).collect();
     let deadline = Instant::now() + Duration::from_millis(aggregate_timeout_ms);
@@ -1854,8 +1882,10 @@ async fn run_smoke_checks(
             let (provider, base_value) = pending.pop_front().unwrap();
             let provider_timeout_ms = provider_smoke_timeout_ms(provider, input);
             let timeout_ms = provider_timeout_ms.min(remaining_ms);
-            running
-                .spawn(async move { smoke_one_provider(provider, base_value, timeout_ms).await });
+            let cwd = cwd.clone();
+            running.spawn(async move {
+                smoke_one_provider(provider, base_value, timeout_ms, cwd, profile).await
+            });
         }
         if running.is_empty() {
             break;
@@ -1908,75 +1938,74 @@ async fn smoke_one_provider(
     provider: ProviderKind,
     base_value: Value,
     timeout_ms: u64,
+    cwd: String,
+    profile: LaunchProfile,
 ) -> (ProviderKind, Value) {
-    let smoke_value = match provider::smoke_command(
-        provider,
-        &default_cwd(),
-        (timeout_ms / 1000).max(1) as i64,
-    ) {
-        Ok((smoke_command, strategy)) => {
-            let mut output = run_probe(&smoke_command, provider, timeout_ms, "smoke").await;
-            if output.success
-                && output.failure_category.is_none()
-                && !smoke_output_is_accepted(provider, &output.stdout)
-            {
-                output.failure_category = Some(FailureCategory::ProviderOutputError);
-                output.error =
-                    Some("provider smoke output did not contain expected token".to_string());
-            }
-            if output.success && output.failure_category.is_none() {
-                let mut value = base_value;
-                value["startupVerified"] = json!(true);
-                value["launchable"] = json!(true);
-                value["checkedAt"] = json!(checked_at_iso());
-                value["smokeDurationMs"] = json!(output.duration_ms);
-                value["smokePromptStrategy"] = json!(strategy);
-                value["launchStrategy"] = json!(launch_strategy(&smoke_command));
-                set_readiness(&mut value, "ready", "version+smoke", true, true, None);
-                value
-            } else {
-                let mut value = base_value;
-                if provider != ProviderKind::Antigravity {
-                    value["available"] = json!(false);
+    let smoke_value =
+        match provider::smoke_command(provider, &cwd, (timeout_ms / 1000).max(1) as i64, profile) {
+            Ok((smoke_command, strategy)) => {
+                let mut output = run_probe(&smoke_command, provider, timeout_ms, "smoke").await;
+                if output.success
+                    && output.failure_category.is_none()
+                    && !smoke_output_is_accepted(provider, &output.stdout)
+                {
+                    output.failure_category = Some(FailureCategory::ProviderOutputError);
+                    output.error =
+                        Some("provider smoke output did not contain expected token".to_string());
                 }
+                if output.success && output.failure_category.is_none() {
+                    let mut value = base_value;
+                    value["startupVerified"] = json!(true);
+                    value["launchable"] = json!(true);
+                    value["checkedAt"] = json!(checked_at_iso());
+                    value["smokeDurationMs"] = json!(output.duration_ms);
+                    value["smokePromptStrategy"] = json!(strategy);
+                    value["launchStrategy"] = json!(launch_strategy(&smoke_command));
+                    set_readiness(&mut value, "ready", "version+smoke", true, true, None);
+                    value
+                } else {
+                    let mut value = base_value;
+                    if provider != ProviderKind::Antigravity {
+                        value["available"] = json!(false);
+                    }
+                    value["startupVerified"] = json!(false);
+                    value["launchable"] = json!(false);
+                    value["checkedAt"] = json!(checked_at_iso());
+                    value["smokeDurationMs"] = json!(output.duration_ms);
+                    value["smokePromptStrategy"] = json!(strategy);
+                    value["launchStrategy"] = json!(launch_strategy(&smoke_command));
+                    value["error"] = json!(probe_error_text(&output));
+                    value["diagnostic"] = provider_diagnostic(
+                        provider,
+                        &smoke_command,
+                        &output,
+                        timeout_ms,
+                        false,
+                        "smoke",
+                    );
+                    let diagnostic = value["diagnostic"].clone();
+                    set_readiness(
+                        &mut value,
+                        "failed",
+                        "version+smoke",
+                        false,
+                        false,
+                        Some(diagnostic),
+                    );
+                    value
+                }
+            }
+            Err(error) => {
+                let mut value = base_value;
+                value["available"] = json!(false);
                 value["startupVerified"] = json!(false);
                 value["launchable"] = json!(false);
                 value["checkedAt"] = json!(checked_at_iso());
-                value["smokeDurationMs"] = json!(output.duration_ms);
-                value["smokePromptStrategy"] = json!(strategy);
-                value["launchStrategy"] = json!(launch_strategy(&smoke_command));
-                value["error"] = json!(probe_error_text(&output));
-                value["diagnostic"] = provider_diagnostic(
-                    provider,
-                    &smoke_command,
-                    &output,
-                    timeout_ms,
-                    false,
-                    "smoke",
-                );
-                let diagnostic = value["diagnostic"].clone();
-                set_readiness(
-                    &mut value,
-                    "failed",
-                    "version+smoke",
-                    false,
-                    false,
-                    Some(diagnostic),
-                );
+                value["error"] = json!(error);
+                set_readiness(&mut value, "failed", "version+smoke", false, false, None);
                 value
             }
-        }
-        Err(error) => {
-            let mut value = base_value;
-            value["available"] = json!(false);
-            value["startupVerified"] = json!(false);
-            value["launchable"] = json!(false);
-            value["checkedAt"] = json!(checked_at_iso());
-            value["error"] = json!(error);
-            set_readiness(&mut value, "failed", "version+smoke", false, false, None);
-            value
-        }
-    };
+        };
     (provider, smoke_value)
 }
 

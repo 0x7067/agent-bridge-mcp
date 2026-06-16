@@ -1,6 +1,6 @@
 # Business Context
 
-**Last verified:** 2026-06-07
+**Last verified:** 2026-06-16
 **Sources:** Project description and codebase analysis (no user-provided business context beyond the initial description)
 
 ## Domain Overview
@@ -14,6 +14,7 @@ Agent Bridge MCP operates in the **developer tooling / agent orchestration** dom
 | Agent | Synonym for a delegated task record consumed by the MCP client | `TaskRecord` with `agentId` | Code |
 | Bridge | Launch profile that wraps the provider with safety affordances (reductions, caps, timeouts) | `LaunchProfile::Bridge` | Code |
 | Bare | Launch profile that invokes the provider with minimal wrapping | `LaunchProfile::Bare` | Code |
+| Unblocked | Explicit launch profile that adds provider-specific permission-bypass flags while keeping Agent Bridge workspace validation authoritative | `LaunchProfile::Unblocked` | Code |
 | Caller | The upstream MCP client (coding agent) that sends JSON-RPC requests | Implied `stdin` consumer | Code |
 | Doctor | Built-in readiness and setup diagnostics tool | `ToolName::Doctor` | Code |
 | Dry run | Preview mode for `agent_spawn` that computes the command without executing | `dry_run: true` in `TaskPreviewInput` | Code |
@@ -60,7 +61,7 @@ This system is designed for a **single operator** — the human configuring the 
 | Rule | Description | Verification | Enforced In | Notes |
 |------|-------------|-------------|-------------|-------|
 | Mode validation | Only provider-supported modes may be requested | Verified | `provider.rs` capabilities map | E.g., Cursor lacks `command` mode |
-| Profile validation | Only advertised profiles may be specified | Verified | `provider.rs` capabilities map | `bridge` / `bare` |
+| Profile validation | Only advertised profiles may be specified | Verified | `provider.rs` capabilities map | `bridge` / `bare` / provider-supported `unblocked` |
 | Claude host runner requirement | Claude cannot launch without a reachable host socket | Verified | `spawn.rs` (`launch_task`) | Falls back to error if socket missing |
 | Denial detection | Certain stderr patterns trigger immediate termination | Verified | `supervision.rs` (`drain_log` loop polls stderr) | Primarily for Codex sandbox denials |
 | Output acceptability | Some providers require parseable stdout | Verified | `complete.rs` (`classify_success_exit`) | E.g., Claude parser validates JSON shapes |

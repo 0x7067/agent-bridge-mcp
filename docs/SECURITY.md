@@ -1,6 +1,6 @@
 # Security Patterns
 
-**Last Updated:** 2026-06-07
+**Last Updated:** 2026-06-16
 
 ## User Roles
 
@@ -25,6 +25,7 @@ Because there are no multiple principals, authorization reduces to **environment
 - **What:** `AGENT_BRIDGE_WORKSPACES` declares a colon-separated list of allowed directory trees.
 - **Where enforced:** `task/spawn.rs` (`safe_cwd`)
 - **Behavior:** Any `cwd` outside these roots is rejected with an error. Paths containing `..` are rejected outright.
+- **Unblocked profile:** `profile: "unblocked"` may add provider-specific permission-bypass flags, but only after this workspace check succeeds. It is not a substitute for workspace confinement and does not broaden configured roots.
 
 ### Input Sanitization
 
@@ -62,6 +63,7 @@ Not applicable. Single-tenant. However, the **Worktree Isolation** pattern achie
 | Concern | Mitigation | Limitation |
 |---------|------------|------------|
 | Malicious provider escapes cwd | Workspace confinement + worktree isolation | Not a sandbox; determined code can traverse the filesystem |
+| Unblocked provider overreach | Explicit opt-in profile + pre-launch workspace validation + smoke probe for workspace write/read/delete reach | Provider bypass flags may still grant broader host access than Agent Bridge can enforce |
 | Sensitive env leaked in logs | Keyword-based redaction in transcripts | Greedy heuristic may miss novel secret names |
 | Provider API key theft | Keys never held by Agent Bridge | Compromised host machine still exposes ambient keys |
 | Long-running orphan processes | Active PID registry + panic-hook SIGTERM | Race windows exist between crash and hook execution |

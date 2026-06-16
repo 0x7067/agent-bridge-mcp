@@ -104,7 +104,7 @@ Edit `provider.rs` `capabilities()` and add a new top-level key:
     "supportsReply": false,
     "supportsResume": false,
     "supportsWorktreeIsolation": true,
-    "launchProfiles": ["bridge", "bare"],
+    "launchProfiles": ["bridge", "bare"], // add "unblocked" only when the adapter has known permission-bypass args
     "presentationActions": presentation_actions(),
     "outputCadence": output_cadence(ProviderKind::NewProvider),
     "readiness": default_readiness()

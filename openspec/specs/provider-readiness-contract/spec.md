@@ -91,16 +91,20 @@ The system SHALL distinguish binary availability from task-path startup readines
 - **WHEN** a provider check runs with `smoke: false`
 - **THEN** the provider response reports `versionDurationMs` and omits `smokeDurationMs`
 
-### Requirement: Smoke probes exercise task path with minimal prompt
-The system SHALL use a minimal non-mutating smoke prompt or provider-native smoke mode that still exercises the provider binary, environment policy, cwd handling, and output parsing path.
+### Requirement: Smoke probes exercise task path with bounded prompts
+The system SHALL use a bounded smoke prompt or provider-native smoke mode that still exercises the provider binary, environment policy, cwd handling, and output parsing path.
 
 #### Scenario: Minimal prompt avoids normal workflow overhead
 - **WHEN** a provider has a dedicated smoke prompt or smoke command builder
 - **THEN** the smoke probe avoids unnecessary full task instructions, context loading, or workflow text while still requiring parseable provider output
 
 #### Scenario: Smoke remains non-mutating
-- **WHEN** a smoke probe runs for any provider
+- **WHEN** a smoke probe runs for the default `bridge` or `bare` profile
 - **THEN** the prompt and command mode do not intentionally edit files or require write-capable permissions
+
+#### Scenario: Unblocked smoke proves workspace reach
+- **WHEN** a smoke probe runs for profile `unblocked`
+- **THEN** the bridge launches the provider with the selected unblocked profile and requires the provider to create, read, and delete a bounded marker file inside the validated `cwd` before reporting launchability.
 
 #### Scenario: Minimal smoke fallback is reported
 - **WHEN** a provider cannot safely use the minimal smoke renderer and falls back to the standard task prompt
@@ -149,7 +153,7 @@ The system SHALL expose every supported `providers_check` readiness control thro
 
 #### Scenario: New readiness inputs are advertised
 - **WHEN** a client inspects the `providers_check` tool schema
-- **THEN** the schema includes optional `providers`, `aggregateTimeoutMs`, and `providerTimeoutMs` fields with validation metadata matching runtime behavior
+- **THEN** the schema includes optional `providers`, `profile`, `aggregateTimeoutMs`, and `providerTimeoutMs` fields with validation metadata matching runtime behavior
 - **AND** `providerTimeoutMs` is advertised as an object whose keys are supported provider names and whose values are integer millisecond budgets from 1 through 90000
 
 ### Requirement: Smoke execution emits stderr diagnostics

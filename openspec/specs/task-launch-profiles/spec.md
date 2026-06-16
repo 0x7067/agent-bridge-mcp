@@ -44,6 +44,21 @@ The system SHALL provide a `bare` launch profile that uses compact bridge-owned 
 - **WHEN** a caller inspects bare-profile metadata
 - **THEN** the response makes clear that `bare` means provider-specific reduced configuration and that the actual applied reductions are the profile diagnostics.
 
+### Requirement: Unblocked profile uses explicit provider permission bypass
+The system SHALL provide an explicit `unblocked` launch profile for providers with known ACP permission-bypass flags, while preserving Agent Bridge workspace validation before command construction.
+
+#### Scenario: Supported unblocked profile
+- **WHEN** a caller previews or spawns a task with profile `unblocked` for a provider that advertises it
+- **THEN** the selected provider adapter adds only that provider's known permission-bypass arguments and reports them in profile diagnostics.
+
+#### Scenario: Unsupported unblocked profile
+- **WHEN** a caller requests profile `unblocked` for a provider that does not advertise it
+- **THEN** validation rejects the request before spawning a process and reports the provider/profile incompatibility.
+
+#### Scenario: Workspace validation remains authoritative
+- **WHEN** a caller requests profile `unblocked` with a `cwd` outside configured workspace roots
+- **THEN** the bridge rejects the request before adding provider permission-bypass arguments or spawning a provider process.
+
 ### Requirement: Launch profile behavior is observable
 The system SHALL expose launch profile metadata in provider capabilities, previews, task status or result metadata, and diagnostics.
 

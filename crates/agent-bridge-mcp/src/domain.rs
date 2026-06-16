@@ -279,15 +279,17 @@ pub enum Isolation {
 pub enum LaunchProfile {
     Bridge,
     Bare,
+    Unblocked,
 }
 
 impl LaunchProfile {
-    pub const ALL: [Self; 2] = [Self::Bridge, Self::Bare];
+    pub const ALL: [Self; 3] = [Self::Bridge, Self::Bare, Self::Unblocked];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Bridge => "bridge",
             Self::Bare => "bare",
+            Self::Unblocked => "unblocked",
         }
     }
 }

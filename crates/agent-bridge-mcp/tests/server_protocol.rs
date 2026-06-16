@@ -483,6 +483,10 @@ async fn public_tool_input_schemas_remain_strict_and_compatible() {
     assert!(schema("doctor")["properties"].get("focus").is_some());
     assert!(schema("doctor")["properties"].get("cwd").is_some());
     assert!(schema("doctor")["properties"].get("smoke").is_some());
+    assert_eq!(
+        schema("agent_spawn")["properties"]["profile"]["enum"],
+        serde_json::json!(["bridge", "bare", "unblocked"])
+    );
     assert_eq!(schema("agent_list")["properties"]["limit"]["maximum"], 100);
     assert_eq!(
         schema("agent_observe")["properties"]["limit"]["maximum"],
@@ -521,6 +525,10 @@ async fn doctor_is_listed_with_strict_schema_and_rejects_unknown_arguments() {
     assert_eq!(
         doctor["inputSchema"]["properties"]["providerTimeoutMs"]["additionalProperties"]["maximum"],
         90000
+    );
+    assert_eq!(
+        doctor["inputSchema"]["properties"]["profile"]["enum"],
+        serde_json::json!(["bridge", "bare", "unblocked"])
     );
     assert_eq!(
         doctor["outputSchema"]["properties"]["launchReadiness"]["type"],
@@ -604,6 +612,10 @@ async fn providers_list_returns_tool_json_payload() {
         serde_json::json!(["bridge", "bare"])
     );
     assert_eq!(
+        payload["providers"]["claude"]["launchProfiles"],
+        serde_json::json!(["bridge", "bare", "unblocked"])
+    );
+    assert_eq!(
         payload["providers"]["cursor"]["outputCadence"]["cadence"],
         "final_json"
     );
@@ -618,7 +630,7 @@ async fn providers_list_returns_tool_json_payload() {
     );
     assert_eq!(
         payload["providers"]["antigravity"]["launchProfiles"],
-        serde_json::json!(["bridge", "bare"])
+        serde_json::json!(["bridge", "bare", "unblocked"])
     );
     assert_eq!(
         payload["providers"]["antigravity"]["readOnlyEnforcement"]["review"],

@@ -81,6 +81,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "propertyNames": {"enum": provider_enum},
                     "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 90000}
                 },
+                "profile": {"type": "string", "enum": profile_enum, "description": "Launch profile to smoke-test. Defaults to bridge."},
                 "cwd": {"type": "string", "description": "Workspace directory to validate against configured workspace roots."}
             }), Vec::<&str>::new()),
             "outputSchema": output_schema_for("doctor"),

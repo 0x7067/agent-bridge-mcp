@@ -5,7 +5,14 @@ use std::collections::BTreeMap;
 use std::env;
 
 const PROVIDER_SMOKE_PROMPT: &str = "Reply with exactly: AGENT_BRIDGE_PROVIDER_SMOKE_OK";
+const UNBLOCKED_SMOKE_MARKER: &str = ".agent-bridge-unblocked-smoke";
 pub const PROVIDER_SMOKE_TOKEN: &str = "AGENT_BRIDGE_PROVIDER_SMOKE_OK";
+const STANDARD_PROFILES: &[LaunchProfile] = &[LaunchProfile::Bridge, LaunchProfile::Bare];
+const UNBLOCKED_PROFILES: &[LaunchProfile] = &[
+    LaunchProfile::Bridge,
+    LaunchProfile::Bare,
+    LaunchProfile::Unblocked,
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderCommand {
@@ -52,7 +59,7 @@ pub fn capabilities() -> Value {
             "supportsResume": false,
             "supportsWorktreeIsolation": true,
             "effort": ["low", "medium", "high", "xhigh", "max"],
-            "launchProfiles": ["bridge", "bare"],
+            "launchProfiles": provider_launch_profiles(ProviderKind::Claude),
             "presentationActions": presentation_actions(),
             "outputCadence": output_cadence(ProviderKind::Claude),
             "readiness": default_readiness(),
@@ -63,7 +70,7 @@ pub fn capabilities() -> Value {
             "supportsReply": false,
             "supportsResume": false,
             "supportsWorktreeIsolation": true,
-            "launchProfiles": ["bridge", "bare"],
+            "launchProfiles": provider_launch_profiles(ProviderKind::Cursor),
             "presentationActions": presentation_actions(),
             "outputCadence": output_cadence(ProviderKind::Cursor),
             "readiness": default_readiness(),
@@ -75,7 +82,7 @@ pub fn capabilities() -> Value {
             "supportsResume": false,
             "supportsWorktreeIsolation": true,
             "thinking": ["off", "minimal", "low", "medium", "high", "xhigh"],
-            "launchProfiles": ["bridge", "bare"],
+            "launchProfiles": provider_launch_profiles(ProviderKind::Kimi),
             "presentationActions": presentation_actions(),
             "outputCadence": output_cadence(ProviderKind::Kimi),
             "readiness": default_readiness(),
@@ -88,7 +95,7 @@ pub fn capabilities() -> Value {
             "supportsWorktreeIsolation": true,
             "effort": ["low", "medium", "high", "xhigh"],
             "thinking": ["low", "medium", "high", "xhigh"],
-            "launchProfiles": ["bridge", "bare"],
+            "launchProfiles": provider_launch_profiles(ProviderKind::Codex),
             "presentationActions": presentation_actions(),
             "outputCadence": output_cadence(ProviderKind::Codex),
             "readiness": default_readiness(),
@@ -99,7 +106,7 @@ pub fn capabilities() -> Value {
             "supportsReply": false,
             "supportsResume": false,
             "supportsWorktreeIsolation": true,
-            "launchProfiles": ["bridge", "bare"],
+            "launchProfiles": provider_launch_profiles(ProviderKind::Forge),
             "presentationActions": presentation_actions(),
             "outputCadence": output_cadence(ProviderKind::Forge),
             "readiness": default_readiness(),
@@ -110,7 +117,7 @@ pub fn capabilities() -> Value {
             "supportsReply": false,
             "supportsResume": false,
             "supportsWorktreeIsolation": true,
-            "launchProfiles": ["bridge", "bare"],
+            "launchProfiles": provider_launch_profiles(ProviderKind::Antigravity),
             "presentationActions": presentation_actions(),
             "outputCadence": output_cadence(ProviderKind::Antigravity),
             "readiness": default_readiness(),
@@ -122,6 +129,14 @@ pub fn capabilities() -> Value {
             }
         }
     })
+}
+
+pub fn provider_launch_profiles(provider: ProviderKind) -> Vec<&'static str> {
+    adapter_for(provider)
+        .supported_profiles()
+        .iter()
+        .map(|profile| profile.as_str())
+        .collect()
 }
 
 fn presentation_actions() -> Value {
@@ -295,19 +310,20 @@ pub fn version_command(provider: ProviderKind) -> Result<ProviderCommand, String
 
 fn acp_smoke_command(task: &ProviderTask) -> Result<ProviderCommand, String> {
     let (command, args) = acp_command_config(task.provider)?;
+    let prompt = smoke_prompt(task.profile);
     Ok(ProviderCommand {
         provider: task.provider,
         command_kind: Some("acp".to_string()),
         claude_host: None,
         command,
-        args,
-        stdin: Some(PROVIDER_SMOKE_PROMPT.to_string()),
-        redactions: vec![PROVIDER_SMOKE_PROMPT.to_string()],
+        args: acp_args_with_profile(task.provider, task.profile, args),
+        stdin: Some(prompt.clone()),
+        redactions: vec![prompt],
         cwd: task.cwd.to_string(),
         timeout_seconds: task.timeout_seconds,
         env: BTreeMap::new(),
         profile: task.profile,
-        prompt_strategy: "acp-smoke".to_string(),
+        prompt_strategy: format!("{}-smoke", prompt_strategy(task.profile)),
         profile_diagnostics: profile_diagnostics(task.provider, task.profile),
     })
 }
@@ -316,21 +332,23 @@ pub fn smoke_command(
     provider: ProviderKind,
     cwd: &str,
     timeout_seconds: i64,
+    profile: LaunchProfile,
 ) -> Result<(ProviderCommand, &'static str), String> {
+    let prompt = smoke_prompt(profile);
     let task = ProviderTask {
         provider,
         mode: TaskMode::Research,
-        prompt: PROVIDER_SMOKE_PROMPT,
+        prompt: &prompt,
         title: None,
         cwd,
         timeout_seconds,
         model: None,
         effort: None,
         thinking: None,
-        profile: LaunchProfile::Bridge,
+        profile,
     };
     validate_options(&task)?;
-    Ok((acp_smoke_command(&task)?, "acp"))
+    Ok((acp_smoke_command(&task)?, prompt_strategy(profile)))
 }
 
 pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String> {
@@ -338,6 +356,15 @@ pub fn build_command(task: &ProviderTask<'_>) -> Result<ProviderCommand, String>
     let rendered_prompt = render_task_prompt(task);
     let (command, args) = acp_command_config(task.provider)?;
     Ok(build_acp_command(task, rendered_prompt, command, args))
+}
+
+fn smoke_prompt(profile: LaunchProfile) -> String {
+    match profile {
+        LaunchProfile::Unblocked => format!(
+            "Workspace permission smoke test. In the current working directory, create a file named {UNBLOCKED_SMOKE_MARKER} containing exactly agent-bridge-smoke, read it back, delete it, then reply with exactly: {PROVIDER_SMOKE_TOKEN}"
+        ),
+        LaunchProfile::Bridge | LaunchProfile::Bare => PROVIDER_SMOKE_PROMPT.to_string(),
+    }
 }
 
 /// Per-provider behavior behind a single interface, so core code dispatches
@@ -357,6 +384,35 @@ pub trait ProviderAdapter: Sync {
     /// Allowed `thinking` values; empty means the provider rejects `thinking`.
     fn supported_thinking(&self) -> &'static [&'static str] {
         &[]
+    }
+
+    /// Launch profiles this provider can build. Defaults to standard bridge and
+    /// reduced bare launch; adapters opt into unblocked only with known flags.
+    fn supported_profiles(&self) -> &'static [LaunchProfile] {
+        STANDARD_PROFILES
+    }
+
+    /// Additional ACP CLI arguments required for a launch profile.
+    fn profile_args(&self, _profile: LaunchProfile) -> &'static [&'static str] {
+        &[]
+    }
+
+    fn validate_mode_and_profile(&self, task: &ProviderTask<'_>) -> Result<(), String> {
+        if !self.supports_mode(task.mode) {
+            return Err(format!(
+                "{} does not support mode: {}",
+                task.provider.as_str(),
+                task.mode.as_str()
+            ));
+        }
+        if !self.supported_profiles().contains(&task.profile) {
+            return Err(format!(
+                "{} does not support profile: {}",
+                task.provider.as_str(),
+                task.profile.as_str()
+            ));
+        }
+        Ok(())
     }
 
     /// Whether this provider's stderr should be polled during execution for an
@@ -385,13 +441,7 @@ pub trait ProviderAdapter: Sync {
     /// Validate task options against this provider's declared capabilities.
     /// Shared across providers so the rules (and their messages) stay identical.
     fn validate(&self, task: &ProviderTask<'_>) -> Result<(), String> {
-        if !self.supports_mode(task.mode) {
-            return Err(format!(
-                "{} does not support mode: {}",
-                task.provider.as_str(),
-                task.mode.as_str()
-            ));
-        }
+        self.validate_mode_and_profile(task)?;
         if let Some(effort) = task.effort {
             let supported_effort = self.supported_effort();
             if supported_effort.is_empty() {
@@ -452,7 +502,7 @@ fn build_acp_command(
         command_kind: Some("acp".to_string()),
         claude_host: None,
         command,
-        args,
+        args: acp_args_with_profile(task.provider, task.profile, args),
         stdin: Some(rendered_prompt.clone()),
         redactions: vec![rendered_prompt, task.prompt.to_string()],
         cwd: task.cwd.to_string(),
@@ -462,6 +512,20 @@ fn build_acp_command(
         prompt_strategy: prompt_strategy(task.profile).to_string(),
         profile_diagnostics: profile_diagnostics(task.provider, task.profile),
     }
+}
+
+fn acp_args_with_profile(
+    provider: ProviderKind,
+    profile: LaunchProfile,
+    mut args: Vec<String>,
+) -> Vec<String> {
+    args.extend(
+        adapter_for(provider)
+            .profile_args(profile)
+            .iter()
+            .map(|arg| (*arg).to_string()),
+    );
+    args
 }
 
 fn acp_command_config(provider: ProviderKind) -> Result<(String, Vec<String>), String> {
@@ -550,6 +614,17 @@ impl ProviderAdapter for ClaudeAdapter {
     fn supported_effort(&self) -> &'static [&'static str] {
         &["low", "medium", "high", "xhigh", "max"]
     }
+
+    fn supported_profiles(&self) -> &'static [LaunchProfile] {
+        UNBLOCKED_PROFILES
+    }
+
+    fn profile_args(&self, profile: LaunchProfile) -> &'static [&'static str] {
+        match profile {
+            LaunchProfile::Unblocked => &["--permission-mode", "bypassPermissions"],
+            LaunchProfile::Bridge | LaunchProfile::Bare => &[],
+        }
+    }
 }
 
 /// Codex can exit zero while reporting a fatal sandbox/approval/patch denial in
@@ -605,6 +680,7 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn validate(&self, task: &ProviderTask<'_>) -> Result<(), String> {
+        self.validate_mode_and_profile(task)?;
         if let Some(effort) = task.effort
             && !self.supported_effort().contains(&effort)
         {
@@ -634,7 +710,18 @@ impl ProviderAdapter for CodexAdapter {
 
 impl ProviderAdapter for ForgeAdapter {}
 
-impl ProviderAdapter for AntigravityAdapter {}
+impl ProviderAdapter for AntigravityAdapter {
+    fn supported_profiles(&self) -> &'static [LaunchProfile] {
+        UNBLOCKED_PROFILES
+    }
+
+    fn profile_args(&self, profile: LaunchProfile) -> &'static [&'static str] {
+        match profile {
+            LaunchProfile::Unblocked => &["--dangerously-skip-permissions"],
+            LaunchProfile::Bridge | LaunchProfile::Bare => &[],
+        }
+    }
+}
 
 pub fn provider_env(provider: ProviderKind) -> BTreeMap<String, String> {
     let names = match provider {
@@ -764,6 +851,7 @@ fn prompt_strategy(profile: LaunchProfile) -> &'static str {
     match profile {
         LaunchProfile::Bridge => "bridge",
         LaunchProfile::Bare => "compact",
+        LaunchProfile::Unblocked => "unblocked",
     }
 }
 
@@ -776,6 +864,21 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
             "unsupportedReductions": [],
             "bestEffortReductions": [],
             "note": "standard Agent Bridge prompt and provider configuration"
+        });
+    }
+    if profile == LaunchProfile::Unblocked {
+        return json!({
+            "profile": "unblocked",
+            "promptStrategy": "unblocked",
+            "appliedReductions": [],
+            "unsupportedReductions": [],
+            "bestEffortReductions": [],
+            "permissionBypass": match provider {
+                ProviderKind::Claude => "--permission-mode bypassPermissions",
+                ProviderKind::Antigravity => "--dangerously-skip-permissions",
+                _ => "unsupported"
+            },
+            "note": "unblocked uses provider-specific permission bypass flags after Agent Bridge validates the cwd is still under an allowed workspace root"
         });
     }
     match provider {
@@ -940,6 +1043,36 @@ mod tests {
     }
 
     #[test]
+    fn unblocked_profile_adds_provider_owned_args() {
+        let mut claude = task(ProviderKind::Claude, TaskMode::Implement);
+        claude.profile = LaunchProfile::Unblocked;
+        let claude_command = build_acp_command(
+            &claude,
+            "rendered prompt".to_string(),
+            "claude-agent".to_string(),
+            vec![],
+        );
+        assert_eq!(
+            claude_command.args,
+            vec!["--permission-mode", "bypassPermissions"]
+        );
+        assert_eq!(claude_command.prompt_strategy, "unblocked");
+
+        let mut antigravity = task(ProviderKind::Antigravity, TaskMode::Implement);
+        antigravity.profile = LaunchProfile::Unblocked;
+        let antigravity_command = build_acp_command(
+            &antigravity,
+            "rendered prompt".to_string(),
+            "agy-acp".to_string(),
+            vec!["--existing".to_string()],
+        );
+        assert_eq!(
+            antigravity_command.args,
+            vec!["--existing", "--dangerously-skip-permissions"]
+        );
+    }
+
+    #[test]
     fn codex_options_accept_effort_as_thinking_alias() {
         let mut t = task(ProviderKind::Codex, TaskMode::Review);
         t.effort = Some("high");
@@ -985,6 +1118,13 @@ mod tests {
         let mut cursor = task(ProviderKind::Cursor, TaskMode::Research);
         cursor.thinking = Some("low");
         assert!(adapter_for(ProviderKind::Cursor).validate(&cursor).is_err());
+
+        let mut unsupported_profile = task(ProviderKind::Codex, TaskMode::Research);
+        unsupported_profile.profile = LaunchProfile::Unblocked;
+        let error = adapter_for(ProviderKind::Codex)
+            .validate(&unsupported_profile)
+            .unwrap_err();
+        assert!(error.contains("codex does not support profile: unblocked"));
     }
 
     #[test]

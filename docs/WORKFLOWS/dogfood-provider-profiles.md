@@ -5,6 +5,10 @@ with both launch profiles: `bridge` and `bare`. The harness talks to the local
 Agent Bridge MCP server over stdio, waits for finality, and writes evidence for
 each provider/profile pair.
 
+`unblocked` is intentionally outside this default read-only comparison harness.
+Use it only for explicit workspace-permission reach checks after reviewing the
+dry-run command and profile diagnostics.
+
 ## What It Captures
 
 For each run, the harness writes:

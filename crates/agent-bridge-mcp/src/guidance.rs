@@ -251,7 +251,7 @@ Suggested workflows:
 1. For read-only review, use agent_spawn with mode "review" or "research", isolation "none", a small prompt, bounded agent_observe, and final agent_result review.
 2. For isolated implementation, use agent_spawn with mode "implement", isolation "worktree", inspect reviewPacket, then request agent_result sections:["diff","stdout","stderr"] and changedFiles, then run verification in the main caller.
 3. For stalled-task recovery, use bounded agent_observe, agent_result sections:["stdout","stderr"] with line cursors, agent_observe limit:0 for state, agent_stop if needed, and final agent_result inspection. For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms, inspect cwd, workspace policy, prompt scope, and isolation strategy before retrying.
-4. For provider comparison, run equivalent read-only prompts against selected providers, optionally paired as profile "bridge" and profile "bare"; compare agent_result reviewPacket and sections:["transcript"], profileDiagnostics, and provider prose, and keep final conclusions in the main caller.
+4. For provider comparison, run equivalent read-only prompts against selected providers, optionally paired as profile "bridge" and profile "bare"; use profile "unblocked" only for explicit workspace-permission reach checks, not routine read-only comparison. Compare agent_result reviewPacket and sections:["transcript"], profileDiagnostics, and provider prose, and keep final conclusions in the main caller.
 5. Use agent_list when a harness needs the active/recent provider-agent list.
 
 Live provider execution remains opt-in and should not be added to default CI."#;
@@ -260,7 +260,7 @@ const COMPARE_PROVIDERS_PROMPT: &str = r#"Compare Agent Bridge providers safely.
 
 Suggested flow:
 1. Call doctor focus:"providers" for the selected providers only when readiness needs focused verification; use smoke only when startup readiness matters.
-2. Spawn equivalent read-only review or research tasks with short prompts and bounded timeouts. Use profile "bridge" for normal Agent Bridge guidance and profile "bare" for compact reduced-configuration experiments. Set agent_spawn dryRun:true to confirm command shape, cwd, launch strategy, selected profile, profileDiagnostics, and provider options before spawning.
+2. Spawn equivalent read-only review or research tasks with short prompts and bounded timeouts. Use profile "bridge" for normal Agent Bridge guidance and profile "bare" for compact reduced-configuration experiments; reserve profile "unblocked" for explicit workspace-permission reach checks after dry-run review. Set agent_spawn dryRun:true to confirm command shape, cwd, launch strategy, selected profile, profileDiagnostics, and provider options before spawning.
 3. Use agent_observe for progress and agent_result for final evidence for each task; until:"final" blocks to finality when only the outcome matters.
 4. Compare reviewPacket, agent_result sections:["transcript","stdout","stderr"], diagnostics, exit metadata, profileDiagnostics, and provider prose as evidence.
 5. Keep correctness decisions and project verification in the main caller."#;
@@ -374,7 +374,7 @@ For Codex patch rejected, sandbox denial, approval denial, outside of the projec
 
 ## provider comparison
 
-Run equivalent read-only prompts against selected providers. For Agent Bridge behavior analysis, run paired profile "bridge" and profile "bare" tasks where useful. Compare `reviewPacket`, `agent_result` `sections: ["transcript"]`, diagnostics, exit metadata, `profileDiagnostics`, and provider prose as evidence; keep final conclusions and verification responsibility with the main caller.
+Run equivalent read-only prompts against selected providers. For Agent Bridge behavior analysis, run paired profile "bridge" and profile "bare" tasks where useful; use profile "unblocked" only when the comparison is specifically about workspace-permission reach. Compare `reviewPacket`, `agent_result` `sections: ["transcript"]`, diagnostics, exit metadata, `profileDiagnostics`, and provider prose as evidence; keep final conclusions and verification responsibility with the main caller.
 "#;
 
 const CODE_EXECUTION_RESOURCE: &str = r#"# Agent Bridge Code-Execution-Friendly Delegation
