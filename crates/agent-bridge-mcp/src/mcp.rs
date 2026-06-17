@@ -59,6 +59,23 @@ impl JsonRpcResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct JsonRpcNotification {
+    pub jsonrpc: &'static str,
+    pub method: String,
+    pub params: Value,
+}
+
+impl JsonRpcNotification {
+    pub fn new(method: impl Into<String>, params: Value) -> Self {
+        Self {
+            jsonrpc: "2.0",
+            method: method.into(),
+            params,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct JsonRpcError {
     pub code: i64,
     pub message: String,

@@ -30,7 +30,7 @@ Eight MCP tools constitute the public API:
 | `agent_spawn` | `agent_preview` | Queue a task (optionally dry-run) |
 | `agent_observe` | `agent_status`, `agent_wait`, `agent_transcript` | Stream events, block to finality, or poll state |
 | `agent_result` | `agent_logs` | Review packet + on-demand evidence sections |
-| `agent_list` | — | Query and filter active/recent tasks |
+| `agent_list` | — | Query active agents and finished agents needing inspection |
 | `agent_stop` | — | Terminate a running task |
 | `agent_remove` | — | Purge a finished task and its worktree |
 
@@ -41,6 +41,11 @@ Links: [Backend Codemap](CODEMAPS/backend.md), [Backend Workflows](WORKFLOWS/bac
 Tasks progress through a strictly-validated state machine:
 
 `Queued → Running → Succeeded|Failed|Stopped|FailedStale → Removed`
+
+When a current-session agent reaches a final state, the stdio server emits one
+JSON-RPC notification, `notifications/agent_bridge/agent_completed`, with a
+compact summary and recommended next action. The caller still inspects
+`agent_result` for evidence and performs local verification.
 
 On server startup, orphaned `Queued`/`Running` records are reconciled to `FailedStale` and their worktrees reclaimed.
 

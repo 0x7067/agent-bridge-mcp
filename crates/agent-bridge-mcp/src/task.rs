@@ -2,11 +2,13 @@ use crate::domain::{
     ErrorType, FailureCategory, Isolation, LaunchProfile, PartialResult, ProviderKind, RetryPolicy,
     TaskStatus, TimeoutSeconds,
 };
+use crate::mcp::JsonRpcNotification;
 use crate::provider::{self, ProviderTask};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use tokio::fs;
 use tokio::sync::{OnceCell, mpsc, oneshot, watch};
 use tokio::time::{Duration, Instant, sleep, timeout};
@@ -26,6 +28,8 @@ const CHILD_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 /// indefinitely.
 const SIGKILL_REAP_GRACE: Duration = Duration::from_secs(1);
 static MANAGER: OnceCell<TaskManagerHandle> = OnceCell::const_new();
+static COMPLETION_NOTIFICATIONS: OnceLock<mpsc::UnboundedSender<JsonRpcNotification>> =
+    OnceLock::new();
 
 mod supervision;
 pub(crate) use supervision::{
@@ -40,10 +44,11 @@ pub(crate) use registry::{normalize_legacy_registry_fields_exported, validate_re
 mod review;
 #[allow(unused_imports)]
 use review::{
-    add_detail, display_title, insert_detail_fields, insert_evidence_fields, insert_outcome_fields,
-    is_final, list_tasks, normalize_max_bytes, normalize_observe_limit, normalize_observe_ms,
-    normalize_wait_ms, observe_payload, public_task, read_capped_file, read_transcript,
-    slice_lines, transcript_evidence, transition_status,
+    AGENT_COMPLETED_NOTIFICATION, add_detail, completion_notification_params, display_title,
+    insert_detail_fields, insert_evidence_fields, insert_outcome_fields, is_final, list_tasks,
+    normalize_max_bytes, normalize_observe_limit, normalize_observe_ms, normalize_wait_ms,
+    observe_payload, public_task, read_capped_file, read_transcript, slice_lines,
+    transcript_evidence, transition_status,
 };
 
 mod complete;
@@ -61,6 +66,24 @@ fn max_active_tasks() -> usize {
     crate::config::Config::from_env(crate::config::ConfigCliOverrides::default())
         .map(|config| config.max_active_tasks())
         .unwrap_or(crate::config::DEFAULT_MAX_ACTIVE_TASKS)
+}
+
+pub(crate) fn subscribe_completion_notifications() -> mpsc::UnboundedReceiver<JsonRpcNotification> {
+    let (sender, receiver) = mpsc::unbounded_channel();
+    let _ = COMPLETION_NOTIFICATIONS.set(sender);
+    receiver
+}
+
+fn has_completion_notification_receivers() -> bool {
+    COMPLETION_NOTIFICATIONS
+        .get()
+        .is_some_and(|sender| !sender.is_closed())
+}
+
+fn send_completion_notification(notification: JsonRpcNotification) {
+    if let Some(sender) = COMPLETION_NOTIFICATIONS.get() {
+        let _ = sender.send(notification);
+    }
 }
 
 #[cfg(unix)]
@@ -659,11 +682,20 @@ impl TaskActor {
             watch_sender,
         )
         .await;
+        let mut launch_notification = None;
         if let Some(active) = apply_launch_outcome(&mut record, outcome, &cwd).await? {
             self.active.insert(agent_id.clone(), active);
+        } else if has_completion_notification_receivers() {
+            launch_notification = Some(JsonRpcNotification::new(
+                AGENT_COMPLETED_NOTIFICATION,
+                completion_notification_params(&record),
+            ));
         }
         self.registry.tasks.insert(agent_id.clone(), record);
         self.save().await?;
+        if let Some(notification) = launch_notification {
+            send_completion_notification(notification);
+        }
         // Spawn is a one-shot launch (not a polling loop), so include launch detail
         // (pid, isolation, worktreePath, profile) for the caller.
         let task = self.registry.tasks.get(&agent_id).unwrap();
@@ -797,7 +829,7 @@ impl TaskActor {
         self.refresh_registry().await?;
         self.active.remove(&completion.agent_id);
 
-        let retry_info = {
+        let (retry_info, completion_notification) = {
             let task = self.require_agent_mut(&completion.agent_id)?;
             if task.status != TaskStatus::Stopped {
                 transition_status(task, completion.status)?;
@@ -884,11 +916,21 @@ impl TaskActor {
                     ));
                 }
             }
-            info
+            let notification =
+                (info.is_none() && has_completion_notification_receivers()).then(|| {
+                    JsonRpcNotification::new(
+                        AGENT_COMPLETED_NOTIFICATION,
+                        completion_notification_params(task),
+                    )
+                });
+            (info, notification)
         };
 
         self.save().await?;
         self.signal_task(&completion.agent_id);
+        if let Some(notification) = completion_notification {
+            send_completion_notification(notification);
+        }
         tracing::Span::current().record(
             "duration_ms",
             tracing::field::display(finalize_started.elapsed().as_millis()),
@@ -1471,6 +1513,35 @@ mod tests {
     }
 
     #[test]
+    fn completion_notification_payload_is_compact_and_actionable() {
+        let mut task = sample_task(TaskStatus::Succeeded);
+        task.agent_id = "agent_done".to_string();
+        task.title = Some("Native UX review".to_string());
+        task.completed_at = Some("2026-06-03T00:00:00.000Z".to_string());
+        task.exit_code = Some(0);
+        task.git_status = Some(" M src/lib.rs\n".to_string());
+        task.git_diff = Some("diff --git a/src/lib.rs b/src/lib.rs\n".to_string());
+        task.changed_files = Some(vec!["src/lib.rs".to_string()]);
+        task.transcript_available = true;
+        task.final_result_detected = true;
+
+        let payload = completion_notification_params(&task);
+
+        assert_eq!(payload["agentId"], "agent_done");
+        assert_eq!(payload["displayTitle"], "Native UX review");
+        assert_eq!(payload["attentionRequired"], true);
+        assert_eq!(payload["summary"]["changedFileCount"], 1);
+        assert_eq!(payload["summary"]["next"][0]["id"], "inspect_result");
+        assert!(payload.get("stdout").is_none());
+        assert!(payload.get("stderr").is_none());
+        assert!(payload.get("gitDiff").is_none());
+        assert!(payload.get("transcript").is_none());
+        assert!(payload["summary"].get("gitDiff").is_none());
+        assert!(payload["summary"].get("diagnostic").is_none());
+        assert!(payload["summary"].get("partialResults").is_none());
+    }
+
+    #[test]
     fn list_tasks_defaults_to_bounded_active_recent_presentation() {
         let mut registry = Registry {
             tasks: BTreeMap::new(),
@@ -1487,10 +1558,15 @@ mod tests {
         recent_final.agent_id = "agent_recent".to_string();
         recent_final.title = Some("Recent final".to_string());
         recent_final.updated_at = "2026-06-02T00:00:00.000Z".to_string();
+        let mut inspected_final = sample_task(TaskStatus::Succeeded);
+        inspected_final.agent_id = "agent_inspected".to_string();
+        inspected_final.title = Some("Inspected final".to_string());
+        inspected_final.updated_at = "2026-06-03T00:00:00.000Z".to_string();
+        inspected_final.result_inspected_at = Some("2026-06-03T00:00:01.000Z".to_string());
         let mut removed = sample_task(TaskStatus::Removed);
         removed.agent_id = "agent_removed".to_string();
 
-        for task in [old_final, running, recent_final, removed] {
+        for task in [old_final, running, recent_final, inspected_final, removed] {
             registry.tasks.insert(task.agent_id.clone(), task);
         }
 
@@ -1507,6 +1583,14 @@ mod tests {
         // Lean per-agent summaries: a single `next` list, no GUI presentation blob.
         assert!(tasks.iter().all(|task| task["next"].is_array()));
         assert!(tasks.iter().all(|task| task.get("presentation").is_none()));
+
+        let filtered = list_tasks(&registry, json!({"titleContains": "inspected"})).unwrap();
+        let filtered_tasks = filtered["tasks"].as_array().unwrap();
+        assert_eq!(filtered_tasks.len(), 1);
+        assert_eq!(filtered_tasks[0]["agentId"], "agent_inspected");
+
+        let raw = list_tasks(&registry, json!({"presentation": false, "scope": "all"})).unwrap();
+        assert_eq!(raw["tasks"].as_array().unwrap().len(), 4);
     }
 
     #[test]

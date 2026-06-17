@@ -7,6 +7,7 @@ stops, and removes delegated tasks while staying responsible for verification.
 
 - Eight MCP tools only — extend via options, not new tools.
 - Three conceptual layers: protocol (`mcp.rs`), dispatch (`server.rs`), lifecycle (`task.rs` + `provider.rs`).
+- Finalized current-session agents emit a server-to-client JSON-RPC notification with a compact action summary.
 - Claude is special: it runs through an owned PTY host runner bridged by Unix socket.
 - All other providers are straight fork/exec with filtered env and capped IO.
 
@@ -31,7 +32,7 @@ live in `src/tools.rs` / `src/mcp.rs`.
 | `task/spawn.rs` | Arg validation, worktree creation, process launch | Medium |
 | `task/supervision.rs` | PID registry, process groups, signal/IO drainer | Medium |
 | `task/complete.rs` | Exit classification, host-response ingestion, git snapshots | Medium |
-| `task/review.rs` | Payload shaping, progress, `next` actions, querying | Large |
+| `task/review.rs` | Payload shaping, completion summaries, progress, `next` actions, querying | Large |
 | `task/registry.rs` | Atomic registry load/save, legacy normalization | Small |
 | `runtime.rs` | Stdio loop, panic hook, shutdown signals | Medium |
 | `domain.rs` | Core enums/types: `ProviderKind`, `TaskStatus`, `FailureCategory` | Small |

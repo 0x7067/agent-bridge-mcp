@@ -8,7 +8,7 @@ const CLAUDE_HOST_LIFECYCLE_URI: &str = "agent-bridge://guidance/claude-host-lif
 const DOGFOOD_WORKFLOWS_URI: &str = "agent-bridge://guidance/dogfood-workflows";
 const CODE_EXECUTION_URI: &str = "agent-bridge://guidance/code-execution";
 
-pub const INITIALIZATION_INSTRUCTIONS: &str = r#"Agent Bridge delegates review, research, command, and implementation work to provider agents. Provider output is evidence only: the caller still owns project verification before claiming work is done. Eight-tool workflow: run doctor when setup or readiness is uncertain (focus:"providers" for a readiness-only check; smoke:true to verify launchability), call agent_spawn (dryRun:true previews the command shape; spawned providers receive the lean-only final-output contract), monitor with agent_observe (until:"final" blocks to finality, limit:0 returns state only, events are the transcript), inspect final evidence with agent_result (request stdout/stderr/diff/transcript sections on demand), verify locally, then call agent_remove only after reviewing managed worktrees. Use agent_list for active/recent summaries and agent_stop when the agent is no longer useful. Tool responses are lean by default; pass verbosity:"detailed" for debug metadata. Follow structuredContent and the single next action list when present."#;
+pub const INITIALIZATION_INSTRUCTIONS: &str = r#"Agent Bridge delegates review, research, command, and implementation work to provider agents. Provider output is evidence only: the caller still owns project verification before claiming work is done. Eight-tool workflow: run doctor when setup or readiness is uncertain (focus:"providers" for a readiness-only check; smoke:true to verify launchability), call agent_spawn (dryRun:true previews the command shape; spawned providers receive the lean-only final-output contract), monitor with agent_observe (until:"final" blocks to finality, limit:0 returns state only, events are the transcript), react to notifications/agent_bridge/agent_completed when a current-session agent finishes, inspect final evidence with agent_result (request stdout/stderr/diff/transcript sections on demand), verify locally, then call agent_remove only after reviewing managed worktrees. Use agent_list as an attention inbox for active agents and finished agents not yet inspected; use filters when looking up older inspected results. Use agent_stop when the agent is no longer useful. Tool responses are lean by default; pass verbosity:"detailed" for debug metadata. Follow structuredContent and the single next action list when present."#;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -284,7 +284,7 @@ Notes:
 - Inspect `doctor.taskExtensionReadiness` only as passive evidence about task-like client metadata observed during `initialize` or request `_meta`. It always reports `serverAdvertisesTasks: false`; protocol-level `tasks/*`, `CreateTaskResult`, listing, cancellation, and notifications remain unavailable until a future implementation change.
 - Use `AGENT_BRIDGE_WORKSPACES` for workspace policy. `AGENT_BRIDGE_STATE_DIR` is optional; when omitted, runtime state and doctor diagnostics use `~/.agent-bridge-mcp/state`.
 - Tool responses are lean by default (each field once, no GUI chrome). Provider final output is lean-only across launch profiles. Pass `verbosity: "detailed"` on `agent_observe`/`agent_result` for debug metadata.
-- Use `agent_list` for bounded active/recent agent summaries.
+- Use `agent_list` for bounded attention summaries: active agents first, then finished agents whose result has not yet been inspected.
 - Provider agents are not interactive or resumable in v1.
 
 Self-guided clients should read `initialize.instructions`, `structuredContent`, output schemas, and the `next` list when available. Clients that ignore those fields can still follow the primary flow manually.
@@ -362,7 +362,7 @@ Use `agent_spawn` with mode `review` or `research`, `isolation: "none"`, a small
 
 ## active task list
 
-Use `agent_list` with default arguments to show active provider agents first and recent final agents second. Each record is a lean summary (identity, status, phase, progress, primary `next` action).
+Use `agent_list` with default arguments as an attention inbox: active provider agents first, then final agents whose result has not yet been inspected. Each record is a lean summary (identity, status, phase, progress, primary `next` action). Use filters when looking up inspected history.
 
 ## isolated implementation
 

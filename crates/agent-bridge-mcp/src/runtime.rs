@@ -2,6 +2,7 @@ use crate::mcp::{JsonRpcId, JsonRpcRequest, JsonRpcResponse};
 use crate::server::handle_request;
 use crate::task::TaskManagerHandle;
 use clap::{Parser, Subcommand};
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -358,27 +359,38 @@ async fn run_stdio_server() -> io::Result<()> {
     let stdin = io::stdin();
     let mut lines = BufReader::new(stdin).lines();
     let mut stdout = io::stdout();
+    let mut completion_notifications = crate::task::subscribe_completion_notifications();
 
-    while let Some(line) = lines.next_line().await? {
-        if line.trim().is_empty() {
-            continue;
-        }
+    loop {
+        tokio::select! {
+            line = lines.next_line() => {
+                let Some(line) = line? else {
+                    return Ok(());
+                };
+                if line.trim().is_empty() {
+                    continue;
+                }
 
-        let request: Result<JsonRpcRequest, _> = serde_json::from_str(&line);
-        match request {
-            Ok(request) => {
-                if let Some(response) = handle_request(request).await {
-                    write_response(&mut stdout, &response).await?;
+                let request: Result<JsonRpcRequest, _> = serde_json::from_str(&line);
+                match request {
+                    Ok(request) => {
+                        if let Some(response) = handle_request(request).await {
+                            write_response(&mut stdout, &response).await?;
+                        }
+                    }
+                    Err(_) => {
+                        let response = JsonRpcResponse::error(JsonRpcId::Null, -32700, "Parse error");
+                        write_response(&mut stdout, &response).await?;
+                    }
                 }
             }
-            Err(_) => {
-                let response = JsonRpcResponse::error(JsonRpcId::Null, -32700, "Parse error");
-                write_response(&mut stdout, &response).await?;
+            notification = completion_notifications.recv() => {
+                if let Some(notification) = notification {
+                    write_json_message(&mut stdout, &notification).await?;
+                }
             }
         }
     }
-
-    Ok(())
 }
 
 #[cfg(unix)]
@@ -399,7 +411,11 @@ async fn shutdown_signal() -> i32 {
 }
 
 async fn write_response(stdout: &mut io::Stdout, response: &JsonRpcResponse) -> io::Result<()> {
-    let mut line = serde_json::to_vec(response).map_err(io::Error::other)?;
+    write_json_message(stdout, response).await
+}
+
+async fn write_json_message<T: Serialize>(stdout: &mut io::Stdout, message: &T) -> io::Result<()> {
+    let mut line = serde_json::to_vec(message).map_err(io::Error::other)?;
     line.push(b'\n');
     stdout.write_all(&line).await?;
     stdout.flush().await

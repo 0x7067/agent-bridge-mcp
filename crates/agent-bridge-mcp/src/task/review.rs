@@ -12,6 +12,9 @@ use std::io::{BufRead, BufReader as StdBufReader, ErrorKind, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+
+pub(crate) const AGENT_COMPLETED_NOTIFICATION: &str = "notifications/agent_bridge/agent_completed";
+
 pub(super) fn parse_transcript_line(line: &str) -> (&'static str, Value) {
     let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
         return ("provider_event", json!({}));
@@ -134,11 +137,16 @@ pub(super) fn list_tasks(registry: &Registry, arguments: Value) -> Result<Value,
     let limit = input
         .limit
         .or_else(|| (presentation && scope == TaskListScope::ActiveRecent).then_some(25));
+    let attention_inbox = presentation && scope == TaskListScope::ActiveRecent;
+    let hide_inspected_finals = attention_inbox && !has_explicit_list_filters(&input);
     let mut tasks: Vec<&TaskRecord> = registry
         .tasks
         .values()
         .filter(|task| task.status != TaskStatus::Removed)
         .filter(|task| agent_matches_list_filters(task, &input))
+        .filter(|task| {
+            !(hide_inspected_finals && is_final(task.status) && task.result_inspected_at.is_some())
+        })
         .collect();
 
     if presentation || scope == TaskListScope::ActiveRecent {
@@ -190,6 +198,14 @@ pub(super) fn agent_matches_list_filters(task: &TaskRecord, input: &TaskListInpu
     true
 }
 
+fn has_explicit_list_filters(input: &TaskListInput) -> bool {
+    input.status.is_some()
+        || input.provider.is_some()
+        || input.mode.is_some()
+        || input.cwd.is_some()
+        || input.title_contains.is_some()
+}
+
 pub(super) fn agent_matches_cwd(task: &TaskRecord, cwd: &str) -> bool {
     if task.cwd == cwd || task.original_cwd.as_deref() == Some(cwd) {
         return true;
@@ -202,13 +218,19 @@ pub(super) fn agent_matches_cwd(task: &TaskRecord, cwd: &str) -> bool {
 }
 
 pub(super) fn compare_for_presentation_list(left: &&TaskRecord, right: &&TaskRecord) -> Ordering {
-    match (is_final(left.status), is_final(right.status)) {
-        (false, true) => Ordering::Less,
-        (true, false) => Ordering::Greater,
-        _ => right
-            .updated_at
-            .cmp(&left.updated_at)
-            .then_with(|| left.agent_id.cmp(&right.agent_id)),
+    presentation_rank(left)
+        .cmp(&presentation_rank(right))
+        .then_with(|| right.updated_at.cmp(&left.updated_at))
+        .then_with(|| left.agent_id.cmp(&right.agent_id))
+}
+
+fn presentation_rank(task: &TaskRecord) -> u8 {
+    if !is_final(task.status) {
+        0
+    } else if task.result_inspected_at.is_none() {
+        1
+    } else {
+        2
     }
 }
 
@@ -665,6 +687,40 @@ pub(super) fn next_actions(task: &TaskRecord, progress: &Value) -> Value {
     }
 
     Value::Array(actions)
+}
+
+pub(super) fn completion_notification_params(task: &TaskRecord) -> Value {
+    let progress = agent_progress(task);
+    let changed_files = task.changed_files.clone().unwrap_or_default();
+    let changed_file_count = changed_files.len();
+    let git_status = task.git_status.clone().unwrap_or_default();
+    let has_changes = !changed_files.is_empty() || !git_status.trim().is_empty();
+
+    json!({
+        "agentId": task.agent_id,
+        "provider": task.provider,
+        "mode": task.mode,
+        "title": task.title,
+        "displayTitle": display_title(task),
+        "status": task.status,
+        "isFinal": is_final(task.status),
+        "phase": task_phase(task.status),
+        "completedAt": task.completed_at,
+        "attentionRequired": task.result_inspected_at.is_none(),
+        "summary": {
+            "exitCode": task.exit_code,
+            "signal": task.signal,
+            "errorType": task.error_type,
+            "hasChanges": has_changes,
+            "changedFiles": changed_files,
+            "changedFileCount": changed_file_count,
+            "transcriptAvailable": task.transcript_available,
+            "finalResultDetected": task.final_result_detected,
+            "partialResultDetected": task.partial_result_detected,
+            "recommendedActions": recommended_actions(task, has_changes),
+            "next": next_actions(task, &progress),
+        }
+    })
 }
 
 pub(super) fn next_action(

@@ -16,6 +16,7 @@ struct McpClient {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     next_id: i64,
+    notifications: Vec<Value>,
 }
 
 struct FixtureEnv {
@@ -124,6 +125,7 @@ impl McpClient {
             stdin,
             stdout,
             next_id: 1,
+            notifications: Vec::new(),
         }
     }
 
@@ -139,12 +141,46 @@ impl McpClient {
         writeln!(self.stdin, "{request}").unwrap();
         self.stdin.flush().unwrap();
 
+        loop {
+            let message = self.read_message();
+            if message.get("id").and_then(Value::as_i64) == Some(id) {
+                return message;
+            }
+            if message.get("id").is_none() && message.get("method").is_some() {
+                self.notifications.push(message);
+                continue;
+            }
+            panic!("expected MCP response for id={id}, got {message}");
+        }
+    }
+
+    fn read_message(&mut self) -> Value {
         let mut line = String::new();
         self.stdout.read_line(&mut line).unwrap();
-        assert!(!line.is_empty(), "expected MCP response for id={id}");
-        let response: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(response["id"], id);
-        response
+        assert!(!line.is_empty(), "expected MCP message");
+        serde_json::from_str(&line).unwrap()
+    }
+
+    fn notification(&mut self, method: &str) -> Value {
+        if let Some(index) = self
+            .notifications
+            .iter()
+            .position(|notification| notification["method"] == method)
+        {
+            return self.notifications.remove(index);
+        }
+
+        loop {
+            let message = self.read_message();
+            if message.get("id").is_none() && message.get("method").is_some() {
+                if message["method"] == method {
+                    return message;
+                }
+                self.notifications.push(message);
+                continue;
+            }
+            panic!("expected MCP notification {method}, got {message}");
+        }
     }
 
     fn initialize(&mut self, params: Value) -> Value {
@@ -3550,6 +3586,111 @@ fn stdio_agent_list_defaults_to_native_presentation_and_filters() {
 
     let stopped = client.tool("agent_stop", json!({"agentId": active_id}));
     assert_eq!(stopped["status"], "stopped");
+}
+
+#[test]
+fn stdio_sends_agent_completion_notification_with_compact_summary() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let spawned = client.tool(
+        "agent_spawn",
+        json!({
+            "provider": "cursor",
+            "mode": "review",
+            "title": "Native UX review",
+            "prompt": "emit-logs",
+            "cwd": env.root,
+            "timeoutSeconds": 5
+        }),
+    );
+    let agent_id = spawned["agentId"].as_str().unwrap().to_string();
+
+    let notification = client.notification("notifications/agent_bridge/agent_completed");
+    assert!(notification.get("id").is_none());
+    assert_eq!(
+        notification["method"],
+        "notifications/agent_bridge/agent_completed"
+    );
+    let params = &notification["params"];
+    assert_eq!(params["agentId"], agent_id);
+    assert_eq!(params["displayTitle"], "Native UX review");
+    assert_eq!(params["status"], "succeeded");
+    assert_eq!(params["isFinal"], true);
+    assert_eq!(params["attentionRequired"], true);
+    assert_eq!(params["summary"]["exitCode"], 0);
+    assert!(params["summary"]["changedFileCount"].is_number());
+    assert_eq!(params["summary"]["next"][0]["id"], "inspect_result");
+    assert_eq!(params["summary"]["next"][0]["tool"], "agent_result");
+    assert!(params.get("stdout").is_none());
+    assert!(params.get("stderr").is_none());
+    assert!(params.get("gitDiff").is_none());
+    assert!(params.get("transcript").is_none());
+    assert!(params["summary"].get("partialResults").is_none());
+
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
+    assert_eq!(result["agentId"], agent_id);
+    assert_eq!(result["status"], "succeeded");
+    assert_eq!(result["reviewPacket"]["agentId"], agent_id);
+
+    let listed = client.tool("agent_list", json!({}));
+    assert!(
+        listed["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|agent| agent["agentId"] != agent_id)
+    );
+
+    let filtered = client.tool(
+        "agent_list",
+        json!({
+            "provider": ["cursor"],
+            "mode": ["review"],
+            "titleContains": "ux"
+        }),
+    );
+    assert_eq!(
+        filtered["agents"].as_array().unwrap()[0]["agentId"],
+        agent_id
+    );
+}
+
+#[test]
+fn stdio_sends_completion_notification_for_launch_failure() {
+    let env = fixture_env();
+    let mut extra_env = BTreeMap::new();
+    extra_env.insert(
+        "CURSOR_AGENT_BIN".to_string(),
+        env.root.join("missing-provider").into_os_string(),
+    );
+    extra_env.insert(
+        "CURSOR_ACP_BIN".to_string(),
+        env.root.join("missing-provider").into_os_string(),
+    );
+    let mut client = McpClient::start_with_extra_env(&env, extra_env);
+
+    let spawned = client.tool(
+        "agent_spawn",
+        json!({
+            "provider": "cursor",
+            "mode": "review",
+            "title": "Broken launch",
+            "prompt": "emit-logs",
+            "cwd": env.root,
+            "timeoutSeconds": 5
+        }),
+    );
+    let agent_id = spawned["agentId"].as_str().unwrap().to_string();
+    assert_eq!(spawned["status"], "failed");
+    assert_eq!(spawned["isFinal"], true);
+
+    let notification = client.notification("notifications/agent_bridge/agent_completed");
+    let params = &notification["params"];
+    assert_eq!(params["agentId"], agent_id);
+    assert_eq!(params["status"], "failed");
+    assert_eq!(params["summary"]["errorType"], "provider_start_error");
+    assert_eq!(params["summary"]["next"][0]["id"], "inspect_result");
 }
 
 #[test]

@@ -1,5 +1,5 @@
 use agent_bridge_mcp::domain::{ProviderKind, TaskMode, TimeoutSeconds, WorktreeName};
-use agent_bridge_mcp::mcp::{JsonRpcId, JsonRpcRequest, JsonRpcResponse};
+use agent_bridge_mcp::mcp::{JsonRpcId, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use agent_bridge_mcp::tools::{TaskPreviewInput, ToolCallParams, ToolName};
 
 #[test]
@@ -31,6 +31,22 @@ fn json_rpc_response_serializes_public_shape() {
     assert_eq!(value["jsonrpc"], "2.0");
     assert_eq!(value["id"], 1);
     assert_eq!(value["result"]["protocolVersion"], "2024-11-05");
+}
+
+#[test]
+fn json_rpc_notification_serializes_without_id() {
+    let notification = JsonRpcNotification::new(
+        "notifications/agent_bridge/agent_completed",
+        serde_json::json!({"agentId": "agent_1"}),
+    );
+    let value = serde_json::to_value(notification).unwrap();
+    assert_eq!(value["jsonrpc"], "2.0");
+    assert_eq!(
+        value["method"],
+        "notifications/agent_bridge/agent_completed"
+    );
+    assert_eq!(value["params"]["agentId"], "agent_1");
+    assert!(value.get("id").is_none());
 }
 
 #[test]
