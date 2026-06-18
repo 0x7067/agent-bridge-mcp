@@ -65,7 +65,7 @@ pub fn tool_definitions() -> Vec<Value> {
             "name": "providers_list",
             "description": "List delegation providers and capabilities.",
             "inputSchema": object_schema(json!({}), Vec::<&str>::new()),
-            "annotations": read_only_annotations("List delegation providers")
+            "annotations": read_only_annotations("List providers")
         }),
         json!({
             "name": "doctor",
@@ -85,13 +85,13 @@ pub fn tool_definitions() -> Vec<Value> {
                 "cwd": {"type": "string"}
             }), Vec::<&str>::new()),
             "outputSchema": output_schema_for("doctor"),
-            "annotations": read_only_annotations("Diagnose Agent Bridge setup")
+            "annotations": read_only_annotations("Diagnose setup")
         }),
         json!({
             "name": "agent_spawn",
             "description": "Start a provider agent with the lean-only final-output contract. Primary follow-ups: agent_observe for progress, agent_result for evidence. dryRun:true previews launch without spawning.",
             "inputSchema": object_schema(spawn_properties(&provider_enum, &mode_enum, &profile_enum), vec!["provider", "mode", "prompt"]),
-            "annotations": {"title": "Start a provider agent", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": true}
+            "annotations": {"title": "Start agent", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": true}
         }),
         json!({
             "name": "agent_list",
@@ -108,7 +108,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100}
             }), Vec::<&str>::new()),
             "outputSchema": output_schema_for("agent_list"),
-            "annotations": read_only_annotations("List provider agents")
+            "annotations": read_only_annotations("List agents")
         }),
         json!({
             "name": "agent_observe",
@@ -122,7 +122,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "verbosity": {"type": "string", "enum": ["compact", "detailed"]}
             }), vec!["agentId"]),
             "outputSchema": output_schema_for("agent_observe"),
-            "annotations": read_only_annotations("Observe a provider agent")
+            "annotations": read_only_annotations("Observe agent")
         }),
         json!({
             "name": "agent_result",
@@ -141,19 +141,19 @@ pub fn tool_definitions() -> Vec<Value> {
                 "verbosity": {"type": "string", "enum": ["compact", "detailed"]}
             }), vec!["agentId"]),
             "outputSchema": output_schema_for("agent_result"),
-            "annotations": read_only_annotations("Inspect provider agent result")
+            "annotations": read_only_annotations("Inspect result")
         }),
         json!({
             "name": "agent_stop",
             "description": "Terminate a running provider agent; stopped agents remain inspectable.",
             "inputSchema": object_schema(json!({"agentId": {"type": "string"}}), vec!["agentId"]),
-            "annotations": {"title": "Stop a provider agent", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false}
+            "annotations": {"title": "Stop agent", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false}
         }),
         json!({
             "name": "agent_remove",
             "description": "Remove a finished/stopped provider agent after result inspection.",
             "inputSchema": object_schema(json!({"agentId": {"type": "string"}}), vec!["agentId"]),
-            "annotations": {"title": "Remove a provider agent", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false}
+            "annotations": {"title": "Remove agent", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false}
         }),
     ]
 }

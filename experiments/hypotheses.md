@@ -46,3 +46,5 @@
 - Run 20 keep: docs: shorten provider cadence notes; Capability payload has safe wins in repeated explanatory note strings. Metric 44858 bytes.
 
 - Run 21 keep: docs: shorten antigravity enforcement note; Provider caveats can be concise if the state field remains explicit. Metric 44722 bytes.
+
+- Run 22 keep: docs: shorten profile diagnostic notes; Dry-run payload has smaller but still measurable note-string savings. Metric 44678 bytes.

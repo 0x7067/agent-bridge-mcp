@@ -156,6 +156,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Provider caveats can be concise if the state field remains explicit.
 - Next: Review reduced configuration payload for repeated status strings.
 
+### Run 22: docs: shorten profile diagnostic notes - total_bytes=44678 (KEEP)
+- Timestamp: 2026-06-18 01:11
+- What changed: Shortened profileDiagnostics note strings without changing structured reduction fields.
+- Result: total=44678, delta=-44 vs previous best.
+- Insight: Dry-run payload has smaller but still measurable note-string savings.
+- Next: Inspect provider prompt return contract for safe wording compression.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.
