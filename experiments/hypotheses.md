@@ -48,3 +48,5 @@
 - Run 21 keep: docs: shorten antigravity enforcement note; Provider caveats can be concise if the state field remains explicit. Metric 44722 bytes.
 
 - Run 22 keep: docs: shorten profile diagnostic notes; Dry-run payload has smaller but still measurable note-string savings. Metric 44678 bytes.
+
+- Run 23 keep: docs: shorten tool annotation titles; UI labels can be terse because tool names carry context. Metric 44586 bytes.

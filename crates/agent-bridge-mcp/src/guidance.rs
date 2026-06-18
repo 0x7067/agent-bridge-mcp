@@ -173,8 +173,7 @@ pub fn read_resource(params: Value) -> Result<Value, String> {
 fn prompt_definition(name: &str, description: &str) -> Value {
     json!({
         "name": name,
-        "description": description,
-        "arguments": []
+        "description": description
     })
 }
 
