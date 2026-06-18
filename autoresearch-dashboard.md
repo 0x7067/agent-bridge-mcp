@@ -1,8 +1,8 @@
 # Autoresearch Dashboard: agent-bridge-cost-efficiency
 
-**Runs:** 17 | **Kept:** 17 | **Discarded:** 0 | **Crashed:** 0
+**Runs:** 18 | **Kept:** 18 | **Discarded:** 0 | **Crashed:** 0
 **Baseline:** total_bytes: 54498bytes (#1)
-**Best:** total_bytes: 46255bytes (#17, -15.1%)
+**Best:** total_bytes: 45712bytes (#18, -16.1%)
 
 | # | commit | total_bytes | status | description |
 |---|--------|-------------|--------|-------------|
@@ -23,3 +23,4 @@
 | 15 | 39cbbcb | 47547bytes (-12.8%) | keep | docs: shorten code execution resource |
 | 16 | 4e8b828 | 46754bytes (-14.2%) | keep | docs: shorten tool descriptions |
 | 17 | b79c437 | 46255bytes (-15.1%) | keep | docs: trim spawn and doctor schema descriptions |
+| 18 | 3722027 | 45712bytes (-16.1%) | keep | docs: trim observe and result schema descriptions |

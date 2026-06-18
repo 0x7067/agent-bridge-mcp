@@ -128,6 +128,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Schema descriptions are useful only where they disambiguate behavior.
 - Next: Trim observe and result schema descriptions next.
 
+### Run 18: docs: trim observe and result schema descriptions - total_bytes=45712 (KEEP)
+- Timestamp: 2026-06-18 01:08
+- What changed: Shortened observe/result property descriptions while preserving enum and bounds constraints.
+- Result: total=45712, delta=-543 vs previous best.
+- Insight: Top-level tool descriptions plus enums cover most schema semantics.
+- Next: Look for structural schema byte reductions next.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.

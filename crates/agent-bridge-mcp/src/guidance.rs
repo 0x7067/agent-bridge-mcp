@@ -28,31 +28,31 @@ pub fn prompt_definitions() -> Vec<Value> {
     vec![
         prompt_definition(
             "agent_bridge_delegate_review",
-            "Prepare a read-only provider review task and inspect the result as evidence.",
+            "Delegate read-only review.",
         ),
         prompt_definition(
             "agent_bridge_delegate_implementation",
-            "Prepare an isolated implementation task and keep verification in the main caller.",
+            "Delegate isolated implementation.",
         ),
         prompt_definition(
             "agent_bridge_inspect_result",
-            "Inspect a finished provider task result, logs, diff, and changed files.",
+            "Inspect a finished task.",
         ),
         prompt_definition(
             "agent_bridge_recover_stalled_task",
-            "Recover from a stalled provider task using bounded waits, logs, stop, and result inspection.",
+            "Recover a stalled task.",
         ),
         prompt_definition(
             "agent_bridge_claude_host_lifecycle",
-            "Operate the Claude host runner lifecycle for sandbox-safe Claude delegation.",
+            "Operate Claude host runner.",
         ),
         prompt_definition(
             "agent_bridge_dogfood_workflows",
-            "Run reproducible Agent Bridge dogfood workflows without making live provider execution mandatory.",
+            "Run dogfood workflows.",
         ),
         prompt_definition(
             "agent_bridge_compare_providers",
-            "Compare provider behavior with bounded read-only tasks and caller-owned verification.",
+            "Compare providers.",
         ),
     ]
 }
@@ -115,32 +115,32 @@ pub fn resource_definitions() -> Vec<Value> {
         resource_definition(
             CALLER_WORKFLOW_URI,
             "caller-workflow",
-            "Agent Bridge caller workflow",
+            "Caller workflow",
         ),
         resource_definition(
             SAFETY_URI,
             "safety",
-            "Agent Bridge delegation safety guidance",
+            "Safety guidance",
         ),
         resource_definition(
             PROVIDER_CAPABILITIES_URI,
             "provider-capabilities",
-            "Agent Bridge provider capability summary",
+            "Provider capabilities",
         ),
         resource_definition(
             CLAUDE_HOST_LIFECYCLE_URI,
             "claude-host-lifecycle",
-            "Claude host runner lifecycle guidance",
+            "Claude host lifecycle",
         ),
         resource_definition(
             DOGFOOD_WORKFLOWS_URI,
             "dogfood-workflows",
-            "Reproducible Agent Bridge dogfood workflows",
+            "Dogfood workflows",
         ),
         resource_definition(
             CODE_EXECUTION_URI,
             "code-execution",
-            "Code-execution-friendly delegation for token-efficient callers",
+            "Code-execution guidance",
         ),
     ]
 }
