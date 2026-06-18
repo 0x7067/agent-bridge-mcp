@@ -23,6 +23,13 @@ pub struct RoutedAttemptInput {
     pub profile: Option<LaunchProfile>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoutedAttemptExecution {
+    pub agent_id: String,
+    pub wait_status: Value,
+    pub result: Value,
+}
+
 impl RoutedAttemptInput {
     pub fn spawn_arguments(&self) -> Value {
         let mut arguments = Map::new();

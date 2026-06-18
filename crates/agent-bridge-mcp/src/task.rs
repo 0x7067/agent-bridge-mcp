@@ -4,6 +4,7 @@ use crate::domain::{
 };
 use crate::mcp::JsonRpcNotification;
 use crate::provider::{self, ProviderTask};
+use crate::router::{RoutedAttemptExecution, RoutedAttemptInput};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -189,6 +190,36 @@ impl TaskManagerHandle {
     pub async fn spawn(&self, arguments: Value) -> Result<Value, String> {
         self.request(|reply| ActorCommand::Spawn(arguments, reply))
             .await
+    }
+
+    pub async fn run_router_attempt(
+        &self,
+        input: RoutedAttemptInput,
+        wait_timeout_ms: Option<i64>,
+    ) -> Result<RoutedAttemptExecution, String> {
+        let spawned = self.spawn(input.spawn_arguments()).await?;
+        let agent_id = spawned["agentId"]
+            .as_str()
+            .ok_or_else(|| "agent_spawn did not return agentId".to_string())?
+            .to_string();
+        let wait_status = self.wait(agent_id.clone(), wait_timeout_ms, false).await?;
+        let result = self
+            .result(
+                agent_id.clone(),
+                ResultSections::default_sections(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+            )
+            .await?;
+        Ok(RoutedAttemptExecution {
+            agent_id,
+            wait_status,
+            result,
+        })
     }
 
     pub async fn list(&self, arguments: Value) -> Result<Value, String> {
@@ -1193,6 +1224,8 @@ struct TaskCompletion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::router::RoutedAttemptInput;
+    use std::sync::{Arc, Mutex};
 
     fn temp_dir(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -1247,6 +1280,74 @@ mod tests {
             spawn_input: Value::Null,
             partial_results: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn router_attempt_uses_spawn_wait_and_result_paths() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let fake_seen = seen.clone();
+        tokio::spawn(async move {
+            while let Some(command) = rx.recv().await {
+                match command {
+                    ActorCommand::Spawn(arguments, reply) => {
+                        fake_seen.lock().unwrap().push("spawn");
+                        assert_eq!(arguments["provider"], "codex");
+                        assert_eq!(arguments["mode"], "review");
+                        assert_eq!(arguments["prompt"], "route once");
+                        let _ = reply.send(Ok(json!({"agentId": "agent_router"})));
+                    }
+                    ActorCommand::Subscribe(agent_id, reply) => {
+                        fake_seen.lock().unwrap().push("subscribe");
+                        assert_eq!(agent_id, "agent_router");
+                        let (_watch_tx, watch_rx) = watch::channel(0);
+                        let _ = reply.send(Ok((watch_rx, true)));
+                    }
+                    ActorCommand::Get(agent_id, reply) => {
+                        fake_seen.lock().unwrap().push("get");
+                        assert_eq!(agent_id, "agent_router");
+                        let mut task = sample_task(TaskStatus::Succeeded);
+                        task.agent_id = agent_id;
+                        let _ = reply.send(Ok(task));
+                    }
+                    ActorCommand::InspectResult(agent_id, reply) => {
+                        fake_seen.lock().unwrap().push("result");
+                        assert_eq!(agent_id, "agent_router");
+                        let mut task = sample_task(TaskStatus::Succeeded);
+                        task.agent_id = agent_id;
+                        let _ = reply.send(Ok(task));
+                    }
+                    _ => panic!("unexpected task actor command"),
+                }
+            }
+        });
+        let handle = TaskManagerHandle { tx };
+
+        let execution = handle
+            .run_router_attempt(
+                RoutedAttemptInput {
+                    provider: ProviderKind::Codex,
+                    mode: crate::domain::TaskMode::Review,
+                    prompt: "route once".to_string(),
+                    title: None,
+                    cwd: None,
+                    timeout_seconds: Some(1),
+                    isolation: None,
+                    worktree_name: None,
+                    profile: None,
+                },
+                Some(1_000),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(execution.agent_id, "agent_router");
+        assert_eq!(execution.wait_status["status"], "succeeded");
+        assert_eq!(execution.result["reviewPacket"]["status"], "succeeded");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["spawn", "subscribe", "get", "result"]
+        );
     }
 
     #[tokio::test]
