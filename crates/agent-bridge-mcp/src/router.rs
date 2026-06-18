@@ -26,8 +26,16 @@ pub struct RoutedAttemptInput {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RoutedAttemptExecution {
     pub agent_id: String,
+    pub evidence_ref: RoutedAttemptEvidenceRef,
     pub wait_status: Value,
     pub result: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutedAttemptEvidenceRef {
+    pub agent_id: String,
+    pub result_sections: Vec<&'static str>,
+    pub transcript_available: bool,
 }
 
 impl RoutedAttemptInput {
@@ -47,6 +55,21 @@ impl RoutedAttemptInput {
         );
         insert_optional(&mut arguments, "profile", self.profile);
         Value::Object(arguments)
+    }
+}
+
+impl RoutedAttemptEvidenceRef {
+    pub fn from_result(agent_id: String, result: &Value) -> Self {
+        let transcript_available = result
+            .get("reviewPacket")
+            .and_then(|review_packet| review_packet.get("transcriptAvailable"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        Self {
+            agent_id,
+            result_sections: vec!["summary", "changedFiles"],
+            transcript_available,
+        }
     }
 }
 

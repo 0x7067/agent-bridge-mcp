@@ -4,7 +4,7 @@ use crate::domain::{
 };
 use crate::mcp::JsonRpcNotification;
 use crate::provider::{self, ProviderTask};
-use crate::router::{RoutedAttemptExecution, RoutedAttemptInput};
+use crate::router::{RoutedAttemptEvidenceRef, RoutedAttemptExecution, RoutedAttemptInput};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -215,8 +215,10 @@ impl TaskManagerHandle {
                 false,
             )
             .await?;
+        let evidence_ref = RoutedAttemptEvidenceRef::from_result(agent_id.clone(), &result);
         Ok(RoutedAttemptExecution {
             agent_id,
+            evidence_ref,
             wait_status,
             result,
         })
@@ -1315,6 +1317,7 @@ mod tests {
                         assert_eq!(agent_id, "agent_router");
                         let mut task = sample_task(TaskStatus::Succeeded);
                         task.agent_id = agent_id;
+                        task.transcript_available = true;
                         let _ = reply.send(Ok(task));
                     }
                     _ => panic!("unexpected task actor command"),
@@ -1342,8 +1345,17 @@ mod tests {
             .unwrap();
 
         assert_eq!(execution.agent_id, "agent_router");
+        assert_eq!(execution.evidence_ref.agent_id, "agent_router");
+        assert_eq!(
+            execution.evidence_ref.result_sections,
+            vec!["summary", "changedFiles"]
+        );
+        assert!(execution.evidence_ref.transcript_available);
         assert_eq!(execution.wait_status["status"], "succeeded");
         assert_eq!(execution.result["reviewPacket"]["status"], "succeeded");
+        for raw_key in ["stdout", "stderr", "transcript", "gitDiff"] {
+            assert!(execution.result.get(raw_key).is_none(), "{raw_key}");
+        }
         assert_eq!(
             *seen.lock().unwrap(),
             vec!["spawn", "subscribe", "get", "result"]
