@@ -29,6 +29,17 @@ fn final_text_is_trusted_finality() {
 }
 
 #[test]
+fn semantic_stop_reason_overrides_final_text() {
+    let evidence = AttemptEvidence {
+        final_text_present: true,
+        failure_category: Some(FailureCategory::ProviderOutputError),
+        stop_reason: Some(RouterStopReason::Refusal),
+    };
+
+    assert_eq!(classify_attempt(&evidence), AttemptDisposition::Blocker);
+}
+
+#[test]
 fn launch_failure_before_finality_can_fail_over() {
     let evidence = AttemptEvidence {
         final_text_present: false,

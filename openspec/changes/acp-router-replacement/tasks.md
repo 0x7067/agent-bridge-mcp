@@ -24,7 +24,7 @@
 - [x] 4.1 Add an explicit `agent-bridge-mcp acp-router` runtime path without changing default MCP behavior.
 - [x] 4.2 Handle ACP `initialize`, `session/new`, and `session/prompt` over newline-delimited JSON-RPC.
 - [x] 4.3 Emit bounded `session/update` evidence/debug events for provider internals.
-- [ ] 4.4 Return one final answer, blocker, or classified failure for each prompt turn.
+- [x] 4.4 Return one final answer, blocker, or classified failure for each prompt turn.
 - [ ] 4.5 Add stdio tests proving MCP default behavior is unchanged and ACP router stdout stays valid JSON-RPC.
 
 ## 5. Diagnostics, Docs, and Verification

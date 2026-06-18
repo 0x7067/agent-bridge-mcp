@@ -160,15 +160,15 @@ pub enum RoutedTerminalKind {
 }
 
 pub fn classify_attempt(evidence: &AttemptEvidence) -> AttemptDisposition {
-    if evidence.final_text_present {
-        return AttemptDisposition::TrustedFinal;
-    }
     if matches!(
         evidence.stop_reason,
         Some(RouterStopReason::Refusal | RouterStopReason::Cancelled)
     ) || evidence.failure_category.is_some_and(blocker_failure)
     {
         return AttemptDisposition::Blocker;
+    }
+    if evidence.final_text_present {
+        return AttemptDisposition::TrustedFinal;
     }
     if evidence
         .failure_category

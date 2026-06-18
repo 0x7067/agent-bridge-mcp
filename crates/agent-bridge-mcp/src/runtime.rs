@@ -1,6 +1,9 @@
-use crate::domain::{ProviderKind, TaskMode};
+use crate::domain::{FailureCategory, ProviderKind, TaskMode};
 use crate::mcp::{JsonRpcId, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
-use crate::router::{RoutedAttemptInput, RouterPolicy};
+use crate::router::{
+    AttemptDisposition, AttemptEvidence, RoutedAttemptInput, RouterPolicy, RouterStopReason,
+    classify_attempt,
+};
 use crate::server::handle_request;
 use crate::task::TaskManagerHandle;
 use clap::{Parser, Subcommand};
@@ -258,7 +261,7 @@ async fn run_acp_router_prompt(
         Ok(policy) => policy,
         Err(error) => return Ok(Some(JsonRpcResponse::error(id, -32602, error.to_string()))),
     };
-    // ponytail: one attempt for 4.2; 4.4/5.2 own failover and blocker coverage.
+    // ponytail: one attempt for now; 5.2 owns failover coverage.
     let Some(provider) = policy.candidates.first().copied() else {
         return Ok(Some(JsonRpcResponse::error(
             id,
@@ -300,7 +303,18 @@ async fn run_acp_router_prompt(
         write_router_evidence_updates(stdout, &params.session_id, provider, transcript).await?;
     }
     let final_text = transcript.as_ref().and_then(transcript_final_text);
-    if let Some(text) = final_text.as_deref() {
+    let failure_category = router_failure_category(&execution.result);
+    let stop_reason = router_stop_reason(&execution.result);
+    let evidence = AttemptEvidence {
+        final_text_present: final_text.is_some(),
+        failure_category,
+        stop_reason,
+    };
+    let disposition = classify_attempt(&evidence);
+    let routed_final_text = (disposition == AttemptDisposition::TrustedFinal)
+        .then(|| final_text.clone())
+        .flatten();
+    if let Some(text) = routed_final_text.as_deref() {
         let notification = JsonRpcNotification::new(
             "session/update",
             json!({
@@ -313,22 +327,24 @@ async fn run_acp_router_prompt(
         );
         write_json_message(stdout, &notification).await?;
     }
-    let terminal_kind = if final_text.is_some() {
-        "answer"
-    } else {
-        "failure"
-    };
+    let response_stop_reason =
+        router_stop_reason_text(stop_reason.unwrap_or(RouterStopReason::EndTurn));
     Ok(Some(JsonRpcResponse::result(
         id,
         json!({
-            "stopReason": "end_turn",
+            "stopReason": response_stop_reason,
             "routerResult": {
                 "provider": provider,
-                "terminalKind": terminal_kind,
-                "finalText": final_text,
+                "terminalKind": router_terminal_kind(disposition),
+                "finalText": routed_final_text,
+                "failureCategory": failure_category,
+                "blockerReason": router_blocker_reason(disposition, stop_reason, failure_category),
                 "attempts": [{
                     "provider": provider,
                     "agentId": execution.agent_id,
+                    "disposition": disposition,
+                    "stopReason": response_stop_reason,
+                    "failureCategory": failure_category,
                     "evidenceRef": {
                         "agentId": execution.evidence_ref.agent_id,
                         "resultSections": execution.evidence_ref.result_sections,
@@ -338,6 +354,61 @@ async fn run_acp_router_prompt(
             }
         }),
     )))
+}
+
+fn router_failure_category(result: &Value) -> Option<FailureCategory> {
+    router_diagnostic(result)
+        .and_then(|diagnostic| diagnostic.get("failureCategory"))
+        .and_then(Value::as_str)
+        .and_then(|category| category.parse().ok())
+}
+
+fn router_stop_reason(result: &Value) -> Option<RouterStopReason> {
+    let stop_reason = router_diagnostic(result)
+        .and_then(|diagnostic| diagnostic.get("acpStopReason"))
+        .and_then(Value::as_str)?;
+    match stop_reason {
+        "end_turn" => Some(RouterStopReason::EndTurn),
+        "refusal" => Some(RouterStopReason::Refusal),
+        "cancelled" => Some(RouterStopReason::Cancelled),
+        _ => None,
+    }
+}
+
+fn router_diagnostic(result: &Value) -> Option<&Value> {
+    result.get("reviewPacket")?.get("diagnostic")
+}
+
+fn router_terminal_kind(disposition: AttemptDisposition) -> &'static str {
+    match disposition {
+        AttemptDisposition::TrustedFinal => "answer",
+        AttemptDisposition::Blocker => "blocker",
+        AttemptDisposition::FailoverEligible | AttemptDisposition::TerminalFailure => "failure",
+    }
+}
+
+fn router_stop_reason_text(stop_reason: RouterStopReason) -> &'static str {
+    match stop_reason {
+        RouterStopReason::EndTurn => "end_turn",
+        RouterStopReason::Refusal => "refusal",
+        RouterStopReason::Cancelled => "cancelled",
+    }
+}
+
+fn router_blocker_reason(
+    disposition: AttemptDisposition,
+    stop_reason: Option<RouterStopReason>,
+    failure_category: Option<FailureCategory>,
+) -> Option<&'static str> {
+    if disposition != AttemptDisposition::Blocker {
+        return None;
+    }
+    match stop_reason {
+        Some(reason @ (RouterStopReason::Refusal | RouterStopReason::Cancelled)) => {
+            Some(router_stop_reason_text(reason))
+        }
+        _ => failure_category.map(FailureCategory::as_str),
+    }
 }
 
 async fn write_router_evidence_updates(
