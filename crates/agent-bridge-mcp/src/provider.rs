@@ -3,6 +3,7 @@ use crate::domain::{FailureCategory, LaunchProfile, ProviderKind, TaskMode};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::env;
+use std::os::unix::fs::PermissionsExt;
 
 const PROVIDER_SMOKE_PROMPT: &str = "Reply with exactly: AGENT_BRIDGE_PROVIDER_SMOKE_OK";
 const UNBLOCKED_SMOKE_MARKER: &str = ".agent-bridge-unblocked-smoke";
@@ -608,7 +609,12 @@ fn validate_explicit_acp_bin(bin_var: &str, command: String) -> Result<String, S
         return Ok(command);
     }
     match path.metadata() {
-        Ok(metadata) if metadata.is_file() => Ok(command),
+        Ok(metadata) if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 => {
+            Ok(command)
+        }
+        Ok(metadata) if metadata.is_file() => Err(format!(
+            "{bin_var} points to {command}, which is not executable"
+        )),
         Ok(_) => Err(format!(
             "{bin_var} points to {command}, which is not a file"
         )),

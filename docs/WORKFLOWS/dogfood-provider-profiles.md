@@ -80,7 +80,7 @@ cannot be previewed, the harness records that run as `status: "failed"` with
 but it still validates provider configuration such as required binary
 environment variables. In dry-run mode, `--require-success` requires every
 provider/profile summary to be `status: "preview"`. Explicit ACP binary env
-paths must exist.
+paths must exist and be executable.
 
 Bake in strict provider output validation before flipping the default:
 
