@@ -30,3 +30,5 @@
 - Run 12 keep: docs: shorten provider capabilities resource; Runtime providers_list carries detailed capabilities, so static guidance can point to it. Metric 48959 bytes.
 
 - Run 13 keep: docs: shorten claude host resource; Resource and prompt versions can share terse lifecycle language. Metric 48662 bytes.
+
+- Run 14 keep: docs: shorten dogfood workflows resource; Dogfood guidance can be concise without losing the four reproducible paths. Metric 48077 bytes.

@@ -369,24 +369,12 @@ Run equivalent read-only prompts against selected providers. For bridge behavior
 
 const CODE_EXECUTION_RESOURCE: &str = r#"# Agent Bridge Code-Execution-Friendly Delegation
 
-Agent Bridge exposes a small, composable eight-tool surface designed to keep token cost low,
-including for callers that drive it from a code-execution or Tool-Search harness.
+Agent Bridge keeps token cost low for code-execution or Tool-Search harness callers.
 
 Principles:
-- Poll compactly. `agent_observe` returns a lean envelope (each field once: `agentId`,
-  `status`, `isFinal`, `phase`, `progress`, `events`, `nextCursor`, `timedOut`, `next`).
-  Use `until: "final"` with `timeoutMs` to block until finality, `limit: 0` for a quick
-  state check, and advance `cursor` to read only new transcript events.
-- Fetch evidence on demand. `agent_result` returns the review packet and `changedFiles` by
-  default. Request `sections: ["stdout","stderr","diff","transcript"]` only when you need
-  raw evidence, and page it with `maxBytes`, `stdoutLine`, `stderrLine`, and the transcript
-  `cursor`/`limit`. Large logs and diffs stay out of context until you ask for them.
-- Keep tool responses lean by default; pass `verbosity: "detailed"` only when you need
-  debug metadata (timestamps, launch profile, prompt strategy, diagnostics). Provider
-  final output is lean-only; do not spend context on source echo, progress narration,
-  generic checklists, or polish.
-- Read tool annotations (`readOnlyHint`, `destructiveHint`) to tier and defer the
-  diagnostic and control tools when your client supports on-demand tool loading.
-- Provider output is evidence only. Run caller-owned verification before claiming the
-  original request is complete.
+- Poll compactly. `agent_observe` returns each field once; use `until: "final"` with `timeoutMs`, `limit: 0` for state, and `cursor` for new transcript events.
+- Fetch evidence on demand. `agent_result` defaults to review packet plus `changedFiles`; request `sections: ["stdout","stderr","diff","transcript"]` only for raw evidence and page with `maxBytes` or line/cursor limits. Large logs and diffs stay out of context until requested.
+- Keep tool responses lean by default; `verbosity: "detailed"` is only for debug metadata. Provider final output is lean-only; avoid source echo, progress narration, generic checklists, or polish.
+- Read tool annotations (`readOnlyHint`, `destructiveHint`) when your client supports on-demand tool loading.
+- Provider output is evidence only. Run caller-owned verification before claiming completion.
 "#;

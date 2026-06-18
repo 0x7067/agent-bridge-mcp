@@ -100,6 +100,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Resource and prompt versions can share terse lifecycle language.
 - Next: Shorten dogfood workflows resource next.
 
+### Run 14: docs: shorten dogfood workflows resource - total_bytes=48077 (KEEP)
+- Timestamp: 2026-06-18 01:05
+- What changed: Converted dogfood workflow prose into compact operator recipes while preserving required section names and lean contract marker.
+- Result: total=48077, delta=-585 vs previous best.
+- Insight: Dogfood guidance can be concise without losing the four reproducible paths.
+- Next: Shorten code-execution resource next.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.
