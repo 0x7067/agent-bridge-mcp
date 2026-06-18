@@ -79,7 +79,8 @@ cannot be previewed, the harness records that run as `status: "failed"` with
 `error.json` and continues the rest of the matrix. It does not launch providers,
 but it still validates provider configuration such as required binary
 environment variables. In dry-run mode, `--require-success` requires every
-provider/profile summary to be `status: "preview"`.
+provider/profile summary to be `status: "preview"`. Explicit ACP binary env
+paths must exist.
 
 Bake in strict provider output validation before flipping the default:
 

@@ -584,20 +584,41 @@ fn acp_command_config_with(
         ProviderKind::Forge => ("FORGE_ACP_BIN", "FORGE_ACP_ARGS", None, vec![]),
         ProviderKind::Antigravity => ("ANTIGRAVITY_ACP_BIN", "ANTIGRAVITY_ACP_ARGS", None, vec![]),
     };
-    let command = get_env(bin_var)
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| default_command.map(str::to_string))
-        .ok_or_else(|| {
+    let command = if let Some(command) = get_env(bin_var).filter(|value| !value.trim().is_empty()) {
+        validate_explicit_acp_bin(bin_var, command)?
+    } else {
+        default_command.map(str::to_string).ok_or_else(|| {
             format!(
                 "{bin_var} is required for {} ACP launches",
                 provider.as_str()
             )
-        })?;
+        })?
+    };
     let mut args = default_args;
     if let Some(extra_args) = get_env(args_var).filter(|value| !value.trim().is_empty()) {
         args.extend(split_env_args(&extra_args)?);
     }
     Ok((command, args))
+}
+
+fn validate_explicit_acp_bin(bin_var: &str, command: String) -> Result<String, String> {
+    let command = command.trim().to_string();
+    let path = std::path::Path::new(&command);
+    if path.components().count() <= 1 {
+        return Ok(command);
+    }
+    match path.metadata() {
+        Ok(metadata) if metadata.is_file() => Ok(command),
+        Ok(_) => Err(format!(
+            "{bin_var} points to {command}, which is not a file"
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(format!(
+            "{bin_var} points to {command}, which does not exist"
+        )),
+        Err(error) => Err(format!(
+            "{bin_var} points to {command}, which cannot be inspected: {error}"
+        )),
+    }
 }
 
 fn split_env_args(input: &str) -> Result<Vec<String>, String> {

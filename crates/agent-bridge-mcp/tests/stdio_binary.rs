@@ -2383,6 +2383,29 @@ fn stdio_providers_preview_and_safety_checks() {
 }
 
 #[test]
+fn stdio_dry_run_rejects_missing_acp_bin_path() {
+    let env = fixture_env();
+    let mut extra_env = BTreeMap::new();
+    let missing_bin = env.root.join("missing-codex-acp");
+    extra_env.insert("CODEX_ACP_BIN".to_string(), missing_bin.into_os_string());
+    let mut client = McpClient::start_with_extra_env(&env, extra_env);
+
+    let error = client.tool_error(
+        "agent_spawn",
+        json!({
+            "provider": "codex",
+            "mode": "review",
+            "prompt": "secret prompt",
+            "cwd": env.root,
+            "dryRun": true
+        }),
+    );
+
+    assert!(error.contains("CODEX_ACP_BIN"));
+    assert!(error.contains("does not exist"));
+}
+
+#[test]
 fn stdio_provider_discovery_is_non_blocking_until_explicit_check() {
     let env = fixture_env();
     write_fake_provider(
