@@ -597,7 +597,7 @@ fn acp_command_config_with(
     };
     let mut args = default_args;
     if let Some(extra_args) = get_env(args_var).filter(|value| !value.trim().is_empty()) {
-        args.extend(split_env_args(&extra_args)?);
+        args.extend(split_env_args(&extra_args).map_err(|error| format!("{args_var}: {error}"))?);
     }
     Ok((command, args))
 }
@@ -1164,6 +1164,20 @@ mod tests {
         let (command, args) = acp_command_config_with(ProviderKind::Codex, env).unwrap();
         assert_eq!(command, "codex-acp");
         assert_eq!(args, vec!["--model", "gpt 5", "--flag"]);
+    }
+
+    #[test]
+    fn acp_config_names_args_env_var_on_parse_error() {
+        let env = |name: &str| match name {
+            "CODEX_ACP_BIN" => Some("codex-acp".to_string()),
+            "CODEX_ACP_ARGS" => Some("--model \"gpt 5".to_string()),
+            _ => None,
+        };
+
+        let error = acp_command_config_with(ProviderKind::Codex, env).unwrap_err();
+
+        assert!(error.contains("CODEX_ACP_ARGS"));
+        assert!(error.contains("unterminated quote"));
     }
 
     #[test]
