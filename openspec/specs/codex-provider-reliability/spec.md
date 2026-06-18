@@ -20,7 +20,7 @@ The system SHALL finalize Codex tasks that emit unrecoverable sandbox or approva
 
 #### Scenario: Codex exits after sandbox denial
 - **WHEN** a Codex provider process exits after emitting sandbox or approval denial evidence
-- **THEN** `agent_wait`, `agent_status`, and `agent_result` report a final failed task without requiring `agent_stop`
+- **THEN** `agent_observe` and `agent_result` report a final failed task without requiring `agent_stop`
 
 #### Scenario: Codex hangs after sandbox denial
 - **WHEN** a Codex provider process emits sandbox or approval denial evidence and then remains alive
@@ -34,7 +34,7 @@ The system SHALL finalize Codex tasks that emit unrecoverable sandbox or approva
 The system SHALL verify whether Agent Bridge command construction or prompt rendering contributes to Codex out-of-project patch attempts before changing Codex sandbox mode.
 
 #### Scenario: Codex task preview remains inspectable
-- **WHEN** a caller invokes `agent_preview` for Codex implementation work
+- **WHEN** a caller invokes `agent_spawn` with `dryRun: true` for Codex implementation work
 - **THEN** the preview shows the Codex command, cwd, sandbox mode, redacted prompt transport, and environment keys needed to investigate workspace policy
 
 #### Scenario: Codex adapter changes are regression tested

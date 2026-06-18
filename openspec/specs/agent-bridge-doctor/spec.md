@@ -54,11 +54,11 @@ The system SHALL include provider availability checks in doctor output.
 
 #### Scenario: Optional smoke probes
 - **WHEN** a caller invokes `doctor` with `smoke: true`
-- **THEN** doctor runs the same bounded provider smoke readiness behavior as `providers_check`.
+- **THEN** doctor runs the bounded provider smoke readiness behavior.
 
 #### Scenario: Provider filtering
 - **WHEN** a caller passes a provider filter
-- **THEN** doctor checks only the selected providers using the same validation and deduplication semantics as `providers_check`.
+- **THEN** doctor checks only the selected providers using provider-readiness validation and deduplication semantics.
 
 #### Scenario: Duplicate provider filter entries
 - **WHEN** a caller passes duplicate provider names
@@ -126,7 +126,7 @@ The system SHALL report provider launch readiness separately from overall setup 
 
 #### Scenario: Smoke recommendation for selected stale providers
 - **WHEN** a caller selects providers and those providers are available but not startup-verified
-- **THEN** doctor recommends running `providers_check` or `doctor` with `smoke: true` before first launch when startup readiness matters.
+- **THEN** doctor recommends running `doctor` with `focus: "providers"` and `smoke: true` before first launch when startup readiness matters.
 
 ### Requirement: Doctor recommendations include actionable tool arguments
 The system SHALL include enough structured recommendation metadata for clients to offer follow-up actions without guessing.
@@ -180,4 +180,3 @@ The system SHALL expose a `--doctor-smoke` CLI flag that exercises the same prov
 #### Scenario: CLI smoke does not mutate state
 - **WHEN** `--doctor-smoke` executes
 - **THEN** no task records are created, no registry mutations occur, and no provider tasks are spawned.
-

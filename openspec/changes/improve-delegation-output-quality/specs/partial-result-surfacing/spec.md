@@ -1,4 +1,4 @@
-# partial-result-surfing Specification
+# partial-result-surfacing Specification
 
 ## Purpose
 Surface incomplete but meaningful provider output when a task crashes or times out, guiding the caller toward continuation or salvage.

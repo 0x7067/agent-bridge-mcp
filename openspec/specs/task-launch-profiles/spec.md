@@ -7,7 +7,7 @@ Define task launch profiles that let callers choose between the normal Agent Bri
 The system SHALL allow callers to select a task launch profile that controls prompt wrapping and provider configuration strategy.
 
 #### Scenario: Previewing a launch profile
-- **WHEN** a caller invokes `agent_preview` with a supported launch profile
+- **WHEN** a caller invokes `agent_spawn` with `dryRun: true` and a supported launch profile
 - **THEN** the response includes the selected profile, profile-specific command metadata, prompt strategy metadata, and any provider-specific reduction diagnostics.
 
 #### Scenario: Spawning with a launch profile

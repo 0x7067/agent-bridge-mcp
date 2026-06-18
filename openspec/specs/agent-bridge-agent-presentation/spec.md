@@ -91,7 +91,7 @@ The system SHALL include progress-aware metadata and next actions in agent prese
 
 #### Scenario: Running task recommends observe
 - **WHEN** a client reads presentation metadata for a running task
-- **THEN** the presentation or top-level `nextActions` includes a primary bounded `agent_observe` or `agent_wait` action with ready-to-call arguments.
+- **THEN** the presentation or top-level `nextActions` includes a primary bounded `agent_observe` action with ready-to-call arguments.
 
 #### Scenario: Presentation actions include observe
 - **WHEN** a client reads action availability for a running task
@@ -104,4 +104,3 @@ The system SHALL include progress-aware metadata and next actions in agent prese
 #### Scenario: Stop remains explicit
 - **WHEN** a task is running but still within the recommended observation budget
 - **THEN** `agent_stop` remains available as an explicit lifecycle action but is not ranked ahead of observe, wait, or inspect actions.
-

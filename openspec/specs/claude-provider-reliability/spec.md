@@ -7,12 +7,12 @@ Define Claude provider readiness, command selection, prompt transport, bounded d
 The system SHALL distinguish official interactive Claude binary availability from owned-runner startup readiness and task execution readiness, including whether the selected Claude task path runs through the configured owned host runner.
 
 #### Scenario: Version check reports binary presence only
-- **WHEN** a caller invokes `providers_check` without smoke probes for the Claude provider
+- **WHEN** a caller invokes `doctor` with `focus: "providers"` and without smoke probes for the Claude provider
 - **THEN** the response reports whether the official interactive `claude` binary can answer its version command.
 - **AND** it sets `startupVerified` to `false` and does not mark Claude launchable.
 
 #### Scenario: Smoke check exercises the owned Claude task path
-- **WHEN** a caller invokes `providers_check` with `smoke: true` for the Claude provider
+- **WHEN** a caller invokes `doctor` with `focus: "providers"` and `smoke: true` for the Claude provider
 - **THEN** the smoke probe uses the same owned interactive runner, host-runner strategy, environment policy, PTY prompt transport, hook handling, transcript parsing, and output expectations used for a real smoke task.
 
 #### Scenario: Version success with owned-runner smoke failure is not reported as healthy
@@ -20,7 +20,7 @@ The system SHALL distinguish official interactive Claude binary availability fro
 - **THEN** the response reports the provider as unavailable or degraded for task execution and includes an actionable failure category.
 
 #### Scenario: Host-runner smoke reports launch strategy
-- **WHEN** the Claude provider is configured to use the owned host runner and a caller invokes `providers_check` with `smoke: true`
+- **WHEN** the Claude provider is configured to use the owned host runner and a caller invokes `doctor` with `focus: "providers"` and `smoke: true`
 - **THEN** the response reports that the Claude smoke path used owned host-runner execution.
 
 ### Requirement: Claude provider diagnostics are bounded and actionable
@@ -35,7 +35,7 @@ The system SHALL surface bounded Claude provider diagnostics that identify likel
 - **THEN** the task or smoke result reports a provider output failure category and includes capped excerpts sufficient for troubleshooting.
 
 #### Scenario: Claude diagnostics redact sensitive data
-- **WHEN** Claude provider diagnostics are returned through `providers_check`, `agent_result`, task logs, or doctor output
+- **WHEN** Claude provider diagnostics are returned through `doctor`, `agent_result`, or task evidence
 - **THEN** prompts, API tokens, OAuth tokens, hook payload secrets, and non-allowlisted environment values are absent from diagnostic fields.
 
 #### Scenario: Claude host runner is unavailable

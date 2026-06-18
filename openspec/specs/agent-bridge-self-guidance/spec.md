@@ -42,7 +42,7 @@ The system SHALL derive ranked next actions from each inspectable task record.
 
 #### Scenario: Running task next action
 - **WHEN** a task is queued or running
-- **THEN** its presentation metadata includes a primary `nextActions` item recommending a bounded `agent_wait` or incremental inspection action with ready-to-call arguments.
+- **THEN** its presentation metadata includes a primary `nextActions` item recommending bounded `agent_observe` or incremental inspection action with ready-to-call arguments.
 
 #### Scenario: Final uninspected task next action
 - **WHEN** a task is final and its result has not been inspected

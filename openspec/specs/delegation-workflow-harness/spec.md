@@ -34,7 +34,7 @@ The system SHALL define an intentional live-smoke workflow for installed provide
 
 #### Scenario: Operator runs live provider readiness smoke
 - **WHEN** an operator chooses to run live smoke checks
-- **THEN** the workflow runs `providers_check` with `smoke: true` using bounded timeouts and reports provider diagnostics
+- **THEN** the workflow runs `doctor` with `focus: "providers"` and `smoke: true` using bounded timeouts and reports provider diagnostics
 
 #### Scenario: Default verification remains deterministic
 - **WHEN** the default automated test suite runs
@@ -109,4 +109,3 @@ The system SHALL document when callers should use Agent Bridge lifecycle tools v
 #### Scenario: Verification boundary remains unchanged
 - **WHEN** guidance describes either task workflow
 - **THEN** it states that provider output remains evidence and project verification remains caller-owned.
-

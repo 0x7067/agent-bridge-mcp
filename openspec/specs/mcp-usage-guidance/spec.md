@@ -101,7 +101,7 @@ The system SHALL document how callers should investigate and recover from Codex 
 
 #### Scenario: Guidance recommends bounded lifecycle inspection
 - **WHEN** guidance describes recovering from Codex denial failures
-- **THEN** it tells callers to use bounded `agent_wait`, `agent_logs`, `agent_status`, and final `agent_result` inspection instead of waiting indefinitely
+- **THEN** it tells callers to use bounded `agent_observe` and final `agent_result` inspection instead of waiting indefinitely
 
 #### Scenario: Guidance preserves safety boundary
 - **WHEN** guidance describes follow-up actions for Codex denial failures
@@ -117,7 +117,7 @@ The system SHALL keep MCP prompts and resources aligned with the initialization 
 
 #### Scenario: Guidance preserves fallback path
 - **WHEN** a client does not use initialization instructions or structured content
-- **THEN** prompts and resources still describe the manual lifecycle using `doctor`, `providers_check`, `agent_spawn`, `agent_wait`, `agent_logs`, `agent_transcript`, `agent_result`, and `agent_remove`.
+- **THEN** prompts and resources still describe the manual lifecycle using `doctor`, `agent_spawn`, `agent_observe`, `agent_result`, and `agent_remove`.
 
 ### Requirement: Guidance explains doctor launch readiness
 The system SHALL explain that setup health and provider launch readiness are separate concerns.
@@ -135,7 +135,7 @@ The system SHALL teach callers how to observe long-running and silent provider t
 
 #### Scenario: Caller workflow mentions observation
 - **WHEN** a client reads caller workflow guidance
-- **THEN** the guidance tells callers to use `agent_observe`, `agent_status`, `agent_logs`, and `agent_transcript` to distinguish silence from failure.
+- **THEN** the guidance tells callers to use `agent_observe` and `agent_result` to distinguish silence from failure.
 
 #### Scenario: Cursor silence guidance
 - **WHEN** a client reads stalled-task or provider guidance
