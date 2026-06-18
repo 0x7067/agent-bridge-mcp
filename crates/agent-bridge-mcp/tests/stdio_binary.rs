@@ -391,6 +391,35 @@ fn sorted_provider_keys(value: &Value) -> Vec<String> {
     keys
 }
 
+fn acp_router_command(env: &FixtureEnv) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"));
+    command
+        .arg("acp-router")
+        .env_remove("AGENT_BRIDGE_ALLOWED_ROOT")
+        .env("HOME", &env.root)
+        .env("AGENT_BRIDGE_WORKSPACES", &env.root)
+        .env("AGENT_BRIDGE_STATE_DIR", &env.state_dir)
+        .env("CLAUDE_BIN", &env.fake_provider)
+        .env("CLAUDE_ACP_BIN", &env.fake_provider)
+        .env("CODEX_BIN", &env.fake_provider)
+        .env("CODEX_ACP_BIN", &env.fake_provider);
+    command
+}
+
+fn json_lines(bytes: &[u8]) -> Vec<Value> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+fn read_json_line(stdout: &mut BufReader<ChildStdout>) -> Value {
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    assert!(!line.is_empty(), "expected JSON-RPC line");
+    serde_json::from_str(&line).unwrap()
+}
+
 fn review_actions_text(result: &Value) -> String {
     serde_json::to_string(&result["reviewPacket"]["recommendedActions"]).unwrap()
 }
@@ -773,6 +802,128 @@ fn stdio_binary_exposes_acp_router_runtime_without_starting_mcp_loop() {
     );
     assert!(output.stdout.is_empty());
     assert!(!env.state_dir.join("server.pid").exists());
+}
+
+#[test]
+fn stdio_acp_router_initializes_and_creates_session_without_provider_launch() {
+    let env = fixture_env();
+    let mut child = acp_router_command(&env)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}})
+    )
+    .unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd": env.root}})
+    )
+    .unwrap();
+    drop(stdin);
+
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let messages = json_lines(&output.stdout);
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    assert_eq!(messages[0]["id"], 1);
+    assert_eq!(messages[0]["result"]["protocolVersion"], 1);
+    assert!(messages[0]["result"]["agentCapabilities"].is_object());
+    assert!(messages[0]["result"].get("tools").is_none());
+    assert_eq!(messages[1]["id"], 2);
+    assert!(messages[1]["result"]["sessionId"].as_str().is_some());
+    assert!(!env.log_dir.join("argv.txt").exists());
+}
+
+#[test]
+fn stdio_acp_router_prompt_runs_one_provider_turn() {
+    let env = fixture_env();
+    let mut child = acp_router_command(&env)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(
+        stdin,
+        "{}",
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}})
+    )
+    .unwrap();
+    assert_eq!(read_json_line(&mut stdout)["result"]["protocolVersion"], 1);
+    writeln!(
+        stdin,
+        "{}",
+        json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd": env.root}})
+    )
+    .unwrap();
+    let session = read_json_line(&mut stdout);
+    let session_id = session["result"]["sessionId"].as_str().unwrap().to_string();
+    assert!(!env.log_dir.join("argv.txt").exists());
+
+    writeln!(
+        stdin,
+        "{}",
+        json!({
+            "jsonrpc":"2.0",
+            "id":3,
+            "method":"session/prompt",
+            "params":{
+                "sessionId": session_id,
+                "prompt":[{"type":"text","text":"router-turn"}],
+                "policy":{"candidates":["claude"]},
+                "mode":"review",
+                "timeoutSeconds":5
+            }
+        })
+    )
+    .unwrap();
+
+    let update = read_json_line(&mut stdout);
+    assert_eq!(update["method"], "session/update");
+    assert_eq!(update["params"]["sessionId"], session_id);
+    assert_eq!(
+        update["params"]["update"]["sessionUpdate"],
+        "agent_message_chunk"
+    );
+    assert_eq!(update["params"]["update"]["content"]["text"], "fixture ok");
+
+    let response = read_json_line(&mut stdout);
+    assert_eq!(response["id"], 3);
+    assert_eq!(response["result"]["stopReason"], "end_turn");
+    assert_eq!(response["result"]["routerResult"]["provider"], "claude");
+    assert_eq!(response["result"]["routerResult"]["terminalKind"], "answer");
+    assert_eq!(
+        response["result"]["routerResult"]["finalText"],
+        "fixture ok"
+    );
+    assert!(
+        response["result"]["routerResult"]["attempts"][0]["evidenceRef"]["agentId"]
+            .as_str()
+            .is_some()
+    );
+    let router_result = &response["result"]["routerResult"];
+    for raw_key in ["stdout", "stderr", "transcript", "gitDiff"] {
+        assert!(router_result.get(raw_key).is_none(), "{raw_key}");
+    }
+    assert!(env.log_dir.join("argv.txt").exists());
+
+    drop(stdin);
+    let status = child.wait().unwrap();
+    assert!(status.success());
 }
 
 #[test]

@@ -1,12 +1,16 @@
-use crate::mcp::{JsonRpcId, JsonRpcRequest, JsonRpcResponse};
+use crate::domain::{ProviderKind, TaskMode};
+use crate::mcp::{JsonRpcId, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+use crate::router::{RoutedAttemptInput, RouterPolicy};
 use crate::server::handle_request;
 use crate::task::TaskManagerHandle;
 use clap::{Parser, Subcommand};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use uuid::Uuid;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -117,12 +121,247 @@ pub async fn main_entry() {
 async fn run_acp_router() -> io::Result<()> {
     let stdin = io::stdin();
     let mut lines = BufReader::new(stdin).lines();
+    let mut stdout = io::stdout();
+    let mut sessions = HashMap::new();
     while let Some(line) = lines.next_line().await? {
         if line.trim().is_empty() {
             continue;
         }
+        let request: Result<JsonRpcRequest, _> = serde_json::from_str(&line);
+        match request {
+            Ok(request) => {
+                if let Some(response) =
+                    handle_acp_router_request(request, &mut sessions, &mut stdout).await?
+                {
+                    write_response(&mut stdout, &response).await?;
+                }
+            }
+            Err(_) => {
+                let response = JsonRpcResponse::error(JsonRpcId::Null, -32700, "Parse error");
+                write_response(&mut stdout, &response).await?;
+            }
+        }
     }
     Ok(())
+}
+
+struct RouterSession {
+    cwd: Option<String>,
+}
+
+async fn handle_acp_router_request(
+    request: JsonRpcRequest,
+    sessions: &mut HashMap<String, RouterSession>,
+    stdout: &mut io::Stdout,
+) -> io::Result<Option<JsonRpcResponse>> {
+    let Some(id) = request.id else {
+        return Ok(None);
+    };
+    let response = match request.method.as_str() {
+        "initialize" => JsonRpcResponse::result(
+            id,
+            json!({
+                "protocolVersion": 1,
+                "agentCapabilities": {},
+                "sessionCapabilities": {}
+            }),
+        ),
+        "session/new" => {
+            let params = parse_acp_params::<AcpNewSessionParams>(request.params);
+            let session_id = format!("router-{}", Uuid::new_v4().simple());
+            sessions.insert(session_id.clone(), RouterSession { cwd: params.cwd });
+            JsonRpcResponse::result(id, json!({"sessionId": session_id}))
+        }
+        "session/prompt" => {
+            return run_acp_router_prompt(id, request.params, sessions, stdout).await;
+        }
+        _ => JsonRpcResponse::error(
+            id,
+            -32601,
+            "method not supported by Agent Bridge ACP router",
+        ),
+    };
+    Ok(Some(response))
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AcpNewSessionParams {
+    cwd: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AcpPromptParams {
+    session_id: String,
+    prompt: Value,
+    policy: Option<AcpPromptPolicy>,
+    mode: Option<TaskMode>,
+    timeout_seconds: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AcpPromptPolicy {
+    candidates: Vec<ProviderKind>,
+}
+
+fn parse_acp_params<T>(params: Option<Value>) -> T
+where
+    T: Default + for<'de> Deserialize<'de>,
+{
+    params
+        .map(serde_json::from_value)
+        .transpose()
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+async fn run_acp_router_prompt(
+    id: JsonRpcId,
+    params: Option<Value>,
+    sessions: &HashMap<String, RouterSession>,
+    stdout: &mut io::Stdout,
+) -> io::Result<Option<JsonRpcResponse>> {
+    let params = match params.map(serde_json::from_value::<AcpPromptParams>) {
+        Some(Ok(params)) => params,
+        _ => {
+            return Ok(Some(JsonRpcResponse::error(
+                id,
+                -32602,
+                "invalid session/prompt params",
+            )));
+        }
+    };
+    let Some(session) = sessions.get(&params.session_id) else {
+        return Ok(Some(JsonRpcResponse::error(
+            id,
+            -32602,
+            "unknown router sessionId",
+        )));
+    };
+    let Some(prompt) = acp_prompt_text(&params.prompt) else {
+        return Ok(Some(JsonRpcResponse::error(
+            id,
+            -32602,
+            "session/prompt requires text prompt content",
+        )));
+    };
+    let candidates = params
+        .policy
+        .map(|policy| policy.candidates)
+        .unwrap_or_else(|| vec![ProviderKind::Codex, ProviderKind::Claude]);
+    let policy = match RouterPolicy::new(candidates) {
+        Ok(policy) => policy,
+        Err(error) => return Ok(Some(JsonRpcResponse::error(id, -32602, error.to_string()))),
+    };
+    // ponytail: one attempt for 4.2; 4.4/5.2 own failover and blocker coverage.
+    let Some(provider) = policy.candidates.first().copied() else {
+        return Ok(Some(JsonRpcResponse::error(
+            id,
+            -32602,
+            "router policy requires at least one candidate",
+        )));
+    };
+    let manager = match TaskManagerHandle::from_env().await {
+        Ok(manager) => manager,
+        Err(error) => return Ok(Some(JsonRpcResponse::error(id, -32000, error))),
+    };
+    let execution = match manager
+        .run_router_attempt(
+            RoutedAttemptInput {
+                provider,
+                mode: params.mode.unwrap_or(TaskMode::Implement),
+                prompt,
+                title: Some("ACP router turn".to_string()),
+                cwd: session.cwd.clone(),
+                timeout_seconds: params.timeout_seconds,
+                isolation: None,
+                worktree_name: None,
+                profile: None,
+            },
+            params
+                .timeout_seconds
+                .map(|seconds| seconds.saturating_mul(1_000)),
+        )
+        .await
+    {
+        Ok(execution) => execution,
+        Err(error) => return Ok(Some(JsonRpcResponse::error(id, -32000, error))),
+    };
+    let final_text = manager
+        .transcript(execution.agent_id.clone(), None, Some(500))
+        .await
+        .ok()
+        .and_then(|transcript| transcript_final_text(&transcript));
+    if let Some(text) = final_text.as_deref() {
+        let notification = JsonRpcNotification::new(
+            "session/update",
+            json!({
+                "sessionId": params.session_id,
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": text}
+                }
+            }),
+        );
+        write_json_message(stdout, &notification).await?;
+    }
+    let terminal_kind = if final_text.is_some() {
+        "answer"
+    } else {
+        "failure"
+    };
+    Ok(Some(JsonRpcResponse::result(
+        id,
+        json!({
+            "stopReason": "end_turn",
+            "routerResult": {
+                "provider": provider,
+                "terminalKind": terminal_kind,
+                "finalText": final_text,
+                "attempts": [{
+                    "provider": provider,
+                    "agentId": execution.agent_id,
+                    "evidenceRef": {
+                        "agentId": execution.evidence_ref.agent_id,
+                        "resultSections": execution.evidence_ref.result_sections,
+                        "transcriptAvailable": execution.evidence_ref.transcript_available
+                    }
+                }]
+            }
+        }),
+    )))
+}
+
+fn acp_prompt_text(prompt: &Value) -> Option<String> {
+    if let Some(text) = prompt.as_str() {
+        return Some(text.to_string());
+    }
+    let parts = prompt.as_array()?.iter().filter_map(|part| {
+        if part.get("type").and_then(Value::as_str) == Some("text") {
+            part.get("text").and_then(Value::as_str)
+        } else {
+            None
+        }
+    });
+    let text = parts.collect::<Vec<_>>().join("\n");
+    (!text.trim().is_empty()).then_some(text)
+}
+
+fn transcript_final_text(transcript: &Value) -> Option<String> {
+    transcript["events"]
+        .as_array()?
+        .iter()
+        .rev()
+        .find_map(|event| {
+            if event.get("kind").and_then(Value::as_str) == Some("provider_result") {
+                event["parsed"]["result"].as_str().map(str::to_string)
+            } else {
+                None
+            }
+        })
 }
 
 fn exit_with_reload(cli_config: crate::config::ConfigCliOverrides) -> ! {
