@@ -88,6 +88,10 @@ paths must exist and be executable. ACP arg env values must parse cleanly.
 Bake in strict provider output validation before flipping the default:
 
 ```bash
+AGENT_BRIDGE_MCP_BIN="$(command -v agent-bridge-mcp)" \
+CODEX_ACP_BIN="$(command -v codex)" \
+CURSOR_ACP_BIN="$(command -v cursor-agent)" \
+KIMI_ACP_BIN="$(command -v pi)" \
 rtk python3 scripts/dogfood_compare.py --providers codex,cursor,kimi --strict-validation --require-success
 ```
 
