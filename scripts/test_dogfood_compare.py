@@ -196,6 +196,18 @@ class DogfoodCompareTests(unittest.TestCase):
             ],
         )
 
+    def test_failed_runs_can_require_preview_status(self):
+        runs = [
+            {"provider": "codex", "profile": "bridge", "status": "preview"},
+            {"provider": "codex", "profile": "bare", "status": "failed"},
+            {"provider": "kimi", "profile": "bridge", "status": "preview"},
+        ]
+
+        self.assertEqual(
+            dogfood_compare.failed_runs(runs, expected_status="preview"),
+            [{"provider": "codex", "profile": "bare", "status": "failed"}],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

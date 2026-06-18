@@ -137,8 +137,8 @@ def build_run_matrix(providers: list[str]) -> list[RunSpec]:
     return [RunSpec(provider=provider, profile=profile) for provider in providers for profile in PROFILES]
 
 
-def failed_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [run for run in runs if run.get("status") != "succeeded"]
+def failed_runs(runs: list[dict[str, Any]], expected_status: str = "succeeded") -> list[dict[str, Any]]:
+    return [run for run in runs if run.get("status") != expected_status]
 
 
 def run_one(client: Any, run: RunSpec, config: RunConfig, output_dir: Path) -> dict[str, Any]:
@@ -285,7 +285,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--require-success",
         action="store_true",
-        help="Exit 1 if any provider/profile run does not finish with status=succeeded.",
+        help="Exit 1 if any live run is not status=succeeded, or any dry-run preview is not status=preview.",
     )
     parser.add_argument(
         "--dry-run",
@@ -344,7 +344,8 @@ def main(argv: list[str]) -> int:
 
     write_json(output_dir / "manifest.json", manifest)
     print(f"manifest: {output_dir / 'manifest.json'}")
-    failures = failed_runs(manifest["runs"])
+    expected_status = "preview" if args.dry_run else "succeeded"
+    failures = failed_runs(manifest["runs"], expected_status=expected_status)
     if args.require_success and failures:
         for failure in failures:
             evidence_path = failure.get("resultPath", failure.get("spawnPath", failure.get("errorPath")))
