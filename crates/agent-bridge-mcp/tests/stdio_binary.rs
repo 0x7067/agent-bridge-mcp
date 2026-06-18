@@ -431,6 +431,14 @@ fn read_json_response(stdout: &mut BufReader<ChildStdout>, id: i64) -> (Vec<Valu
     }
 }
 
+fn assert_json_rpc_message(message: &Value) {
+    assert_eq!(message["jsonrpc"], "2.0", "{message}");
+    assert!(
+        message.get("id").is_some() || message.get("method").is_some(),
+        "{message}"
+    );
+}
+
 fn start_acp_router_session(
     env: &FixtureEnv,
 ) -> (Child, ChildStdin, BufReader<ChildStdout>, String) {
@@ -449,7 +457,9 @@ fn start_acp_router_session(
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}})
     )
     .unwrap();
-    assert_eq!(read_json_line(&mut stdout)["result"]["protocolVersion"], 1);
+    let initialize = read_json_line(&mut stdout);
+    assert_json_rpc_message(&initialize);
+    assert_eq!(initialize["result"]["protocolVersion"], 1);
     writeln!(
         stdin,
         "{}",
@@ -457,6 +467,7 @@ fn start_acp_router_session(
     )
     .unwrap();
     let session = read_json_line(&mut stdout);
+    assert_json_rpc_message(&session);
     let session_id = session["result"]["sessionId"].as_str().unwrap().to_string();
     (child, stdin, stdout, session_id)
 }
@@ -908,6 +919,44 @@ fn stdio_acp_router_initializes_and_creates_session_without_provider_launch() {
     assert_eq!(messages[1]["id"], 2);
     assert!(messages[1]["result"]["sessionId"].as_str().is_some());
     assert!(!env.log_dir.join("argv.txt").exists());
+}
+
+#[test]
+fn stdio_mcp_default_and_acp_router_stdout_are_json_rpc_framed() {
+    let env = fixture_env();
+    let mut client = McpClient::start(&env);
+
+    let mcp_initialize = client.initialize(json!({}));
+    assert_json_rpc_message(&mcp_initialize);
+    assert_eq!(mcp_initialize["result"]["protocolVersion"], "2024-11-05");
+    assert!(mcp_initialize["result"]["capabilities"]["tools"].is_object());
+    assert!(mcp_initialize["result"]["agentCapabilities"].is_null());
+    let tools = client.request("tools/list", json!({}));
+    assert_json_rpc_message(&tools);
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 8);
+    drop(client);
+
+    let (mut child, mut stdin, mut stdout, session_id) = start_acp_router_session(&env);
+    write_acp_router_claude_review_prompt(&mut stdin, &session_id, "malformed-output");
+    let (updates, response) = read_json_response(&mut stdout, 3);
+
+    for update in updates {
+        assert_json_rpc_message(&update);
+        assert_eq!(update["method"], "session/update");
+    }
+    assert_json_rpc_message(&response);
+    assert_eq!(
+        response["result"]["routerResult"]["terminalKind"],
+        "failure"
+    );
+    assert_eq!(
+        response["result"]["routerResult"]["failureCategory"],
+        "provider_output_error"
+    );
+
+    drop(stdin);
+    let status = child.wait().unwrap();
+    assert!(status.success());
 }
 
 #[test]
