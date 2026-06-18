@@ -44,6 +44,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: The explicit section names are enough; the old bullet list duplicated result schema detail.
 - Next: Shorten stalled-task recovery guidance next.
 
+### Run 6: docs: shorten stalled recovery prompt - total_bytes=53077 (KEEP)
+- Timestamp: 2026-06-18 01:01
+- What changed: Compacted stalled-task recovery while preserving the Codex denial diagnostic terms.
+- Result: total=53077, delta=-368 vs previous best.
+- Insight: Safety tests allow concise text as long as the required inspection terms remain.
+- Next: Shorten Claude host lifecycle prompt next.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.

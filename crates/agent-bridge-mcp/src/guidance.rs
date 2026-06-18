@@ -228,16 +228,15 @@ Codex "patch rejected", sandbox denial, approval denial, outside of the project,
 
 const CLAUDE_HOST_LIFECYCLE_PROMPT: &str = r#"Operate the Claude host runner lifecycle.
 
-Use this when Claude Code auth depends on macOS Keychain or another host resource unavailable to the sandboxed MCP process.
+Use this when Claude Code auth needs host resources unavailable to the sandboxed MCP process.
 
 Suggested flow:
-1. Start `agent-bridge-mcp claude-host-runner <socket>` outside the Codex sandbox with the same AGENT_BRIDGE_WORKSPACES value used by the MCP server.
-2. Call doctor from the MCP client to confirm the server sees the socket, workspace policy, and host-runner status.
-3. Use the host-runner `ping` request or a Claude-only doctor focus:"providers" smoke for focused follow-up when doctor reports a host-runner problem.
-4. If diagnostics report workspace_policy_mismatch, restart the host runner after updating AGENT_BRIDGE_WORKSPACES.
-5. Stop the runner with SIGTERM or SIGINT so active Claude child processes are terminated and reaped.
-6. If startup finds a stale socket, let the runner remove it only when the connection probe confirms no live runner is listening.
-7. If AGENT_BRIDGE_CLAUDE_HOST_SOCKET is configured but unavailable, do not silently fall back; inspect diagnostics and restart the runner."#;
+1. Start `agent-bridge-mcp claude-host-runner <socket>` outside the sandbox with the MCP server's AGENT_BRIDGE_WORKSPACES.
+2. Call doctor to confirm socket, workspace policy, and host-runner status.
+3. Use host-runner `ping` or Claude-only doctor focus:"providers" smoke when doctor reports a host-runner problem.
+4. On workspace_policy_mismatch, restart the runner after updating AGENT_BRIDGE_WORKSPACES.
+5. Stop with SIGTERM or SIGINT so active Claude children are reaped.
+6. For stale sockets or AGENT_BRIDGE_CLAUDE_HOST_SOCKET failures, inspect diagnostics and restart; do not silently fall back."#;
 
 const DOGFOOD_WORKFLOWS_PROMPT: &str = r#"Run Agent Bridge dogfood workflows.
 

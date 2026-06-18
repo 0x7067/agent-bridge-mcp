@@ -14,3 +14,5 @@
 - Baseline: total footprint is 54498 bytes; biggest buckets are `providers_list_bytes` 17252 and `resources_bytes` 15126.
 
 - Run 5 keep: docs: shorten result inspection prompt; The explicit section names are enough; the old bullet list duplicated result schema detail. Metric 53445 bytes.
+
+- Run 6 keep: docs: shorten stalled recovery prompt; Safety tests allow concise text as long as the required inspection terms remain. Metric 53077 bytes.
