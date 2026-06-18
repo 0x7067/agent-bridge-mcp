@@ -1720,6 +1720,27 @@ mod tests {
     }
 
     #[test]
+    fn agent_timeline_prefers_high_stall_risk_over_events() {
+        let task = sample_task(TaskStatus::Running);
+        let progress = json!({
+            "stallRisk": "high",
+            "recommendedPollMs": 30000
+        });
+        let events = vec![json!({"kind": "provider_event", "raw": "provider is reviewing files"})];
+
+        let timeline = agent_timeline(&task, &events, &progress);
+
+        assert_eq!(timeline["state"], "stalled");
+        assert_eq!(timeline["attention"], "inspect");
+        assert!(
+            timeline["headline"]
+                .as_str()
+                .unwrap()
+                .contains("needs attention")
+        );
+    }
+
+    #[test]
     fn list_tasks_defaults_to_bounded_active_recent_presentation() {
         let mut registry = Registry {
             tasks: BTreeMap::new(),

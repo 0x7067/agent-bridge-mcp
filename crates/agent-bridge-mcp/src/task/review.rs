@@ -522,11 +522,11 @@ fn timeline_state(task: &TaskRecord, events: &[Value], progress: &Value) -> &'st
     if task.status == TaskStatus::Queued {
         return "queued";
     }
-    if !events.is_empty() {
-        return "working";
-    }
     if progress.get("stallRisk").and_then(Value::as_str) == Some("high") {
         return "stalled";
+    }
+    if !events.is_empty() {
+        return "working";
     }
     "quiet"
 }
