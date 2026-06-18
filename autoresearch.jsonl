@@ -1,0 +1,2 @@
+{"type":"config","name":"agent-bridge-cost-efficiency","metricName":"total_bytes","metricUnit":"bytes","bestDirection":"lower"}
+{"run":1,"commit":"0bc8633","metric":54498,"metrics":{"dryrun_bytes":1708,"initialize_bytes":1576,"prompts_bytes":9982,"providers_list_bytes":17252,"resources_bytes":15126,"tools_list_bytes":8854},"status":"keep","description":"baseline","timestamp":1781754986,"segment":0}

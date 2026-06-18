@@ -8,4 +8,4 @@
 - H05: Dry-run payload text may include verbose diagnostics that can be shortened without reducing launch safety.
 
 ## Closed Hypotheses
-- None yet.
+- Baseline: total footprint is 54498 bytes; biggest buckets are `providers_list_bytes` 17252 and `resources_bytes` 15126.

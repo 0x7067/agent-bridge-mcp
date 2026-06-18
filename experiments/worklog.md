@@ -9,10 +9,15 @@ The primary metric is `total_bytes` lower-is-better.
 
 ## Runs
 
-Baseline pending.
+### Run 1: baseline - total_bytes=54498 (KEEP)
+- Timestamp: 2026-06-18 00:56
+- What changed: No product change; measured the setup commit.
+- Result: total=54498, initialize=1576, tools=8854, prompts=9982, resources=15126, providers=17252, dryrun=1708.
+- Insight: Provider capability JSON dominates the static footprint, then guidance resources and prompts.
+- Next: Shorten caller-facing guidance first because it is high volume and low-risk.
 
 ## Key Insights
-- Pending baseline.
+- Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 
 ## Next Ideas
 - Shorten repeated tool descriptions while preserving the eight-tool mapping.

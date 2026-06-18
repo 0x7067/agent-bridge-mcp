@@ -37,4 +37,4 @@ every guidance resource, `providers_list`, and one `agent_spawn` dry run.
 - Discard any reduction that makes guidance ambiguous about verification, raw evidence access, or cleanup safety.
 
 ## What's Been Tried
-- Setup only. Baseline pending.
+- Run 1 baseline: 54498 bytes. Largest measured buckets are provider capability JSON (17252), resources (15126), prompts (9982), and tools/list (8854).
