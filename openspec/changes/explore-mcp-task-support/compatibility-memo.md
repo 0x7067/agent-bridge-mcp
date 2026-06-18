@@ -41,6 +41,31 @@ Implementation remains blocked because:
   extension-capable, legacy-only, unknown, and unsupported metadata passively
   while keeping protocol task methods unavailable.
 
+## Research Refresh - 2026-06-18
+
+The implementation decision remains blocked. Current primary docs still show two
+different task surfaces:
+
+- The 2025-11-25 `basic/utilities/tasks` page still labels tasks experimental.
+  It advertises a legacy `tasks` capability with `tasks/list`, `tasks/cancel`,
+  and task-augmented request categories.
+- The current Tasks extension overview instead uses
+  `io.modelcontextprotocol/tasks` extension negotiation, `CreateTaskResult`,
+  and `tasks/get`, `tasks/update`, and `tasks/cancel`. It also says servers must
+  verify per-request client extension support before returning a task result.
+- The official extension support matrix does not list Tasks in its extension
+  overview table and does not provide evidence that target hosts currently
+  negotiate the Tasks extension.
+- The TypeScript, Python, and Java SDK trackers for SEP-2663 are still open;
+  Python and Java explicitly tie the work to the future 2026-07-28 spec release,
+  while TypeScript tracks the same SEP in the 2026-07-28 implementation project.
+
+So Agent Bridge should keep protocol-level task support unadvertised and
+unimplemented for now. Existing `agent_*` lifecycle tools and completion
+notifications remain the native collaboration path. Revisit this only when a
+target host and SDK have shipped `io.modelcontextprotocol/tasks` negotiation over
+stdio.
+
 ## Host Compatibility
 
 Current target hosts should be treated as non-task clients unless they explicitly negotiate a task extension in their MCP capabilities. Agent Bridge currently initializes with protocol version `2024-11-05` and does not advertise task capabilities. Existing clients can continue using `task_spawn`, `task_list`, `task_status`, `task_wait`, `task_logs`, `task_transcript`, `task_result`, `task_stop`, and `task_remove` over stdio.
