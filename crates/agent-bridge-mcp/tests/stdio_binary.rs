@@ -2736,6 +2736,14 @@ fn stdio_agent_result_preserves_final_result_evidence_after_timeout() {
             .iter()
             .any(|event| event["partialResult"] == true)
     );
+    assert_eq!(result["handoff"]["outcome"], "partial");
+    assert_eq!(result["handoff"]["verificationStatus"], "not_verified");
+    assert!(
+        result["handoff"]["evidenceRefs"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("transcript"))
+    );
 }
 
 #[test]
@@ -4171,7 +4179,7 @@ fn stdio_agent_observe_returns_events_and_progress() {
             "mode": "review",
             "prompt": "emit-logs",
             "cwd": env.root,
-            "timeoutSeconds": 5
+            "timeoutSeconds": 120
         }),
     );
     let agent_id = spawned["agentId"].as_str().unwrap();
@@ -4199,6 +4207,21 @@ fn stdio_agent_observe_returns_events_and_progress() {
             "agent_observe"
         }
     );
+    assert!(observed["timeline"].is_object());
+    assert!(
+        ["working", "final"].contains(&observed["timeline"]["state"].as_str().unwrap()),
+        "timeline: {}, progress: {}",
+        observed["timeline"],
+        observed["progress"]
+    );
+    assert!(
+        observed["timeline"]["headline"]
+            .as_str()
+            .unwrap()
+            .contains("codex review task")
+    );
+    assert!(observed["timeline"]["next"].is_array());
+    assert!(observed["timeline"]["recentHighlights"].is_array());
 }
 
 #[test]
@@ -4213,7 +4236,7 @@ fn stdio_agent_observe_timeout_does_not_fail_running_agent() {
             "mode": "review",
             "prompt": "sleep-long",
             "cwd": env.root,
-            "timeoutSeconds": 20
+            "timeoutSeconds": 120
         }),
     );
     let agent_id = spawned["agentId"].as_str().unwrap();
@@ -4237,6 +4260,12 @@ fn stdio_agent_observe_timeout_does_not_fail_running_agent() {
     assert_eq!(second["status"], "running");
     assert_eq!(second["isFinal"], false);
     assert_eq!(second["progress"]["noFurtherPollingNeeded"], false);
+    assert_eq!(
+        second["timeline"]["state"], "quiet",
+        "timeline: {}, progress: {}",
+        second["timeline"], second["progress"]
+    );
+    assert_eq!(second["timeline"]["attention"], "wait");
 
     let stopped = client.tool("agent_stop", json!({"agentId": agent_id}));
     assert_eq!(stopped["status"], "stopped");
@@ -4625,6 +4654,14 @@ fn stdio_claude_agent_malformed_output_returns_diagnostic() {
     assert!(actions.contains(
         "Decide whether to rerun with a narrower prompt, continue manually, or discard."
     ));
+    assert_eq!(result["handoff"]["outcome"], "partial");
+    assert_eq!(result["handoff"]["verificationStatus"], "not_verified");
+    assert!(
+        result["handoff"]["evidenceRefs"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("stderr"))
+    );
 }
 
 #[test]
@@ -4848,6 +4885,19 @@ fn stdio_agent_result_review_packet_summarizes_worktree_changes() {
     assert!(actions.contains("Inspect gitStatus, gitDiff, and changedFiles before verification."));
     assert!(
         actions.contains("Call agent_remove only after inspecting the managed worktree result.")
+    );
+    assert_eq!(result["handoff"]["outcome"], "succeeded");
+    assert_eq!(result["handoff"]["verificationStatus"], "not_verified");
+    assert_eq!(result["handoff"]["changedFiles"]["count"], 1);
+    assert_eq!(
+        result["handoff"]["changedFiles"]["paths"],
+        json!(["README.md"])
+    );
+    assert!(
+        result["handoff"]["evidenceRefs"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("diff"))
     );
 }
 
