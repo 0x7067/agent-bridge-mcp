@@ -4,7 +4,7 @@ Provider output quality is inconsistently enforced. Today only Claude validates 
 
 ## What Changes
 
-- Introduce a strongly typed `FailureCategory` enum mapped to kebab-case/snake-case strings at the JSON boundary, replacing raw `&'static str` and `Option<String>` fields everywhere.
+- Introduce a strongly typed `FailureCategory` enum mapped to stable snake_case strings at the JSON boundary, replacing raw `&'static str` and `Option<String>` fields everywhere.
 - Require every `ProviderAdapter` to declare an `AcceptanceReport` describing whether produced output satisfies the provider's wire format. Fail the task if output is gibberish or empty despite exit 0.
 - Add an optional `retryPolicy` argument to `agent_spawn` (e.g., `maxRetries`, `backoffMs`). The actor shall replay `spawn` for transient failures (`provider_timeout`, `provider_start_error`) up to the configured limit.
 - Promote `partial_result_detected` into a first-class `agent_result` section and update the `next` action list to suggest continuation when partial results exist.

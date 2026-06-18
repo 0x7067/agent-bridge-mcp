@@ -1,6 +1,6 @@
 ## 1. Typed Failure Taxonomy
 
-- [x] 1.1 Define `FailureCategory` enum with all known variants and custom `Serialize`/`Deserialize` using kebab-case
+- [x] 1.1 Define `FailureCategory` enum with all known variants and custom `Serialize`/`Deserialize` using snake_case
 - [x] 1.2 Replace `failure_category: Option<&'static str>` in `ProbeResult` with `Option<FailureCategory>`
 - [x] 1.3 Replace `failure_category: Option<String>` in `HostRunResult` with `Option<FailureCategory>`
 - [x] 1.4 Update `provider_diagnostic`, `agent_diagnostic`, and `host_probe_result` to serialize the enum at the JSON boundary

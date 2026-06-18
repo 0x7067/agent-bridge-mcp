@@ -158,7 +158,7 @@ pub struct PartialResult {
 
 /// Strongly typed failure categories used across provider probes, task
 /// lifecycle diagnostics, and the host-runner wire format. Serialized as
-/// kebab-case at the JSON boundary.
+/// snake_case at the JSON boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureCategory {
     ProviderTimeout,
@@ -190,7 +190,7 @@ impl FailureCategory {
         )
     }
 
-    /// Returns the kebab-case string used at the JSON boundary.
+    /// Returns the snake_case string used at the JSON boundary.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ProviderTimeout => "provider_timeout",
@@ -384,7 +384,7 @@ mod tests {
             let json = serde_json::to_string(&variant).unwrap();
             let parsed: FailureCategory = serde_json::from_str(&json).unwrap();
             assert_eq!(variant, parsed, "round-trip failed for {variant:?}");
-            // Verify the serialized form is a kebab-case string.
+            // Verify the serialized form is a string.
             let value = serde_json::to_value(variant).unwrap();
             assert!(value.is_string(), "expected string for {variant:?}");
         }

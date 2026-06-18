@@ -22,7 +22,7 @@ Quality gating is provider-heterogeneous. `ClaudeAdapter` enforces `output_is_ac
 ## Decisions
 
 ### D1: Enum-first failure taxonomy with dedicated serialize/deserialize
-**Decision:** Introduce a `FailureCategory` enum with variants such as `ProviderTimeout`, `ProviderExitError`, `ProviderStartError`, `ProviderOutputError`, `ProviderSandboxDenied`, `HostRunnerUnavailable`, `WorktreeCleanupFailed`, `TranscriptUnavailable`, etc. Implement custom `Serialize`/`Deserialize` using kebab-case (e.g., `provider-timeout`).
+**Decision:** Introduce a `FailureCategory` enum with variants such as `ProviderTimeout`, `ProviderExitError`, `ProviderStartError`, `ProviderOutputError`, `ProviderSandboxDenied`, `HostRunnerUnavailable`, `WorktreeCleanupFailed`, `TranscriptUnavailable`, etc. Implement custom `Serialize`/`Deserialize` using snake_case (e.g., `provider_timeout`).
 **Rationale:** Guarantees exhaustiveness checking at compile time. Centralizes the string mapping in one conversion layer, eliminating typo risk in `provider_diagnostic`, `host_probe_result`, and the host-runner wire format.
 **Trade-off:** Adding a variant requires a coordinated edit across all match arms. This is desirable because it forces explicit consideration of how new categories interact with diagnostics, retry logic, and dashboards.
 
