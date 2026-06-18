@@ -16,8 +16,16 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Provider capability JSON dominates the static footprint, then guidance resources and prompts.
 - Next: Shorten caller-facing guidance first because it is high volume and low-risk.
 
+### Run 2: docs: shorten initialization guidance - total_bytes=54231 (KEEP)
+- Timestamp: 2026-06-18 00:58
+- What changed: Condensed `initialize.instructions` while keeping provider choice, evidence, eight-tool flow, and verification markers.
+- Result: total=54231, initialize=1309, delta=-267 vs best.
+- Insight: Initialization prose had safe redundancy; tests preserved the contract phrases.
+- Next: Compact read-only and implementation prompt bodies.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
+- Shortening initialization guidance directly lowers every MCP initialization.
 
 ## Next Ideas
 - Shorten repeated tool descriptions while preserving the eight-tool mapping.

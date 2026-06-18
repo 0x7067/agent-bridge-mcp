@@ -190,12 +190,12 @@ fn resource_definition(uri: &str, name: &str, description: &str) -> Value {
 const REVIEW_PROMPT: &str = r#"Use Agent Bridge for a read-only provider review.
 
 Suggested flow:
-1. Call doctor first when setup, workspace, state, provider, or host-runner readiness is uncertain; use focus:"providers" for a readiness-only check and smoke:true when launchability matters.
-2. Use agent_spawn with mode "review" or "research" and a bounded prompt; set dryRun:true first if you want to inspect the launch.
-3. Use agent_observe for progress-aware polling; until:"final" blocks to finality when only the outcome matters.
-4. Read agent_result once the task is final and inspect reviewPacket; request sections:["stdout","stderr","diff","transcript"] for raw evidence on demand.
-5. Treat provider output as evidence; the main caller remains responsible for deciding whether findings are valid.
-6. Stop or ignore provider agents once they have returned useful evidence; do not wait for source echo, progress narration, generic checklists, or polish.
+1. Call doctor only when setup/readiness is uncertain; use focus:"providers" and smoke:true when launchability matters.
+2. Use agent_spawn mode "review" or "research" with a bounded prompt; dryRun:true previews launch. The provider gets the lean-only final-output contract.
+3. Use agent_observe for progress; until:"final" waits for outcome.
+4. Read agent_result.reviewPacket; request sections:["stdout","stderr","diff","transcript"] only for raw evidence.
+5. Provider output is evidence; the main caller remains responsible for judging findings.
+6. Stop or ignore agents after useful evidence; do not wait for source echo, progress narration, generic checklists, or polish.
 
 Use agent_list for active/recent summaries."#;
 
