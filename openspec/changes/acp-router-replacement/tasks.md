@@ -30,7 +30,7 @@
 ## 5. Diagnostics, Docs, and Verification
 
 - [x] 5.1 Add compact router result diagnostics with provider, terminal kind, attempts, failover trail, and evidence refs.
-- [ ] 5.2 Add fake-provider tests for routed success, infrastructure failover, refusal, cancellation, auth/billing blockers, and retained evidence.
+- [x] 5.2 Add fake-provider tests for routed success, infrastructure failover, refusal, cancellation, auth/billing blockers, and retained evidence.
 - [x] 5.3 Update docs and guidance to describe ACP router replacement and MCP lifecycle migration compatibility.
-- [ ] 5.4 Run `cargo test -p agent-bridge-mcp -- --test-threads=1`.
-- [ ] 5.5 Run `scripts/quality.sh`.
+- [x] 5.4 Run `cargo test -p agent-bridge-mcp -- --test-threads=1`.
+- [x] 5.5 Run `scripts/quality.sh`.

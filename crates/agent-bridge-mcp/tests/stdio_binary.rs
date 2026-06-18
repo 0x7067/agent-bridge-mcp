@@ -1312,6 +1312,90 @@ fn stdio_acp_router_prompt_returns_blocker_for_cancellation_without_failover() {
 }
 
 #[test]
+fn stdio_acp_router_prompt_returns_blocker_for_claude_auth_and_billing_without_failover() {
+    for (case, stop_failure, failure_category) in [
+        (
+            "auth",
+            "printf '%s\\n' '{\"session_id\":\"fake-session\",\"transcript_path\":\"/tmp/agent-bridge-fake-claude/auth.jsonl\",\"cwd\":\"/repo\",\"hook_event_name\":\"StopFailure\",\"error\":\"authentication_failed\",\"error_details\":\"OAuth refresh token is no longer valid\",\"last_assistant_message\":\"Session expired. Please run /login to sign in again.\"}' >&2",
+            "claude_auth_error",
+        ),
+        (
+            "billing",
+            "printf '%s\\n' '{\"session_id\":\"fake-session\",\"transcript_path\":\"/tmp/agent-bridge-fake-claude/billing.jsonl\",\"cwd\":\"/repo\",\"hook_event_name\":\"StopFailure\",\"error\":\"billing_error\",\"error_details\":\"subscription or credit access unavailable\",\"last_assistant_message\":\"Your account does not have access to Claude. Please login again or contact your administrator.\"}' >&2",
+            "claude_billing_error",
+        ),
+    ] {
+        let env = fixture_env();
+        let claude_provider = env.root.join(format!("fake-{case}-claude-provider"));
+        let codex_provider = env.root.join(format!("fake-{case}-codex-provider"));
+        write_fake_provider_path(
+            &claude_provider,
+            &[
+                "#!/bin/sh",
+                "case \"$*\" in",
+                "  *--version*) echo fake-claude 1.0.0; exit 0 ;;",
+                "esac",
+                "read init || exit 1",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+                "read new_session || exit 1",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"claude-session\"}}'",
+                "read prompt_request || exit 1",
+                stop_failure,
+                "echo 'not-json-from-provider'",
+                "exit 0",
+            ],
+        );
+        write_fake_provider_path(
+            &codex_provider,
+            &[
+                "#!/bin/sh",
+                "case \"$*\" in",
+                "  *--version*) echo fake-codex 1.0.0; exit 0 ;;",
+                "esac",
+                "printf called > \"$AGENT_BRIDGE_STATE_DIR/codex-called\"",
+                "read init || exit 1",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+                "read new_session || exit 1",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"codex-session\"}}'",
+                "read prompt_request || exit 1",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'",
+                "exit 0",
+            ],
+        );
+
+        let command = acp_router_command_with_bins(&env, &claude_provider, &codex_provider);
+        let (mut child, mut stdin, mut stdout, session_id) =
+            start_acp_router_session_with_command(&env, command);
+
+        write_acp_router_review_prompt(
+            &mut stdin,
+            &session_id,
+            "auth billing blocker",
+            &["claude", "codex"],
+        );
+
+        let (_updates, response) = read_json_response(&mut stdout, 3);
+        assert_eq!(response["result"]["stopReason"], "end_turn", "{case}");
+        let router_result = &response["result"]["routerResult"];
+        assert_eq!(router_result["provider"], "claude", "{case}");
+        assert_eq!(router_result["terminalKind"], "blocker", "{case}");
+        assert_eq!(router_result["failureCategory"], failure_category, "{case}");
+        assert_eq!(router_result["blockerReason"], failure_category, "{case}");
+        assert!(router_result["finalText"].is_null(), "{case}");
+        assert_eq!(
+            router_result["attempts"][0]["disposition"], "blocker",
+            "{case}"
+        );
+        assert_eq!(router_result["diagnostics"]["failoverTrail"], json!([]));
+        assert!(!env.state_dir.join("codex-called").exists(), "{case}");
+
+        drop(stdin);
+        let status = child.wait().unwrap();
+        assert!(status.success(), "{case}");
+    }
+}
+
+#[test]
 fn stdio_acp_router_prompt_returns_classified_failure_without_final_text() {
     let env = fixture_env();
     let (mut child, mut stdin, mut stdout, session_id) = start_acp_router_session(&env);

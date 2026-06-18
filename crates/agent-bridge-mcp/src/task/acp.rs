@@ -6,7 +6,8 @@ use super::supervision::{
     register_active_pid, terminate_child_tree, unregister_active_pid,
 };
 use super::{ActiveTask, ActorCommand, TaskCompletion};
-use crate::domain::{ErrorType, FailureCategory, TaskMode, TaskStatus};
+use crate::claude_interactive::failure::{ClaudeFailureCategory, parse_stop_failure};
+use crate::domain::{ErrorType, FailureCategory, ProviderKind, TaskMode, TaskStatus};
 use crate::provider::{self, ProviderCommand};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -329,7 +330,19 @@ async fn run_acp_task(runtime: AcpTaskRuntime) -> TaskCompletion {
         Ok(Err((error, output))) => {
             finish_child(&mut child, pid, true).await;
             let stderr = wait_stderr(stderr_task.take(), &agent_dir).await;
-            if provider::adapter_for(command.provider).detects_fatal_denial(&stderr) {
+            if let Some(diagnostic) = claude_stop_failure_diagnostic(
+                &command,
+                timeout_seconds * 1000,
+                &output.stdout,
+                &stderr,
+            ) {
+                (
+                    TaskStatus::Failed,
+                    Some(error),
+                    Some(ErrorType::ProviderOutputError),
+                    Some(diagnostic),
+                )
+            } else if provider::adapter_for(command.provider).detects_fatal_denial(&stderr) {
                 return codex_denial_completion(
                     agent_id,
                     &command,
@@ -339,22 +352,23 @@ async fn run_acp_task(runtime: AcpTaskRuntime) -> TaskCompletion {
                     &output.stdout,
                     &stderr,
                 );
+            } else {
+                let diagnostic = Some(agent_diagnostic(
+                    &command,
+                    FailureCategory::ProviderOutputError,
+                    timeout_seconds * 1000,
+                    None,
+                    None,
+                    &output.stdout,
+                    &stderr,
+                ));
+                (
+                    TaskStatus::Failed,
+                    Some(error),
+                    Some(ErrorType::ProviderOutputError),
+                    diagnostic,
+                )
             }
-            let diagnostic = Some(agent_diagnostic(
-                &command,
-                FailureCategory::ProviderOutputError,
-                timeout_seconds * 1000,
-                None,
-                None,
-                &output.stdout,
-                &stderr,
-            ));
-            (
-                TaskStatus::Failed,
-                Some(error),
-                Some(ErrorType::ProviderOutputError),
-                diagnostic,
-            )
         }
         Err(_) => {
             terminate_child_tree(pid, libc::SIGTERM);
@@ -415,6 +429,53 @@ fn acp_stop_reason_diagnostic(command: &ProviderCommand, stop_reason: &str) -> O
         "launchStrategy": "acp",
         "acpStopReason": stop_reason,
     }))
+}
+
+fn claude_stop_failure_diagnostic(
+    command: &ProviderCommand,
+    timeout_ms: i64,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Option<Value> {
+    if command.provider != ProviderKind::Claude {
+        return None;
+    }
+    let stderr_text = String::from_utf8_lossy(stderr);
+    for line in stderr_text.lines() {
+        let Ok(payload) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(stop_failure) = parse_stop_failure(&payload) else {
+            continue;
+        };
+        let mut diagnostic = agent_diagnostic(
+            command,
+            claude_failure_category(&stop_failure.category),
+            timeout_ms,
+            None,
+            None,
+            stdout,
+            stderr,
+        );
+        if let Some(object) = diagnostic.as_object_mut() {
+            object.insert("claudeError".to_string(), json!(stop_failure.error));
+            if let Some(details) = stop_failure.error_details {
+                object.insert("claudeErrorDetails".to_string(), json!(details));
+            }
+        }
+        return Some(diagnostic);
+    }
+    None
+}
+
+fn claude_failure_category(category: &ClaudeFailureCategory) -> FailureCategory {
+    match category {
+        ClaudeFailureCategory::Auth => FailureCategory::ClaudeAuthError,
+        ClaudeFailureCategory::Billing => FailureCategory::ClaudeBillingError,
+        ClaudeFailureCategory::RateLimit => FailureCategory::ClaudeRateLimit,
+        ClaudeFailureCategory::ModelUnavailable => FailureCategory::ClaudeModelUnavailable,
+        ClaudeFailureCategory::Api => FailureCategory::ClaudeApiError,
+    }
 }
 
 async fn wait_stderr(task: Option<tokio::task::JoinHandle<()>>, agent_dir: &Path) -> Vec<u8> {
