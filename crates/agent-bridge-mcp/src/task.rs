@@ -45,11 +45,11 @@ pub(crate) use registry::{normalize_legacy_registry_fields_exported, validate_re
 mod review;
 #[allow(unused_imports)]
 use review::{
-    AGENT_COMPLETED_NOTIFICATION, add_detail, agent_progress, agent_timeline,
+    AGENT_COMPLETED_NOTIFICATION, add_detail, agent_handoff, agent_progress, agent_timeline,
     completion_notification_params, display_title, insert_detail_fields, insert_evidence_fields,
     insert_outcome_fields, is_final, list_tasks, normalize_max_bytes, normalize_observe_limit,
     normalize_observe_ms, normalize_wait_ms, observe_payload, public_task, read_capped_file,
-    read_transcript, slice_lines, transcript_evidence, transition_status,
+    read_transcript, review_packet, slice_lines, transcript_evidence, transition_status,
 };
 
 mod complete;
@@ -412,6 +412,10 @@ impl TaskManagerHandle {
             stdout_truncated,
             stderr_truncated,
         );
+        let review_packet = value["reviewPacket"].clone();
+        if let Some(object) = value.as_object_mut() {
+            object.insert("handoff".to_string(), agent_handoff(&task, &review_packet));
+        }
         if sections.transcript {
             let transcript = read_transcript(
                 &task,
@@ -1494,6 +1498,80 @@ mod tests {
         assert!(bare["reviewPacket"].is_object());
         // default_sections has changed_files=true, so assert diff is omitted instead.
         assert!(bare.get("gitDiff").is_none());
+    }
+
+    #[test]
+    fn agent_handoff_reports_success_without_verification_claims() {
+        let mut task = sample_task(TaskStatus::Succeeded);
+        task.final_result_detected = true;
+        task.changed_files = Some(vec!["README.md".to_string()]);
+        let review = review_packet(&task, false, false);
+
+        let handoff = agent_handoff(&task, &review);
+
+        assert_eq!(handoff["outcome"], "succeeded");
+        assert_eq!(handoff["verificationStatus"], "not_verified");
+        assert_eq!(handoff["changedFiles"]["count"], 1);
+        assert_eq!(handoff["changedFiles"]["paths"], json!(["README.md"]));
+        assert_eq!(handoff["next"][0]["id"], "inspect_result");
+        assert!(
+            handoff["summary"]
+                .as_str()
+                .unwrap()
+                .contains("finished successfully")
+        );
+    }
+
+    #[test]
+    fn agent_handoff_reports_partial_before_failed_outcome() {
+        let mut task = sample_task(TaskStatus::Failed);
+        task.partial_result_detected = true;
+        task.final_result_detected = false;
+        task.error_type = Some(ErrorType::Timeout);
+        let review = review_packet(&task, false, false);
+
+        let handoff = agent_handoff(&task, &review);
+
+        assert_eq!(handoff["outcome"], "partial");
+        assert_eq!(handoff["verificationStatus"], "not_verified");
+        assert!(
+            handoff["summary"]
+                .as_str()
+                .unwrap()
+                .contains("partial evidence")
+        );
+        assert_eq!(
+            handoff["evidenceRefs"],
+            json!(["summary", "stdout", "stderr", "transcript"])
+        );
+    }
+
+    #[test]
+    fn agent_handoff_reports_failed_stopped_and_stale_outcomes() {
+        for (status, error_type, outcome) in [
+            (
+                TaskStatus::Failed,
+                Some(ErrorType::ProviderOutputError),
+                "failed",
+            ),
+            (TaskStatus::Stopped, None, "stopped"),
+            (TaskStatus::FailedStale, Some(ErrorType::Stale), "stale"),
+        ] {
+            let mut task = sample_task(status);
+            task.error_type = error_type;
+            let review = review_packet(&task, false, false);
+
+            let handoff = agent_handoff(&task, &review);
+
+            assert_eq!(handoff["outcome"], outcome);
+            assert_eq!(handoff["verificationStatus"], "not_verified");
+            assert!(
+                handoff["evidenceRefs"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("summary"))
+            );
+        }
     }
 
     #[test]

@@ -584,6 +584,87 @@ fn timeline_event_summary(event: &Value) -> Option<String> {
         })
 }
 
+pub(super) fn agent_handoff(task: &TaskRecord, review_packet: &Value) -> Value {
+    let changed_files = task.changed_files.clone().unwrap_or_default();
+    let progress = agent_progress(task);
+    json!({
+        "outcome": handoff_outcome(task),
+        "summary": handoff_summary(task),
+        "changedFiles": {
+            "count": changed_files.len(),
+            "paths": changed_files.into_iter().take(25).collect::<Vec<_>>()
+        },
+        "verificationStatus": "not_verified",
+        "evidenceRefs": handoff_evidence_refs(task),
+        "errorType": task.error_type,
+        "reviewPacket": {
+            "status": review_packet["status"].clone(),
+            "phase": review_packet["phase"].clone(),
+            "transcriptAvailable": review_packet["transcriptAvailable"].clone(),
+            "finalResultDetected": review_packet["finalResultDetected"].clone(),
+            "partialResultDetected": review_packet["partialResultDetected"].clone()
+        },
+        "next": next_actions(task, &progress)
+    })
+}
+
+fn handoff_outcome(task: &TaskRecord) -> &'static str {
+    if task.partial_result_detected && !task.final_result_detected {
+        return "partial";
+    }
+    match task.status {
+        TaskStatus::Succeeded => "succeeded",
+        TaskStatus::Failed | TaskStatus::Removed => "failed",
+        TaskStatus::Stopped => "stopped",
+        TaskStatus::FailedStale => "stale",
+        TaskStatus::Queued | TaskStatus::Running => "partial",
+    }
+}
+
+fn handoff_summary(task: &TaskRecord) -> String {
+    let title = display_title(task);
+    if task.partial_result_detected && !task.final_result_detected {
+        return format!("{title} ended with partial evidence but no trusted final result.");
+    }
+    match task.status {
+        TaskStatus::Succeeded => {
+            format!("{title} finished successfully; verify locally before claiming completion.")
+        }
+        TaskStatus::Failed | TaskStatus::Removed => {
+            format!("{title} failed; inspect evidence before retrying.")
+        }
+        TaskStatus::Stopped => {
+            format!("{title} was stopped; inspect evidence before deciding whether to continue.")
+        }
+        TaskStatus::FailedStale => format!("{title} is stale; inspect evidence before rerunning."),
+        TaskStatus::Queued | TaskStatus::Running => {
+            format!("{title} has not reached a final result.")
+        }
+    }
+}
+
+fn handoff_evidence_refs(task: &TaskRecord) -> Vec<&'static str> {
+    let mut refs = vec!["summary"];
+    if task
+        .changed_files
+        .as_ref()
+        .is_some_and(|files| !files.is_empty())
+    {
+        refs.push("changedFiles");
+        refs.push("diff");
+    }
+    if task.error_type.is_some()
+        || matches!(task.status, TaskStatus::Failed | TaskStatus::FailedStale)
+    {
+        refs.push("stdout");
+        refs.push("stderr");
+    }
+    if task.transcript_available || task.partial_result_detected {
+        refs.push("transcript");
+    }
+    refs
+}
+
 pub(super) fn task_phase(status: TaskStatus) -> TaskPhase {
     match status {
         TaskStatus::Queued => TaskPhase::Pending,
