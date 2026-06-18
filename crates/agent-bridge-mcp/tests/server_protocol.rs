@@ -214,6 +214,24 @@ async fn guidance_resources_are_listed_and_read_from_allowlist() {
 }
 
 #[tokio::test]
+async fn acp_router_migration_guidance_is_documented() {
+    let response = handle_request(request(
+        "resources/read",
+        21,
+        serde_json::json!({ "uri": "agent-bridge://guidance/caller-workflow" }),
+    ))
+    .await;
+    let result = response.unwrap().result.unwrap();
+    let text = result["contents"][0]["text"].as_str().unwrap();
+    assert!(text.contains("agent-bridge-mcp acp-router"));
+    assert!(text.contains("replacement prompt-turn contract"));
+    assert!(text.contains("MCP lifecycle"));
+    assert!(text.contains("migration compatibility"));
+    assert!(text.contains("routerResult"));
+    assert!(text.contains("failoverTrail"));
+}
+
+#[tokio::test]
 async fn code_execution_guidance_resource_is_available() {
     let response = handle_request(request(
         "resources/read",

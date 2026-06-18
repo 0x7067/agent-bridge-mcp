@@ -1,11 +1,14 @@
 # Architecture
 
-Provider-neutral MCP server: a caller previews, starts, observes, inspects,
-stops, and removes delegated tasks while staying responsible for verification.
+Provider-neutral delegation runtime. The default path is an MCP compatibility
+server where a caller previews, starts, observes, inspects, stops, and removes
+delegated tasks while staying responsible for verification. The replacement
+path is an explicit ACP router runtime that owns one prompt turn.
 
 ## At a Glance
 
-- Eight MCP tools only — extend via options, not new tools.
+- Eight MCP tools only on the compatibility surface — extend via options, not new tools.
+- `agent-bridge-mcp acp-router` is the ACP replacement prompt-turn contract.
 - Three conceptual layers: protocol (`mcp.rs`), dispatch (`server.rs`), lifecycle (`task.rs` + `provider.rs`).
 - Finalized current-session agents emit a server-to-client JSON-RPC notification with a compact action summary.
 - Claude is special: it runs through an owned PTY host runner bridged by Unix socket.
@@ -18,6 +21,31 @@ stops, and removes delegated tasks while staying responsible for verification.
 adding options to an existing tool over adding a ninth. Tool schemas and dispatch
 live in `src/tools.rs` / `src/mcp.rs`.
 
+This lifecycle remains migration compatibility while ACP-router clients adopt
+the replacement surface. It is still supported for caller-managed delegation,
+but it is not the final routed-collaboration product contract.
+
+## ACP Router Runtime
+
+`agent-bridge-mcp acp-router` runs a separate newline-delimited JSON-RPC runtime
+for ACP clients. It handles `initialize`, `session/new`, and `session/prompt`;
+it does not advertise MCP tools.
+
+A routed prompt turn asks Agent Bridge once. Router policy considers only
+`codex` and `claude` candidates in v1, executes provider attempts through the
+existing task manager, and returns one of three terminal outcomes:
+
+- `answer`: provider-authored final text trusted for that prompt turn.
+- `blocker`: semantic refusal, cancellation, auth, billing, or setup blocker;
+  the router does not ask another provider for a second opinion.
+- `failure`: classified terminal failure when no attempt can produce an answer.
+
+Infrastructure failures such as provider timeout, provider start failure, host
+runner unavailability, runner timeout, or client disconnect may fail over to the
+next candidate. The final `routerResult` carries selected provider, terminal
+kind, attempts, compact diagnostics, `failoverTrail`, and evidence refs. Normal
+router output does not embed raw stdout, stderr, transcript, or diff bodies.
+
 ## Module Map (`crates/agent-bridge-mcp/src/`)
 
 | File | Responsibility | Size Hint |
@@ -28,6 +56,7 @@ live in `src/tools.rs` / `src/mcp.rs`.
 | `tools.rs` | Eight-tool schemas + param parsing | Medium |
 | `server.rs` + `server/diagnostics.rs` | Request router + `doctor` tool | Large |
 | `provider.rs` | Provider definitions, capabilities, command builders | Large |
+| `router.rs` | ACP router policy, routed attempt input, terminal classification | Small |
 | `task.rs` | Facade, `TaskManagerHandle`, `TaskActor` mailbox | Medium |
 | `task/spawn.rs` | Arg validation, worktree creation, process launch | Medium |
 | `task/supervision.rs` | PID registry, process groups, signal/IO drainer | Medium |
