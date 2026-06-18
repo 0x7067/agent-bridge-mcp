@@ -65,8 +65,10 @@ rtk python3 scripts/dogfood_compare.py --providers codex,cursor,kimi --strict-va
 ```
 
 Dry-run preflight writes `manifest.json` and each `agent_spawn.json` preview,
-then stops before `agent_observe` and `agent_result`. It does not launch
-providers, but it still validates provider configuration such as required binary
+then stops before `agent_observe` and `agent_result`. If a provider/profile
+cannot be previewed, the harness records that run as `status: "failed"` with
+`error.json` and continues the rest of the matrix. It does not launch providers,
+but it still validates provider configuration such as required binary
 environment variables.
 
 Bake in strict provider output validation before flipping the default:
@@ -98,6 +100,7 @@ Open `manifest.json` first. It lists each provider/profile run, the `agentId`,
 final status, and paths to the captured transcript and result evidence.
 Dry-run summaries use `status: "preview"` and `spawnPath` instead of
 `agentId`, `resultPath`, and `transcriptPath`.
+Failed preview summaries use `status: "failed"` and `errorPath`.
 
 Compare these fields across `bridge` and `bare`:
 

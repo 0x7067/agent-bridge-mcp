@@ -144,6 +144,7 @@ def failed_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def run_one(client: Any, run: RunSpec, config: RunConfig, output_dir: Path) -> dict[str, Any]:
     run_dir = output_dir / "runs" / run.provider / run.profile
     run_dir.mkdir(parents=True, exist_ok=True)
+    error_path = run_dir / "error.json"
 
     spawn_args = {
         "provider": run.provider,
@@ -157,7 +158,17 @@ def run_one(client: Any, run: RunSpec, config: RunConfig, output_dir: Path) -> d
     }
     if config.dry_run:
         spawn_args["dryRun"] = True
-    spawn = client.tool("agent_spawn", spawn_args)
+    try:
+        spawn = client.tool("agent_spawn", spawn_args)
+    except McpError as error:
+        payload = {
+            "provider": run.provider,
+            "profile": run.profile,
+            "status": "failed",
+            "error": str(error),
+        }
+        write_json(error_path, payload)
+        return {**payload, "errorPath": str(error_path)}
     write_json(run_dir / "agent_spawn.json", spawn)
     if config.dry_run:
         return {
@@ -328,7 +339,7 @@ def main(argv: list[str]) -> int:
         for run in matrix:
             summary = run_one(client, run, config, output_dir)
             manifest["runs"].append(summary)
-            evidence_path = summary.get("resultPath", summary.get("spawnPath"))
+            evidence_path = summary.get("resultPath", summary.get("spawnPath", summary.get("errorPath")))
             print(f"{run.provider}/{run.profile}: {summary['status']} -> {evidence_path}")
 
     write_json(output_dir / "manifest.json", manifest)
@@ -336,7 +347,7 @@ def main(argv: list[str]) -> int:
     failures = failed_runs(manifest["runs"])
     if args.require_success and failures:
         for failure in failures:
-            evidence_path = failure.get("resultPath", failure.get("spawnPath"))
+            evidence_path = failure.get("resultPath", failure.get("spawnPath", failure.get("errorPath")))
             print(
                 f"failed: {failure['provider']}/{failure['profile']}: {failure['status']} -> {evidence_path}",
                 file=sys.stderr,

@@ -13,10 +13,13 @@ class FakeMcpClient:
     def __init__(self):
         self.calls = []
         self.next_agent = 1
+        self.fail_spawn_for = set()
 
     def tool(self, name, arguments):
         self.calls.append((name, arguments))
         if name == "agent_spawn":
+            if arguments["provider"] in self.fail_spawn_for:
+                raise dogfood_compare.McpError("agent_spawn returned tool error: missing binary")
             if arguments.get("dryRun"):
                 return {
                     "provider": arguments["provider"],
@@ -143,6 +146,34 @@ class DogfoodCompareTests(unittest.TestCase):
 
         self.assertEqual([name for name, _arguments in client.calls], ["agent_spawn"])
         self.assertTrue(client.calls[0][1]["dryRun"])
+
+    def test_run_one_records_spawn_error_without_result_calls(self):
+        client = FakeMcpClient()
+        client.fail_spawn_for.add("codex")
+        run = dogfood_compare.RunSpec(provider="codex", profile="bridge")
+        config = dogfood_compare.RunConfig(
+            cwd="/repo",
+            prompt="Read files only and summarize.",
+            mode="research",
+            timeout_seconds=30,
+            observe_timeout_ms=60_000,
+            transcript_limit=200,
+            result_max_bytes=100_000,
+            dry_run=True,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary = dogfood_compare.run_one(client, run, config, Path(tmpdir))
+            run_dir = Path(tmpdir) / "runs" / "codex" / "bridge"
+
+            self.assertEqual(summary["status"], "failed")
+            self.assertEqual(summary["error"], "agent_spawn returned tool error: missing binary")
+            self.assertEqual(summary["errorPath"], str(run_dir / "error.json"))
+            self.assertTrue((run_dir / "error.json").exists())
+            self.assertFalse((run_dir / "agent_observe.json").exists())
+            self.assertFalse((run_dir / "task_result.json").exists())
+
+        self.assertEqual([name for name, _arguments in client.calls], ["agent_spawn"])
 
     def test_build_env_can_enable_strict_validation(self):
         env = dogfood_compare.build_env("/repo", strict_validation=True)
