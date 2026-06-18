@@ -238,6 +238,7 @@ fn output_schema_for(name: &str) -> Value {
                 "isFinal": {"type": "boolean"},
                 "phase": {"type": "string"},
                 "progress": {"type": "object"},
+                "timeline": {"type": "object"},
                 "events": {"type": "array"},
                 "nextCursor": {"type": "integer"},
                 "timedOut": {"type": "boolean"},
@@ -246,7 +247,9 @@ fn output_schema_for(name: &str) -> Value {
             // events/nextCursor/timedOut are only present on the events-returning
             // path; the state-only reads (limit:0, until:"final") legitimately omit
             // them, so they are optional rather than required.
-            vec!["agentId", "status", "isFinal", "phase", "progress", "next"],
+            vec![
+                "agentId", "status", "isFinal", "phase", "progress", "timeline", "next",
+            ],
         ),
         "agent_result" => output_object_schema(
             json!({
@@ -255,10 +258,18 @@ fn output_schema_for(name: &str) -> Value {
                 "isFinal": {"type": "boolean"},
                 "phase": {"type": "string"},
                 "reviewPacket": {"type": "object"},
+                "handoff": {"type": "object"},
                 "changedFiles": {"type": "array"},
                 "next": {"type": "array"}
             }),
-            vec!["agentId", "status", "isFinal", "reviewPacket", "next"],
+            vec![
+                "agentId",
+                "status",
+                "isFinal",
+                "reviewPacket",
+                "handoff",
+                "next",
+            ],
         ),
         _ => output_object_schema(json!({}), Vec::<&str>::new()),
     }

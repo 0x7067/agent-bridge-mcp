@@ -464,13 +464,15 @@ pub(super) fn observe_payload(
     detailed: bool,
 ) -> Value {
     let progress = agent_progress(&task);
+    let events = transcript["events"].as_array().cloned().unwrap_or_default();
     let next = next_actions(&task, &progress);
     let mut value = json!({
         "agentId": task.agent_id,
         "status": task.status,
         "isFinal": is_final(task.status),
         "phase": task_phase(task.status),
-        "progress": progress,
+        "progress": progress.clone(),
+        "timeline": agent_timeline(&task, &events, &progress),
         "events": transcript["events"],
         "nextCursor": transcript["nextCursor"],
         "timedOut": timed_out,
@@ -486,14 +488,181 @@ pub(super) fn observe_payload(
 /// chrome is intentionally omitted (only LLM callers consume this surface).
 pub(super) fn public_task(task: &TaskRecord) -> Value {
     let progress = agent_progress(task);
+    let next = next_actions(task, &progress);
     json!({
         "agentId": task.agent_id,
         "status": task.status,
         "isFinal": is_final(task.status),
         "phase": task_phase(task.status),
         "progress": progress.clone(),
+        "timeline": agent_timeline(task, &[], &progress),
+        "next": next
+    })
+}
+
+pub(super) fn agent_timeline(task: &TaskRecord, events: &[Value], progress: &Value) -> Value {
+    let next = next_actions(task, progress);
+    let state = timeline_state(task, events, progress);
+    let attention = timeline_attention(task, state);
+    let highlights = timeline_highlights(events);
+    json!({
+        "headline": timeline_headline(task, state),
+        "state": state,
+        "currentActivity": highlights.last().cloned().map(Value::String).unwrap_or(Value::Null),
+        "recentHighlights": highlights.into_iter().map(Value::String).collect::<Vec<_>>(),
+        "attention": attention,
+        "next": next
+    })
+}
+
+fn timeline_state(task: &TaskRecord, events: &[Value], progress: &Value) -> &'static str {
+    if is_final(task.status) {
+        return "final";
+    }
+    if task.status == TaskStatus::Queued {
+        return "queued";
+    }
+    if progress.get("stallRisk").and_then(Value::as_str) == Some("high") {
+        return "stalled";
+    }
+    if !events.is_empty() {
+        return "working";
+    }
+    "quiet"
+}
+
+fn timeline_attention(task: &TaskRecord, state: &str) -> &'static str {
+    if is_final(task.status) {
+        "read_result"
+    } else if state == "stalled" {
+        "inspect"
+    } else {
+        "wait"
+    }
+}
+
+fn timeline_headline(task: &TaskRecord, state: &str) -> String {
+    let title = display_title(task);
+    match state {
+        "queued" => format!("{title} is queued."),
+        "working" => format!("{title} is working."),
+        "quiet" => format!("{title} is running quietly."),
+        "stalled" => format!("{title} needs attention."),
+        "final" => format!("{title} reached a final state."),
+        _ => format!("{title} status is available."),
+    }
+}
+
+fn timeline_highlights(events: &[Value]) -> Vec<String> {
+    let mut highlights = Vec::new();
+    for event in events.iter().rev() {
+        if let Some(summary) = timeline_event_summary(event)
+            && !highlights.contains(&summary)
+        {
+            highlights.push(summary);
+        }
+        if highlights.len() == 3 {
+            break;
+        }
+    }
+    highlights.reverse();
+    highlights
+}
+
+fn timeline_event_summary(event: &Value) -> Option<String> {
+    event
+        .get("raw")
+        .and_then(Value::as_str)
+        .or_else(|| event.get("message").and_then(Value::as_str))
+        .map(|text| text.chars().take(160).collect::<String>())
+        .or_else(|| {
+            event
+                .get("parsed")
+                .and_then(|parsed| parsed.get("phase"))
+                .and_then(Value::as_str)
+                .map(|phase| format!("lifecycle phase: {phase}"))
+        })
+}
+
+pub(super) fn agent_handoff(task: &TaskRecord, review_packet: &Value) -> Value {
+    let changed_files = task.changed_files.clone().unwrap_or_default();
+    let progress = agent_progress(task);
+    json!({
+        "outcome": handoff_outcome(task),
+        "summary": handoff_summary(task),
+        "changedFiles": {
+            "count": changed_files.len(),
+            "paths": changed_files.into_iter().take(25).collect::<Vec<_>>()
+        },
+        "verificationStatus": "not_verified",
+        "evidenceRefs": handoff_evidence_refs(task),
+        "errorType": task.error_type,
+        "reviewPacket": {
+            "status": review_packet["status"].clone(),
+            "phase": review_packet["phase"].clone(),
+            "transcriptAvailable": review_packet["transcriptAvailable"].clone(),
+            "finalResultDetected": review_packet["finalResultDetected"].clone(),
+            "partialResultDetected": review_packet["partialResultDetected"].clone()
+        },
         "next": next_actions(task, &progress)
     })
+}
+
+fn handoff_outcome(task: &TaskRecord) -> &'static str {
+    if task.partial_result_detected && !task.final_result_detected {
+        return "partial";
+    }
+    match task.status {
+        TaskStatus::Succeeded => "succeeded",
+        TaskStatus::Failed | TaskStatus::Removed => "failed",
+        TaskStatus::Stopped => "stopped",
+        TaskStatus::FailedStale => "stale",
+        TaskStatus::Queued | TaskStatus::Running => "partial",
+    }
+}
+
+fn handoff_summary(task: &TaskRecord) -> String {
+    let title = display_title(task);
+    if task.partial_result_detected && !task.final_result_detected {
+        return format!("{title} ended with partial evidence but no trusted final result.");
+    }
+    match task.status {
+        TaskStatus::Succeeded => {
+            format!("{title} finished successfully; verify locally before claiming completion.")
+        }
+        TaskStatus::Failed | TaskStatus::Removed => {
+            format!("{title} failed; inspect evidence before retrying.")
+        }
+        TaskStatus::Stopped => {
+            format!("{title} was stopped; inspect evidence before deciding whether to continue.")
+        }
+        TaskStatus::FailedStale => format!("{title} is stale; inspect evidence before rerunning."),
+        TaskStatus::Queued | TaskStatus::Running => {
+            format!("{title} has not reached a final result.")
+        }
+    }
+}
+
+fn handoff_evidence_refs(task: &TaskRecord) -> Vec<&'static str> {
+    let mut refs = vec!["summary"];
+    if task
+        .changed_files
+        .as_ref()
+        .is_some_and(|files| !files.is_empty())
+    {
+        refs.push("changedFiles");
+        refs.push("diff");
+    }
+    if task.error_type.is_some()
+        || matches!(task.status, TaskStatus::Failed | TaskStatus::FailedStale)
+    {
+        refs.push("stdout");
+        refs.push("stderr");
+    }
+    if task.transcript_available || task.partial_result_detected {
+        refs.push("transcript");
+    }
+    refs
 }
 
 pub(super) fn task_phase(status: TaskStatus) -> TaskPhase {

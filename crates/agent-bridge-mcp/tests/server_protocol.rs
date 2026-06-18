@@ -711,6 +711,32 @@ async fn consolidated_agent_read_schemas_expose_lean_next_list() {
             "{tool_name}"
         );
     }
+
+    let observe_output = tools
+        .iter()
+        .find(|tool| tool["name"] == "agent_observe")
+        .unwrap()["outputSchema"]
+        .clone();
+    assert_eq!(
+        observe_output["properties"]["timeline"]["type"], "object",
+        "agent_observe should advertise timeline"
+    );
+
+    let result_output = tools
+        .iter()
+        .find(|tool| tool["name"] == "agent_result")
+        .unwrap()["outputSchema"]
+        .clone();
+    assert_eq!(
+        result_output["properties"]["handoff"]["type"], "object",
+        "agent_result should advertise handoff"
+    );
+    assert!(
+        result_output["required"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("handoff"))
+    );
 }
 
 #[tokio::test]

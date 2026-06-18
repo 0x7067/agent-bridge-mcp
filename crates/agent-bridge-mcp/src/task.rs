@@ -45,11 +45,11 @@ pub(crate) use registry::{normalize_legacy_registry_fields_exported, validate_re
 mod review;
 #[allow(unused_imports)]
 use review::{
-    AGENT_COMPLETED_NOTIFICATION, add_detail, completion_notification_params, display_title,
-    insert_detail_fields, insert_evidence_fields, insert_outcome_fields, is_final, list_tasks,
-    normalize_max_bytes, normalize_observe_limit, normalize_observe_ms, normalize_wait_ms,
-    observe_payload, public_task, read_capped_file, read_transcript, slice_lines,
-    transcript_evidence, transition_status,
+    AGENT_COMPLETED_NOTIFICATION, add_detail, agent_handoff, agent_progress, agent_timeline,
+    completion_notification_params, display_title, insert_detail_fields, insert_evidence_fields,
+    insert_outcome_fields, is_final, list_tasks, normalize_max_bytes, normalize_observe_limit,
+    normalize_observe_ms, normalize_wait_ms, observe_payload, public_task, read_capped_file,
+    read_transcript, review_packet, slice_lines, transcript_evidence, transition_status,
 };
 
 mod complete;
@@ -412,6 +412,10 @@ impl TaskManagerHandle {
             stdout_truncated,
             stderr_truncated,
         );
+        let review_packet = value["reviewPacket"].clone();
+        if let Some(object) = value.as_object_mut() {
+            object.insert("handoff".to_string(), agent_handoff(&task, &review_packet));
+        }
         if sections.transcript {
             let transcript = read_transcript(
                 &task,
@@ -1249,7 +1253,7 @@ mod tests {
             agent_dir: ".".to_string(),
             command: String::new(),
             args: Vec::new(),
-            timeout_seconds: 1,
+            timeout_seconds: 120,
             profile: LaunchProfile::Bridge,
             prompt_strategy: "bridge".to_string(),
             profile_diagnostics: None,
@@ -1497,6 +1501,80 @@ mod tests {
     }
 
     #[test]
+    fn agent_handoff_reports_success_without_verification_claims() {
+        let mut task = sample_task(TaskStatus::Succeeded);
+        task.final_result_detected = true;
+        task.changed_files = Some(vec!["README.md".to_string()]);
+        let review = review_packet(&task, false, false);
+
+        let handoff = agent_handoff(&task, &review);
+
+        assert_eq!(handoff["outcome"], "succeeded");
+        assert_eq!(handoff["verificationStatus"], "not_verified");
+        assert_eq!(handoff["changedFiles"]["count"], 1);
+        assert_eq!(handoff["changedFiles"]["paths"], json!(["README.md"]));
+        assert_eq!(handoff["next"][0]["id"], "inspect_result");
+        assert!(
+            handoff["summary"]
+                .as_str()
+                .unwrap()
+                .contains("finished successfully")
+        );
+    }
+
+    #[test]
+    fn agent_handoff_reports_partial_before_failed_outcome() {
+        let mut task = sample_task(TaskStatus::Failed);
+        task.partial_result_detected = true;
+        task.final_result_detected = false;
+        task.error_type = Some(ErrorType::Timeout);
+        let review = review_packet(&task, false, false);
+
+        let handoff = agent_handoff(&task, &review);
+
+        assert_eq!(handoff["outcome"], "partial");
+        assert_eq!(handoff["verificationStatus"], "not_verified");
+        assert!(
+            handoff["summary"]
+                .as_str()
+                .unwrap()
+                .contains("partial evidence")
+        );
+        assert_eq!(
+            handoff["evidenceRefs"],
+            json!(["summary", "stdout", "stderr", "transcript"])
+        );
+    }
+
+    #[test]
+    fn agent_handoff_reports_failed_stopped_and_stale_outcomes() {
+        for (status, error_type, outcome) in [
+            (
+                TaskStatus::Failed,
+                Some(ErrorType::ProviderOutputError),
+                "failed",
+            ),
+            (TaskStatus::Stopped, None, "stopped"),
+            (TaskStatus::FailedStale, Some(ErrorType::Stale), "stale"),
+        ] {
+            let mut task = sample_task(status);
+            task.error_type = error_type;
+            let review = review_packet(&task, false, false);
+
+            let handoff = agent_handoff(&task, &review);
+
+            assert_eq!(handoff["outcome"], outcome);
+            assert_eq!(handoff["verificationStatus"], "not_verified");
+            assert!(
+                handoff["evidenceRefs"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("summary"))
+            );
+        }
+    }
+
+    #[test]
     fn insert_detail_fields_writes_detail_flags() {
         let mut task = sample_task(TaskStatus::Succeeded);
         task.transcript_available = true;
@@ -1648,6 +1726,97 @@ mod tests {
         assert!(payload["summary"].get("gitDiff").is_none());
         assert!(payload["summary"].get("diagnostic").is_none());
         assert!(payload["summary"].get("partialResults").is_none());
+    }
+
+    #[test]
+    fn agent_timeline_marks_running_activity_from_events() {
+        let task = sample_task(TaskStatus::Running);
+        let progress = agent_progress(&task);
+        let events = vec![
+            json!({"kind": "lifecycle", "parsed": {"phase": "spawned"}}),
+            json!({"kind": "provider_event", "raw": "provider is reviewing files"}),
+        ];
+
+        let timeline = agent_timeline(&task, &events, &progress);
+
+        assert_eq!(timeline["state"], "working");
+        assert_eq!(timeline["attention"], "wait");
+        assert_eq!(timeline["currentActivity"], "provider is reviewing files");
+        assert_eq!(timeline["next"][0]["id"], "observe");
+        assert!(
+            timeline["headline"]
+                .as_str()
+                .unwrap()
+                .contains("codex review task")
+        );
+        assert!(
+            timeline["recentHighlights"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|highlight| highlight
+                    .as_str()
+                    .unwrap()
+                    .contains("provider is reviewing files"))
+        );
+    }
+
+    #[test]
+    fn public_task_includes_quiet_timeline_for_state_only_observe_paths() {
+        let task = sample_task(TaskStatus::Running);
+
+        let public = public_task(&task);
+
+        assert_eq!(public["timeline"]["state"], "quiet");
+        assert_eq!(public["timeline"]["attention"], "wait");
+        assert!(
+            public["timeline"]["recentHighlights"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(public["timeline"]["next"][0]["id"], "observe");
+    }
+
+    #[test]
+    fn agent_timeline_marks_high_stall_risk_as_stalled() {
+        let task = sample_task(TaskStatus::Running);
+        let progress = json!({
+            "stallRisk": "high",
+            "recommendedPollMs": 30000
+        });
+
+        let timeline = agent_timeline(&task, &[], &progress);
+
+        assert_eq!(timeline["state"], "stalled");
+        assert_eq!(timeline["attention"], "inspect");
+        assert!(
+            timeline["headline"]
+                .as_str()
+                .unwrap()
+                .contains("needs attention")
+        );
+    }
+
+    #[test]
+    fn agent_timeline_prefers_high_stall_risk_over_events() {
+        let task = sample_task(TaskStatus::Running);
+        let progress = json!({
+            "stallRisk": "high",
+            "recommendedPollMs": 30000
+        });
+        let events = vec![json!({"kind": "provider_event", "raw": "provider is reviewing files"})];
+
+        let timeline = agent_timeline(&task, &events, &progress);
+
+        assert_eq!(timeline["state"], "stalled");
+        assert_eq!(timeline["attention"], "inspect");
+        assert!(
+            timeline["headline"]
+                .as_str()
+                .unwrap()
+                .contains("needs attention")
+        );
     }
 
     #[test]
