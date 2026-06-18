@@ -26,18 +26,12 @@ pub struct ResourceReadParams {
 
 pub fn prompt_definitions() -> Vec<Value> {
     vec![
-        prompt_definition(
-            "agent_bridge_delegate_review",
-            "Delegate read-only review.",
-        ),
+        prompt_definition("agent_bridge_delegate_review", "Delegate read-only review."),
         prompt_definition(
             "agent_bridge_delegate_implementation",
             "Delegate isolated implementation.",
         ),
-        prompt_definition(
-            "agent_bridge_inspect_result",
-            "Inspect a finished task.",
-        ),
+        prompt_definition("agent_bridge_inspect_result", "Inspect a finished task."),
         prompt_definition(
             "agent_bridge_recover_stalled_task",
             "Recover a stalled task.",
@@ -46,14 +40,8 @@ pub fn prompt_definitions() -> Vec<Value> {
             "agent_bridge_claude_host_lifecycle",
             "Operate Claude host runner.",
         ),
-        prompt_definition(
-            "agent_bridge_dogfood_workflows",
-            "Run dogfood workflows.",
-        ),
-        prompt_definition(
-            "agent_bridge_compare_providers",
-            "Compare providers.",
-        ),
+        prompt_definition("agent_bridge_dogfood_workflows", "Run dogfood workflows."),
+        prompt_definition("agent_bridge_compare_providers", "Compare providers."),
     ]
 }
 
@@ -112,16 +100,8 @@ pub fn get_prompt(params: Value) -> Result<Value, String> {
 
 pub fn resource_definitions() -> Vec<Value> {
     vec![
-        resource_definition(
-            CALLER_WORKFLOW_URI,
-            "caller-workflow",
-            "Caller workflow",
-        ),
-        resource_definition(
-            SAFETY_URI,
-            "safety",
-            "Safety guidance",
-        ),
+        resource_definition(CALLER_WORKFLOW_URI, "caller-workflow", "Caller workflow"),
+        resource_definition(SAFETY_URI, "safety", "Safety guidance"),
         resource_definition(
             PROVIDER_CAPABILITIES_URI,
             "provider-capabilities",

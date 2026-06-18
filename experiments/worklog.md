@@ -184,13 +184,23 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: MCP marks resource definition mimeType optional; read payloads still carry render type.
 - Next: Run one extra experiment on remaining resource prose for non-baseline count margin.
 
+### Run 26: docs: remove duplicated provider mode prose - total_bytes=44143 (KEEP)
+- Timestamp: 2026-06-18 01:13
+- What changed: Removed provider mode definitions from static provider capabilities guidance because providers_list exposes modes authoritatively.
+- Result: total=44143, delta=-176 vs previous best.
+- Insight: Avoid duplicating structured capability data in prose resources.
+- Next: Run final quality gate and commit final autoresearch logs.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.
 - Review prompt compaction preserved behavior and lowered `prompts_bytes`.
 - Implementation prompt compaction produced the largest prompt win so far.
+- Resource prose produced the largest safe reductions because most detail duplicated schemas or runtime tools.
+- Tool/schema metadata should explain only ambiguous behavior; enums, bounds, and top-level descriptions carry the rest.
+- Optional empty metadata (`prompt.arguments: []`, resource-list `mimeType`) costs bytes on discovery responses and can be omitted when the read/get payload keeps the needed detail.
 
 ## Next Ideas
-- Shorten repeated tool descriptions while preserving the eight-tool mapping.
-- Remove duplicated guidance between prompts and resources where one reference is enough.
+- If continuing, measure provider prompt bytes directly; the current primary metric covers MCP responses and dry-run metadata, not redacted provider stdin.
+- Consider a compatibility review before removing any structured provider capability keys; tests currently protect key fields, but clients may rely on more.
 - Keep safety and caller-owned verification wording explicit.

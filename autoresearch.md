@@ -43,3 +43,6 @@ every guidance resource, `providers_list`, and one `agent_spawn` dry run.
 - Run 4 kept: tightened implementation prompt; total 53784 bytes.
 - Runs 5-9 kept: compacted the remaining prompt bodies (result inspection, stalled recovery, Claude host lifecycle, dogfood, provider comparison), reaching 52026 bytes.
 - Runs 10-11 kept: compacted caller workflow and safety resources, reaching 49848 bytes. Resource prose is a larger optimization target than individual prompt bodies.
+- Runs 12-15 kept: compacted provider, Claude-host, dogfood, and code-execution resources, reaching 47547 bytes.
+- Runs 16-19 kept: shortened tool descriptions, schema descriptions, and guidance list metadata, reaching 45170 bytes.
+- Runs 20-26 kept: shortened provider/dry-run diagnostic notes, annotation titles, omitted optional empty prompt arguments and resource-list MIME types, and removed duplicated provider-mode prose. Best is run 26 at 44143 bytes, 19.0% below baseline.

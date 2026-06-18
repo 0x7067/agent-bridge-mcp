@@ -54,3 +54,5 @@
 - Run 24 keep: docs: omit empty prompt arguments; Optional empty metadata costs bytes on every prompts/list call. Metric 44481 bytes.
 
 - Run 25 keep: docs: omit resource list mime types; MCP marks resource definition mimeType optional; read payloads still carry render type. Metric 44319 bytes.
+
+- Run 26 keep: docs: remove duplicated provider mode prose; Avoid duplicating structured capability data in prose resources. Metric 44143 bytes.
