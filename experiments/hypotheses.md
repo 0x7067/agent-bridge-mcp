@@ -12,3 +12,5 @@
 - H03 partial keep in run 3: compacted the review prompt for a 186-byte `prompts_bytes` reduction.
 - H03 partial keep in run 4: compacted the implementation prompt for another 261-byte `prompts_bytes` reduction.
 - Baseline: total footprint is 54498 bytes; biggest buckets are `providers_list_bytes` 17252 and `resources_bytes` 15126.
+
+- Run 5 keep: docs: shorten result inspection prompt; The explicit section names are enough; the old bullet list duplicated result schema detail. Metric 53445 bytes.

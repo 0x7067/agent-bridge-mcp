@@ -218,14 +218,13 @@ Do not treat provider completion as final verification. The main caller remains 
 const RECOVER_STALLED_PROMPT: &str = r#"Recover a stalled Agent Bridge task.
 
 Suggested flow:
-1. Call agent_observe with a bounded timeout and cursor to wait for new transcript/lifecycle events.
-2. Call agent_result with sections:["stdout","stderr"] (with stdoutLine/stderrLine cursors) and sections:["transcript"] to inspect new output without rereading the whole run.
-3. Call agent_observe with limit:0 to confirm whether the process is still active, or until:"final" when only finality matters.
-4. If it is no longer useful, call agent_stop.
-5. Call agent_result after stopping or completion to inspect logs, diagnostics, exit metadata, and partial git state.
-6. Decide in the main caller whether to discard, rerun with a narrower prompt, or manually continue.
+1. Call agent_observe with timeout/cursor for new lifecycle or transcript events.
+2. If needed, call agent_result sections:["stdout","stderr","transcript"] with cursors to avoid rereading the run.
+3. Use agent_observe limit:0 for state, or until:"final" when only finality matters.
+4. Stop only when no longer useful, then inspect final agent_result.
+5. Decide in the main caller whether to discard, narrow, or continue manually.
 
-Codex denial symptoms such as "patch rejected", sandbox denial, approval denial, outside of the project, or out-of-workspace writes are prompt-scope or workspace-scope failures to inspect. Use bounded agent_observe (including until:"final") and final agent_result evidence; inspect cwd, workspace policy, prompt scope, and isolation strategy before retrying. Do not loosen sandbox permissions as a reflex or repeat the same request without understanding the diagnostic."#;
+Codex "patch rejected", sandbox denial, approval denial, outside of the project, or out-of-workspace writes are prompt-scope or workspace-scope failures. Use bounded agent_observe and final agent_result evidence; inspect cwd, workspace policy, prompt scope, and isolation strategy before retrying. Do not loosen sandbox permissions as a reflex."#;
 
 const CLAUDE_HOST_LIFECYCLE_PROMPT: &str = r#"Operate the Claude host runner lifecycle.
 

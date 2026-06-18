@@ -37,6 +37,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Implementation guidance had more removable launch prose than review.
 - Next: Shorten result-inspection guidance.
 
+### Run 5: docs: shorten result inspection prompt - total_bytes=53445 (KEEP)
+- Timestamp: 2026-06-18 01:00
+- What changed: Collapsed result-inspection guidance into the default payload, opt-in sections, and caller proof rule.
+- Result: total=53445, delta=-339 vs previous best.
+- Insight: The explicit section names are enough; the old bullet list duplicated result schema detail.
+- Next: Shorten stalled-task recovery guidance next.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.
