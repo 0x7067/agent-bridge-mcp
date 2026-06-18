@@ -23,9 +23,17 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Initialization prose had safe redundancy; tests preserved the contract phrases.
 - Next: Compact read-only and implementation prompt bodies.
 
+### Run 3: docs: tighten review delegation prompt - total_bytes=54045 (KEEP)
+- Timestamp: 2026-06-18 00:59
+- What changed: Rewrote the read-only review prompt as a shorter flow with the same required tool order and safety markers.
+- Result: total=54045, prompts=9796, delta=-186 vs best.
+- Insight: Prompt bodies have measurable repeated phrasing and can shrink safely under substring tests.
+- Next: Apply the same compacting to isolated implementation guidance.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.
+- Review prompt compaction preserved behavior and lowered `prompts_bytes`.
 
 ## Next Ideas
 - Shorten repeated tool descriptions while preserving the eight-tool mapping.

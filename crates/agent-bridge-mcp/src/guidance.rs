@@ -202,12 +202,12 @@ Use agent_list for active/recent summaries."#;
 const IMPLEMENTATION_PROMPT: &str = r#"Use Agent Bridge for isolated implementation work.
 
 Suggested flow:
-1. Call doctor first when setup, workspace, state, provider, or host-runner readiness is uncertain (focus:"providers" for a readiness-only check).
-2. Call agent_spawn with mode "implement", a clear task prompt, cwd under an allowed workspace, and isolation "worktree" by default; set dryRun:true to preview command, cwd, environment, profile, and isolation without spawning. Provider prompts use the lean-only final-output contract.
-3. Use agent_observe for progress-aware monitoring (until:"final" to block to finality, limit:0 for a quick state check).
-4. When final, call agent_result and inspect reviewPacket, then request sections:["stdout","stderr","diff","transcript"] and changedFiles as needed.
-5. The main caller remains responsible for running relevant tests, lint, typecheck, build, or OpenSpec validation before claiming work complete.
-6. Call agent_remove only after the managed worktree has been inspected and cleanup is intentional."#;
+1. Call doctor only when setup/readiness is uncertain (focus:"providers").
+2. Call agent_spawn mode "implement" with a clear prompt, allowed cwd, and isolation "worktree"; dryRun:true previews launch. Providers get the lean-only final-output contract.
+3. Use agent_observe for progress (until:"final" waits; limit:0 checks state).
+4. When final, call agent_result, inspect reviewPacket, then request sections:["stdout","stderr","diff","transcript"] and changedFiles as needed.
+5. The main caller remains responsible for tests, lint, typecheck, build, or OpenSpec validation before claiming completion.
+6. Call agent_remove only after inspecting the managed worktree and choosing cleanup."#;
 
 const INSPECT_RESULT_PROMPT: &str = r#"Inspect an Agent Bridge task result.
 

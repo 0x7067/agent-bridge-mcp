@@ -39,3 +39,4 @@ every guidance resource, `providers_list`, and one `agent_spawn` dry run.
 ## What's Been Tried
 - Run 1 baseline: 54498 bytes. Largest measured buckets are provider capability JSON (17252), resources (15126), prompts (9982), and tools/list (8854).
 - Run 2 kept: shortened initialization guidance to 54231 bytes without losing required safety/workflow markers.
+- Run 3 kept: tightened read-only review prompt; total 54045 bytes.
