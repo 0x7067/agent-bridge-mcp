@@ -298,12 +298,12 @@ const SAFETY_RESOURCE: &str = r#"# Agent Bridge Safety Guidance
 const PROVIDER_CAPABILITIES_RESOURCE: &str = r#"# Agent Bridge Provider Capabilities
 
 First-class providers:
-- `claude`: local Claude Code ACP command. `CLAUDE_ACP_BIN` defaults to `claude-agent`; `CLAUDE_ACP_ARGS` appends optional arguments.
-- `cursor`: local Cursor ACP command. `CURSOR_ACP_BIN` is required; `CURSOR_ACP_ARGS` appends optional arguments.
-- `kimi`: local Kimi ACP command. `KIMI_ACP_BIN` defaults to `kimi` with default arg `acp`; `KIMI_ACP_ARGS` appends optional arguments.
-- `codex`: local Codex ACP command. `CODEX_ACP_BIN` is required; `CODEX_ACP_ARGS` appends optional arguments. Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms should be investigated with bounded `agent_observe`, final `agent_result` (including `sections: ["stdout","stderr"]`), `agent_spawn dryRun:true`, cwd, workspace policy, prompt scope, and isolation strategy before retrying.
-- `forge`: local Forge ACP command. `FORGE_ACP_BIN` is required; `FORGE_ACP_ARGS` appends optional arguments.
-- `antigravity`: local Google Antigravity ACP command. `ANTIGRAVITY_ACP_BIN` is required; `ANTIGRAVITY_ACP_ARGS` appends optional arguments. Version checks prove binary availability only; smoke checks may fail until Antigravity auth is available through the local OS keyring or browser OAuth flow.
+- `claude`: Claude Code ACP; `CLAUDE_ACP_BIN` defaults to `claude-agent`; `CLAUDE_ACP_ARGS` appends args.
+- `cursor`: Cursor ACP; `CURSOR_ACP_BIN` required; `CURSOR_ACP_ARGS` appends args.
+- `kimi`: Kimi ACP; `KIMI_ACP_BIN` defaults to `kimi acp`; `KIMI_ACP_ARGS` appends args.
+- `codex`: Codex ACP; `CODEX_ACP_BIN` required; `CODEX_ACP_ARGS` appends args. For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace writes, use bounded `agent_observe`, final `agent_result`, agent_spawn dryRun:true, and inspect cwd, workspace policy, prompt scope, and isolation strategy before retrying.
+- `forge`: Forge ACP; `FORGE_ACP_BIN` required; `FORGE_ACP_ARGS` appends args.
+- `antigravity`: Antigravity ACP; `ANTIGRAVITY_ACP_BIN` required; `ANTIGRAVITY_ACP_ARGS` appends args. Version checks prove binary availability only; smoke can fail until auth is available.
 
 Supported modes:
 - `research`: read/analyze only.
@@ -311,15 +311,15 @@ Supported modes:
 - `implement`: write-capable implementation.
 - `command`: bounded command-oriented work.
 
-Use `providers_list` for the authoritative runtime provider summary, including launch profiles and reduced-configuration metadata. Use `doctor` with `focus: "providers"` for availability and startup checks. Do not loosen Codex sandbox permissions as a reflex or repeat an unchanged request after denial diagnostics.
+Use `providers_list` for runtime provider summaries and launch profiles. Use `doctor` focus:"providers" for availability/startup checks. Do not loosen Codex sandbox permissions as a reflex or repeat unchanged requests after denial diagnostics.
 
-Antigravity `research` and `review` modes pass `--sandbox`, but Agent Bridge does not claim verified read-only filesystem enforcement for Antigravity. Treat those modes as prompt-enforced unless local implementation evidence proves stronger sandbox behavior.
+Antigravity `research`/`review` pass `--sandbox`, but read-only filesystem enforcement is not verified; treat those modes as prompt-enforced unless local evidence proves more.
 
 Native-client presentation:
-- `providers_list` reports `supportsReply`, `supportsResume`, and `presentationActions` so clients can render supported and unsupported controls without trial-and-error task calls.
-- `providers_list` includes a non-blocking `readiness` snapshot. Static discovery starts as `state: "stale"` and `launchable: false`; use `doctor` with `focus: "providers"` to refresh readiness.
-- Version-only checks keep `launchable: false` unless a task-path smoke probe succeeds. Smoke-verified providers report `readiness.state: "ready"` and `launchable: true`.
-- `reply` and `resume` are unsupported for provider tasks in v1. Clients should render them as unavailable actions with explanatory reasons, not as failed tool calls.
+- `providers_list` reports supported actions plus a non-blocking `readiness` snapshot.
+- Static discovery starts stale; use `doctor` focus:"providers" to refresh.
+- Version-only checks keep `launchable: false` until task-path smoke succeeds.
+- `reply` and `resume` are unsupported in v1; render them unavailable, not failed.
 "#;
 
 const CLAUDE_HOST_LIFECYCLE_RESOURCE: &str = r#"# Claude Host Runner Lifecycle

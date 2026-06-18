@@ -41,3 +41,5 @@ every guidance resource, `providers_list`, and one `agent_spawn` dry run.
 - Run 2 kept: shortened initialization guidance to 54231 bytes without losing required safety/workflow markers.
 - Run 3 kept: tightened read-only review prompt; total 54045 bytes.
 - Run 4 kept: tightened implementation prompt; total 53784 bytes.
+- Runs 5-9 kept: compacted the remaining prompt bodies (result inspection, stalled recovery, Claude host lifecycle, dogfood, provider comparison), reaching 52026 bytes.
+- Runs 10-11 kept: compacted caller workflow and safety resources, reaching 49848 bytes. Resource prose is a larger optimization target than individual prompt bodies.

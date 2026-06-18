@@ -24,3 +24,5 @@
 - Run 9 keep: docs: shorten provider comparison prompt; Comparison guidance mostly needed wording compression, not structural change. Metric 52026 bytes.
 
 - Run 10 keep: docs: shorten caller workflow resource; Resource prose has much bigger wins than individual prompt bodies. Metric 50147 bytes.
+
+- Run 11 keep: docs: tighten safety resource; Safety prose can be shorter when tests pin the critical diagnostic vocabulary. Metric 49848 bytes.

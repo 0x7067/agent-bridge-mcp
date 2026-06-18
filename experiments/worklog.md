@@ -79,6 +79,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Resource prose has much bigger wins than individual prompt bodies.
 - Next: Shorten safety resource next, preserving denial diagnostics.
 
+### Run 11: docs: tighten safety resource - total_bytes=49848 (KEEP)
+- Timestamp: 2026-06-18 01:04
+- What changed: Compacted safety guidance while preserving Codex denial symptom and inspection terms.
+- Result: total=49848, delta=-299 vs previous best.
+- Insight: Safety prose can be shorter when tests pin the critical diagnostic vocabulary.
+- Next: Shorten provider capabilities resource next.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.
