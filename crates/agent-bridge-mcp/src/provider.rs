@@ -863,7 +863,7 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
             "appliedReductions": [],
             "unsupportedReductions": [],
             "bestEffortReductions": [],
-            "note": "standard provider configuration with the shared lean task contract"
+            "note": "standard provider config; lean task contract"
         });
     }
     if profile == LaunchProfile::Unblocked {
@@ -878,7 +878,7 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
                 ProviderKind::Antigravity => "--dangerously-skip-permissions",
                 _ => "unsupported"
             },
-            "note": "unblocked uses provider-specific permission bypass flags after Agent Bridge validates the cwd is still under an allowed workspace root"
+            "note": "permission bypass after allowed-cwd validation"
         });
     }
     match provider {
@@ -888,7 +888,7 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
             "appliedReductions": ["compact_prompt", "ignore_user_config", "ignore_rules", "ephemeral_session"],
             "unsupportedReductions": ["custom_system_prompt", "disable_hooks"],
             "bestEffortReductions": ["context_files"],
-            "note": "bare means provider-specific reduced configuration; the shared lean task contract still applies"
+            "note": "provider-specific reduced config; lean contract still applies"
         }),
         ProviderKind::Forge => json!({
             "profile": "bare",
@@ -896,7 +896,7 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
             "appliedReductions": ["compact_prompt"],
             "unsupportedReductions": ["custom_system_prompt", "disable_hooks"],
             "bestEffortReductions": ["disable_skills", "config_isolation", "memory_session", "context_files"],
-            "note": "forge bare uses reduced provider configuration; CLI help does not expose reliable flags for disabling ambient settings"
+            "note": "reduced config; ambient-setting flags limited"
         }),
         ProviderKind::Kimi => json!({
             "profile": "bare",
@@ -904,7 +904,7 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
             "appliedReductions": ["compact_prompt", "custom_system_prompt", "no_session", "no_extensions", "no_skills", "no_prompt_templates", "no_themes", "no_context_files"],
             "unsupportedReductions": [],
             "bestEffortReductions": [],
-            "note": "bare means provider-specific reduced configuration; the shared lean task contract still applies"
+            "note": "provider-specific reduced config; lean contract still applies"
         }),
         ProviderKind::Claude => json!({
             "profile": "bare",
@@ -912,7 +912,7 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
             "appliedReductions": ["compact_prompt", "custom_system_prompt"],
             "unsupportedReductions": [],
             "bestEffortReductions": ["setting_sources", "disable_hooks", "disable_skills", "context_files"],
-            "note": "owned interactive Claude injects runner-owned lifecycle hooks; bare is best-effort for hook reduction"
+            "note": "host runner injects lifecycle hooks; hook reduction best-effort"
         }),
         ProviderKind::Cursor => json!({
             "profile": "bare",
@@ -920,7 +920,7 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
             "appliedReductions": ["compact_prompt"],
             "unsupportedReductions": ["custom_system_prompt", "disable_hooks"],
             "bestEffortReductions": ["disable_skills", "config_isolation", "context_files"],
-            "note": "cursor-agent exposes limited reduced-configuration flags"
+            "note": "limited reduced-config flags"
         }),
         ProviderKind::Antigravity => json!({
             "profile": "bare",
@@ -928,7 +928,7 @@ pub fn profile_diagnostics(provider: ProviderKind, profile: LaunchProfile) -> Va
             "appliedReductions": ["compact_prompt"],
             "unsupportedReductions": ["custom_system_prompt", "disable_hooks", "disable_skills"],
             "bestEffortReductions": ["config_isolation", "memory_session", "context_files"],
-            "note": "antigravity bare uses reduced provider configuration; inspect ACP agent support for ambient-setting reductions"
+            "note": "reduced config; inspect ACP ambient-setting support"
         }),
     }
 }

@@ -149,6 +149,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Capability payload has safe wins in repeated explanatory note strings.
 - Next: Shorten Antigravity read-only enforcement note next.
 
+### Run 21: docs: shorten antigravity enforcement note - total_bytes=44722 (KEEP)
+- Timestamp: 2026-06-18 01:10
+- What changed: Shortened Antigravity readOnlyEnforcement note while preserving prompt_enforced mode values.
+- Result: total=44722, delta=-136 vs previous best.
+- Insight: Provider caveats can be concise if the state field remains explicit.
+- Next: Review reduced configuration payload for repeated status strings.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.

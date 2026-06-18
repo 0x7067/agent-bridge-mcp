@@ -44,3 +44,5 @@
 - Run 19 keep: docs: shorten guidance list descriptions; List metadata is loaded before the body, so short labels are enough. Metric 45170 bytes.
 
 - Run 20 keep: docs: shorten provider cadence notes; Capability payload has safe wins in repeated explanatory note strings. Metric 44858 bytes.
+
+- Run 21 keep: docs: shorten antigravity enforcement note; Provider caveats can be concise if the state field remains explicit. Metric 44722 bytes.
