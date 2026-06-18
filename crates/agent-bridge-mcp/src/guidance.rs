@@ -342,29 +342,29 @@ Socket behavior:
 
 const DOGFOOD_WORKFLOWS_RESOURCE: &str = r#"# Agent Bridge Dogfood Workflows
 
-These workflows are reproducible local operator checks. They intentionally keep live provider execution opt-in and outside default CI.
+Reproducible local operator checks; live provider execution stays opt-in and outside default CI.
 
 ## read-only review
 
-Use `agent_spawn` with mode `review` or `research`, `isolation: "none"`, a small prompt, and a bounded timeout. Use `agent_observe` as the primary progress path, then inspect `agent_result.reviewPacket` and request `sections: ["transcript","stdout","stderr","diff"]` for raw evidence. Use `agent_observe` with `until: "final"` when simple finality is enough.
+Use `agent_spawn` mode `review`/`research`, `isolation: "none"`, a small prompt, and bounded timeout. Use `agent_observe` as the primary progress path, then inspect `agent_result.reviewPacket`; request transcript/stdout/stderr/diff sections only for raw evidence. Use `until: "final"` when only finality matters.
 
 ## active task list
 
-Use `agent_list` with default arguments as an attention inbox: active provider agents first, then final agents whose result has not yet been inspected. Each record is a lean summary (identity, status, phase, progress, primary `next` action). Use filters when looking up inspected history.
+Use default `agent_list` as an attention inbox: active agents first, then final uninspected agents. Each record is a lean summary; use filters for inspected history.
 
 ## isolated implementation
 
-Use `agent_spawn` with mode `implement` and `isolation: "worktree"`. After completion, inspect `reviewPacket`, then request `agent_result` `sections: ["diff"]` and `changedFiles`; run the relevant verification in the main caller; call `agent_remove` only after the managed worktree has been reviewed.
+Use `agent_spawn` mode `implement` with `isolation: "worktree"`. After completion, inspect `reviewPacket`, request diff/changedFiles as needed, verify in the main caller, then call `agent_remove` only after reviewing the managed worktree.
 
 ## stalled-task recovery
 
-Use bounded `agent_observe` calls. If observation does not produce useful evidence, request `agent_result` `sections: ["stdout","stderr"]` with `stdoutLine`/`stderrLine` cursors and `sections: ["transcript"]`, then `agent_observe` with `limit: 0` for a state check. Call `agent_stop` only when the task is no longer useful, then inspect final `agent_result`.
+Use bounded `agent_observe`. If it gives no useful evidence, request stdout/stderr/transcript sections with cursors, then `agent_observe` `limit: 0` for state. Call `agent_stop` only when no longer useful, then inspect final `agent_result`.
 
-For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms, inspect cwd, workspace policy, prompt scope, and isolation before retrying. Prefer narrowing the prompt or using managed worktree isolation over loosening sandbox permissions.
+For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace writes, inspect cwd, workspace policy, prompt scope, and isolation before retrying. Prefer narrowing or managed worktree isolation over loosening sandbox permissions.
 
 ## provider comparison
 
-Run equivalent read-only prompts against selected providers. For Agent Bridge behavior analysis, run paired profile "bridge" and profile "bare" tasks where useful; use profile "unblocked" only when the comparison is specifically about workspace-permission reach. All profiles use the lean-only final-output contract. Compare `reviewPacket`, `agent_result` `sections: ["transcript"]`, diagnostics, exit metadata, `profileDiagnostics`, and provider prose as evidence; keep final conclusions and verification responsibility with the main caller.
+Run equivalent read-only prompts against selected providers. For bridge behavior, pair "bridge"/"bare" profiles where useful; use "unblocked" only for workspace-permission reach. All profiles use the lean-only final-output contract. Compare `reviewPacket`, transcript evidence, diagnostics, exit metadata, `profileDiagnostics`, and provider prose; keep verification with the main caller.
 "#;
 
 const CODE_EXECUTION_RESOURCE: &str = r#"# Agent Bridge Code-Execution-Friendly Delegation

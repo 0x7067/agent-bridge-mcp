@@ -28,3 +28,5 @@
 - Run 11 keep: docs: tighten safety resource; Safety prose can be shorter when tests pin the critical diagnostic vocabulary. Metric 49848 bytes.
 
 - Run 12 keep: docs: shorten provider capabilities resource; Runtime providers_list carries detailed capabilities, so static guidance can point to it. Metric 48959 bytes.
+
+- Run 13 keep: docs: shorten claude host resource; Resource and prompt versions can share terse lifecycle language. Metric 48662 bytes.

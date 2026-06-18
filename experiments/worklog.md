@@ -93,6 +93,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Runtime providers_list carries detailed capabilities, so static guidance can point to it.
 - Next: Shorten Claude host lifecycle resource next.
 
+### Run 13: docs: shorten claude host resource - total_bytes=48662 (KEEP)
+- Timestamp: 2026-06-18 01:05
+- What changed: Compacted Claude host runner lifecycle and socket guidance while retaining doctor, ping, and workspace_policy_mismatch.
+- Result: total=48662, delta=-297 vs previous best.
+- Insight: Resource and prompt versions can share terse lifecycle language.
+- Next: Shorten dogfood workflows resource next.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.
