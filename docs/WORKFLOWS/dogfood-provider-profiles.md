@@ -99,8 +99,9 @@ rtk python3 scripts/dogfood_compare.py \
 
 The harness defaults `AGENT_BRIDGE_WORKSPACES` to the selected `--cwd` when the
 environment does not already set it. If provider readiness is uncertain, use an
-MCP client to call `doctor` with `focus: "providers"` and `smoke: true` before
-the comparison.
+MCP client to call `doctor` with `focus: "providers"` first. Add `smoke: true`
+only when you are ready to launch provider CLIs as part of live comparison
+prep.
 
 For Claude, start the host runner and export `AGENT_BRIDGE_CLAUDE_HOST_SOCKET`
 before running the harness.
