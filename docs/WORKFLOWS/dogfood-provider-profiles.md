@@ -61,7 +61,7 @@ rtk python3 scripts/dogfood_compare.py --providers codex,cursor,kimi
 Bake in strict provider output validation before flipping the default:
 
 ```bash
-rtk python3 scripts/dogfood_compare.py --providers codex,cursor,kimi --strict-validation
+rtk python3 scripts/dogfood_compare.py --providers codex,cursor,kimi --strict-validation --require-success
 ```
 
 Use a custom prompt or output directory:

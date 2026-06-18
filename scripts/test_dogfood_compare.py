@@ -111,6 +111,21 @@ class DogfoodCompareTests(unittest.TestCase):
         self.assertEqual(env["AGENT_BRIDGE_WORKSPACES"], "/repo")
         self.assertEqual(env["AGENT_BRIDGE_STRICT_VALIDATION"], "true")
 
+    def test_failed_runs_returns_non_succeeded_runs(self):
+        runs = [
+            {"provider": "codex", "profile": "bridge", "status": "succeeded"},
+            {"provider": "codex", "profile": "bare", "status": "failed"},
+            {"provider": "kimi", "profile": "bridge", "status": "stopped"},
+        ]
+
+        self.assertEqual(
+            dogfood_compare.failed_runs(runs),
+            [
+                {"provider": "codex", "profile": "bare", "status": "failed"},
+                {"provider": "kimi", "profile": "bridge", "status": "stopped"},
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -136,6 +136,10 @@ def build_run_matrix(providers: list[str]) -> list[RunSpec]:
     return [RunSpec(provider=provider, profile=profile) for provider in providers for profile in PROFILES]
 
 
+def failed_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [run for run in runs if run.get("status") != "succeeded"]
+
+
 def run_one(client: Any, run: RunSpec, config: RunConfig, output_dir: Path) -> dict[str, Any]:
     run_dir = output_dir / "runs" / run.provider / run.profile
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -259,6 +263,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Run the server with AGENT_BRIDGE_STRICT_VALIDATION=true.",
     )
     parser.add_argument(
+        "--require-success",
+        action="store_true",
+        help="Exit 1 if any provider/profile run does not finish with status=succeeded.",
+    )
+    parser.add_argument(
         "--output-dir",
         default=None,
         help="Evidence directory. Default: artifacts/dogfood/<UTC timestamp>",
@@ -290,6 +299,7 @@ def main(argv: list[str]) -> int:
         "providers": args.providers,
         "profiles": list(PROFILES),
         "promptFile": None if args.prompt else str(Path(args.prompt_file).resolve()),
+        "requireSuccess": args.require_success,
         "strictValidation": args.strict_validation,
         "runs": [],
     }
@@ -306,6 +316,14 @@ def main(argv: list[str]) -> int:
 
     write_json(output_dir / "manifest.json", manifest)
     print(f"manifest: {output_dir / 'manifest.json'}")
+    failures = failed_runs(manifest["runs"])
+    if args.require_success and failures:
+        for failure in failures:
+            print(
+                f"failed: {failure['provider']}/{failure['profile']}: {failure['status']} -> {failure['resultPath']}",
+                file=sys.stderr,
+            )
+        return 1
     return 0
 
 
