@@ -181,8 +181,7 @@ fn resource_definition(uri: &str, name: &str, description: &str) -> Value {
     json!({
         "uri": uri,
         "name": name,
-        "description": description,
-        "mimeType": "text/markdown"
+        "description": description
     })
 }
 

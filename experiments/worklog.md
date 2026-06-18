@@ -170,6 +170,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: UI labels can be terse because tool names carry context.
 - Next: Try compact provider capability presentation actions next.
 
+### Run 24: docs: omit empty prompt arguments - total_bytes=44481 (KEEP)
+- Timestamp: 2026-06-18 01:12
+- What changed: Removed empty arguments arrays from no-argument prompt definitions after checking MCP marks prompt arguments optional.
+- Result: total=44481, delta=-105 vs previous best.
+- Insight: Optional empty metadata costs bytes on every prompts/list call.
+- Next: Check resource list mimeType optionality next.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.
