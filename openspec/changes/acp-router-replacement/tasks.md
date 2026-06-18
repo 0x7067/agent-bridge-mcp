@@ -2,7 +2,7 @@
 
 - [x] 1.1 Add `acp-router-contract` spec scenarios for ACP initialize, session creation, prompt finality, compact results, and evidence references.
 - [x] 1.2 Add `provider-failover-policy` spec scenarios for eligible failover, blockers, trusted finality, and visible diagnostics.
-- [ ] 1.3 Validate the change with `openspec validate acp-router-replacement --strict` when the CLI is available.
+- [x] 1.3 Validate the change with `openspec validate acp-router-replacement --strict` when the CLI is available.
 
 ## 2. Router Domain and Policy
 
