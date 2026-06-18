@@ -23,7 +23,7 @@ The system SHALL support provider-specific smoke budgets while retaining a safe 
 - **WHEN** a provider smoke probe exceeds its provider-specific budget
 - **THEN** the provider response reports `startupVerified: false` with `failureCategory: "provider_timeout"`.
 
-### Requirement: Smoke probes exercise task path with minimal prompt
+### Requirement: Smoke probes exercise task path with bounded prompts
 The system SHALL use a minimal non-mutating smoke prompt or provider-native smoke mode that still exercises the provider binary, environment policy, cwd handling, and output parsing path.
 
 #### Scenario: Minimal prompt avoids normal workflow overhead

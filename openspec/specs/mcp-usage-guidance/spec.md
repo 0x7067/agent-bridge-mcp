@@ -150,3 +150,15 @@ The system SHALL teach callers how to observe long-running and silent provider t
 - **WHEN** a client reads caller workflow guidance
 - **THEN** the guidance uses canonical `agent_*` lifecycle tool names
 - **AND** it does not mix in public `task_*` lifecycle names for the same workflow.
+
+### Requirement: Guidance describes owned Claude runner workflow
+The system SHALL update server-discoverable guidance so Claude setup and troubleshooting describe the owned interactive host-runner workflow rather than print-mode fallback.
+
+#### Scenario: Host-runner lifecycle guidance
+- **WHEN** a client reads Claude host-runner lifecycle guidance
+- **THEN** the guidance explains owned interactive Claude runner startup, protocol mismatch handling, workspace-policy alignment, smoke checks, and restart guidance.
+- **AND** it does not recommend native `claude -p` or upstream `claude-p` fallback.
+
+#### Scenario: Provider capability guidance
+- **WHEN** a client reads provider capability guidance
+- **THEN** Claude is described as using the owned interactive PTY/hook/transcript runner.

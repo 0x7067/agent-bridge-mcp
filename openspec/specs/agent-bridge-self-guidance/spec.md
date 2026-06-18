@@ -2,7 +2,6 @@
 
 ## Purpose
 Define the self-guiding MCP surfaces that help clients follow the Agent Bridge task lifecycle through initialization instructions, structured tool results, output schemas, and ranked next actions.
-
 ## Requirements
 ### Requirement: Server initialization provides concise workflow instructions
 The system SHALL return MCP initialization instructions that summarize the safe Agent Bridge workflow and verification boundary.
@@ -67,3 +66,11 @@ The system SHALL make next-action metadata usable by clients without hiding safe
 #### Scenario: Verification remains caller-owned
 - **WHEN** a next action follows provider success
 - **THEN** it does not claim the original user request is verified and it directs the caller toward project verification when appropriate.
+
+### Requirement: Initialization guidance reflects owned Claude readiness
+The system SHALL keep initialization instructions aligned with owned Claude host-runner readiness.
+
+#### Scenario: Initialize mentions Claude readiness
+- **WHEN** a caller reads initialization instructions
+- **THEN** Claude readiness guidance distinguishes official interactive Claude binary presence from owned host-runner startup verification.
+- **AND** it does not imply direct `claude-p` or native `claude -p` fallback.

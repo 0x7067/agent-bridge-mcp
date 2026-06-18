@@ -1,6 +1,6 @@
 ## MODIFIED Requirements
 
-### Requirement: Claude host runner executes only structured Claude requests
+### Requirement: Claude host runner executes only structured Claude-p requests
 The system SHALL provide an opt-in host runner that executes owned interactive Claude provider requests outside the Codex sandbox without accepting arbitrary command or shell descriptor execution.
 
 #### Scenario: Host runner accepts a valid structured Claude request
@@ -24,7 +24,7 @@ The system SHALL provide an opt-in host runner that executes owned interactive C
 - **WHEN** the host runner receives a Claude request containing `command`, `shell`, `script`, `argv`, `executablePath`, or another caller-supplied execution descriptor
 - **THEN** it rejects the request with `protocol_rejected` without spawning a process.
 
-### Requirement: Claude host runner uses owned-runner protocol versioning
+### Requirement: Claude host runner protocol is versioned and inspectable
 The system SHALL bump and validate the host-runner protocol when switching from structured `claude-p` execution to owned interactive Claude execution.
 
 #### Scenario: Host runner receives owned-runner protocol
@@ -91,6 +91,8 @@ The system SHALL make owned host-runner use explicit in configuration, previews,
 - **WHEN** the owned interactive runner creates hook relay IPC
 - **THEN** that runner-internal event log is distinct from the MCP-to-host-runner Unix socket.
 - **AND** the host-runner socket never accepts hook payloads directly.
+
+## ADDED Requirements
 
 ### Requirement: Claude host runner cleans up PTY children
 The system SHALL terminate and reap PTY-driven Claude child processes reliably on timeout, disconnect, and runner shutdown.

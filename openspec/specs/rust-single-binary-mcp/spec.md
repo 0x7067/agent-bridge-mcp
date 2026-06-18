@@ -150,7 +150,8 @@ The system SHALL make the final production MCP entrypoint a single built executa
 
 #### Scenario: External provider dependencies
 - **WHEN** the Rust binary is installed
-- **THEN** documentation and provider checks make clear that `git`, `claude-p` or `claude`, `cursor-agent`, `pi`, and `codex` remain external runtime dependencies.
+- **THEN** documentation and provider checks make clear that `git`, official interactive `claude`, `cursor-agent`, `pi`, and `codex` remain external runtime dependencies.
+- **AND** `claude-p` is not required for normal Claude provider execution.
 
 ### Requirement: Packaging smoke coverage
 The system SHALL verify the built or packaged artifact through stdio smoke tests before release.
