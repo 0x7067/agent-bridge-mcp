@@ -1,7 +1,9 @@
-use agent_bridge_mcp::domain::{FailureCategory, ProviderKind};
+use agent_bridge_mcp::domain::{FailureCategory, Isolation, LaunchProfile, ProviderKind, TaskMode};
 use agent_bridge_mcp::router::{
-    AttemptDisposition, AttemptEvidence, RouterPolicy, RouterStopReason, classify_attempt,
+    AttemptDisposition, AttemptEvidence, RoutedAttemptInput, RouterPolicy, RouterStopReason,
+    classify_attempt,
 };
+use serde_json::json;
 
 #[test]
 fn router_policy_accepts_only_codex_and_claude() {
@@ -66,4 +68,34 @@ fn semantic_blockers_do_not_fail_over() {
     ] {
         assert_eq!(classify_attempt(&evidence), AttemptDisposition::Blocker);
     }
+}
+
+#[test]
+fn routed_attempt_preserves_spawn_workspace_arguments() {
+    let input = RoutedAttemptInput {
+        provider: ProviderKind::Codex,
+        mode: TaskMode::Implement,
+        prompt: "make the change".to_string(),
+        title: Some("router attempt".to_string()),
+        cwd: Some("/repo".to_string()),
+        timeout_seconds: Some(30),
+        isolation: Some(Isolation::Worktree),
+        worktree_name: Some("router-attempt".to_string()),
+        profile: Some(LaunchProfile::Unblocked),
+    };
+
+    assert_eq!(
+        input.spawn_arguments(),
+        json!({
+            "provider": "codex",
+            "mode": "implement",
+            "prompt": "make the change",
+            "title": "router attempt",
+            "cwd": "/repo",
+            "timeoutSeconds": 30,
+            "isolation": "worktree",
+            "worktreeName": "router-attempt",
+            "profile": "unblocked"
+        })
+    );
 }

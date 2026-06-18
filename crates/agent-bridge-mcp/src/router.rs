@@ -1,5 +1,6 @@
-use crate::domain::{FailureCategory, ProviderKind};
+use crate::domain::{FailureCategory, Isolation, LaunchProfile, ProviderKind, TaskMode};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -7,6 +8,39 @@ use std::fmt;
 pub struct RoutedTurnInput {
     pub prompt: String,
     pub policy: RouterPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutedAttemptInput {
+    pub provider: ProviderKind,
+    pub mode: TaskMode,
+    pub prompt: String,
+    pub title: Option<String>,
+    pub cwd: Option<String>,
+    pub timeout_seconds: Option<i64>,
+    pub isolation: Option<Isolation>,
+    pub worktree_name: Option<String>,
+    pub profile: Option<LaunchProfile>,
+}
+
+impl RoutedAttemptInput {
+    pub fn spawn_arguments(&self) -> Value {
+        let mut arguments = Map::new();
+        arguments.insert("provider".to_string(), json!(self.provider));
+        arguments.insert("mode".to_string(), json!(self.mode));
+        arguments.insert("prompt".to_string(), json!(self.prompt));
+        insert_optional(&mut arguments, "title", self.title.as_deref());
+        insert_optional(&mut arguments, "cwd", self.cwd.as_deref());
+        insert_optional(&mut arguments, "timeoutSeconds", self.timeout_seconds);
+        insert_optional(&mut arguments, "isolation", self.isolation);
+        insert_optional(
+            &mut arguments,
+            "worktreeName",
+            self.worktree_name.as_deref(),
+        );
+        insert_optional(&mut arguments, "profile", self.profile);
+        Value::Object(arguments)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,4 +172,10 @@ fn failover_eligible_failure(category: FailureCategory) -> bool {
             | FailureCategory::RunnerTimeout
             | FailureCategory::ClientDisconnected
     )
+}
+
+fn insert_optional<T: Serialize>(arguments: &mut Map<String, Value>, key: &str, value: Option<T>) {
+    if let Some(value) = value {
+        arguments.insert(key.to_string(), json!(value));
+    }
 }
