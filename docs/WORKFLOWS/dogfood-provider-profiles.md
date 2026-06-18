@@ -64,12 +64,15 @@ Preview the strict-validation spawn matrix without launching providers:
 rtk python3 scripts/dogfood_compare.py --providers codex,cursor,kimi --strict-validation --dry-run --require-success
 ```
 
-If Codex or Cursor ACP env vars are not already exported, point them at the
-installed CLIs for preflight:
+To mirror configured client apps, run preflight against the installed MCP
+binary. If ACP env vars are not already exported, point them at the installed
+provider CLIs:
 
 ```bash
+AGENT_BRIDGE_MCP_BIN="$(command -v agent-bridge-mcp)" \
 CODEX_ACP_BIN="$(command -v codex)" \
 CURSOR_ACP_BIN="$(command -v cursor-agent)" \
+KIMI_ACP_BIN="$(command -v pi)" \
 rtk python3 scripts/dogfood_compare.py --providers codex,cursor,kimi --strict-validation --dry-run --require-success
 ```
 
