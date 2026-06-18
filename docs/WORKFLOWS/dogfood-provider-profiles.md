@@ -58,6 +58,17 @@ Compare multiple providers:
 rtk python3 scripts/dogfood_compare.py --providers codex,cursor,kimi
 ```
 
+Preview the strict-validation spawn matrix without launching providers:
+
+```bash
+rtk python3 scripts/dogfood_compare.py --providers codex,cursor,kimi --strict-validation --dry-run
+```
+
+Dry-run preflight writes `manifest.json` and each `agent_spawn.json` preview,
+then stops before `agent_observe` and `agent_result`. It does not launch
+providers, but it still validates provider configuration such as required binary
+environment variables.
+
 Bake in strict provider output validation before flipping the default:
 
 ```bash
@@ -85,6 +96,8 @@ before running the harness.
 
 Open `manifest.json` first. It lists each provider/profile run, the `agentId`,
 final status, and paths to the captured transcript and result evidence.
+Dry-run summaries use `status: "preview"` and `spawnPath` instead of
+`agentId`, `resultPath`, and `transcriptPath`.
 
 Compare these fields across `bridge` and `bare`:
 

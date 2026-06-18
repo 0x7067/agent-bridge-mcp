@@ -39,6 +39,7 @@ class RunConfig:
     observe_timeout_ms: int
     transcript_limit: int
     result_max_bytes: int
+    dry_run: bool = False
 
 
 class McpError(RuntimeError):
@@ -144,20 +145,28 @@ def run_one(client: Any, run: RunSpec, config: RunConfig, output_dir: Path) -> d
     run_dir = output_dir / "runs" / run.provider / run.profile
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    spawn = client.tool(
-        "agent_spawn",
-        {
+    spawn_args = {
+        "provider": run.provider,
+        "profile": run.profile,
+        "mode": config.mode,
+        "prompt": config.prompt,
+        "cwd": config.cwd,
+        "isolation": "none",
+        "timeoutSeconds": config.timeout_seconds,
+        "title": f"dogfood {run.provider} {run.profile}",
+    }
+    if config.dry_run:
+        spawn_args["dryRun"] = True
+    spawn = client.tool("agent_spawn", spawn_args)
+    write_json(run_dir / "agent_spawn.json", spawn)
+    if config.dry_run:
+        return {
             "provider": run.provider,
             "profile": run.profile,
-            "mode": config.mode,
-            "prompt": config.prompt,
-            "cwd": config.cwd,
-            "isolation": "none",
-            "timeoutSeconds": config.timeout_seconds,
-            "title": f"dogfood {run.provider} {run.profile}",
-        },
-    )
-    write_json(run_dir / "agent_spawn.json", spawn)
+            "status": spawn.get("status", "preview"),
+            "dryRun": True,
+            "spawnPath": str(run_dir / "agent_spawn.json"),
+        }
     agent_id = spawn["agentId"]
 
     observe = client.tool(
@@ -268,6 +277,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Exit 1 if any provider/profile run does not finish with status=succeeded.",
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview agent_spawn requests without launching providers.",
+    )
+    parser.add_argument(
         "--output-dir",
         default=None,
         help="Evidence directory. Default: artifacts/dogfood/<UTC timestamp>",
@@ -289,6 +303,7 @@ def main(argv: list[str]) -> int:
         observe_timeout_ms=args.observe_timeout_ms,
         transcript_limit=args.transcript_limit,
         result_max_bytes=args.result_max_bytes,
+        dry_run=args.dry_run,
     )
     matrix = build_run_matrix(args.providers)
     manifest = {
@@ -299,6 +314,7 @@ def main(argv: list[str]) -> int:
         "providers": args.providers,
         "profiles": list(PROFILES),
         "promptFile": None if args.prompt else str(Path(args.prompt_file).resolve()),
+        "dryRun": args.dry_run,
         "requireSuccess": args.require_success,
         "strictValidation": args.strict_validation,
         "runs": [],
@@ -312,15 +328,17 @@ def main(argv: list[str]) -> int:
         for run in matrix:
             summary = run_one(client, run, config, output_dir)
             manifest["runs"].append(summary)
-            print(f"{run.provider}/{run.profile}: {summary['status']} -> {summary['resultPath']}")
+            evidence_path = summary.get("resultPath", summary.get("spawnPath"))
+            print(f"{run.provider}/{run.profile}: {summary['status']} -> {evidence_path}")
 
     write_json(output_dir / "manifest.json", manifest)
     print(f"manifest: {output_dir / 'manifest.json'}")
     failures = failed_runs(manifest["runs"])
     if args.require_success and failures:
         for failure in failures:
+            evidence_path = failure.get("resultPath", failure.get("spawnPath"))
             print(
-                f"failed: {failure['provider']}/{failure['profile']}: {failure['status']} -> {failure['resultPath']}",
+                f"failed: {failure['provider']}/{failure['profile']}: {failure['status']} -> {evidence_path}",
                 file=sys.stderr,
             )
         return 1

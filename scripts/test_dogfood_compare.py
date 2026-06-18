@@ -17,6 +17,14 @@ class FakeMcpClient:
     def tool(self, name, arguments):
         self.calls.append((name, arguments))
         if name == "agent_spawn":
+            if arguments.get("dryRun"):
+                return {
+                    "provider": arguments["provider"],
+                    "profile": arguments["profile"],
+                    "status": "preview",
+                    "dryRun": True,
+                    "command": ["codex", "--fake-preview"],
+                }
             agent_id = f"agent_{self.next_agent}"
             self.next_agent += 1
             return {
@@ -104,6 +112,37 @@ class DogfoodCompareTests(unittest.TestCase):
         self.assertEqual(spawn_args["mode"], "research")
         result_args = client.calls[2][1]
         self.assertEqual(result_args["sections"], ["summary", "stdout", "stderr", "transcript"])
+
+    def test_run_one_dry_run_captures_spawn_preview_only(self):
+        client = FakeMcpClient()
+        run = dogfood_compare.RunSpec(provider="codex", profile="bare")
+        config = dogfood_compare.RunConfig(
+            cwd="/repo",
+            prompt="Read files only and summarize.",
+            mode="research",
+            timeout_seconds=30,
+            observe_timeout_ms=60_000,
+            transcript_limit=200,
+            result_max_bytes=100_000,
+            dry_run=True,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary = dogfood_compare.run_one(client, run, config, Path(tmpdir))
+            run_dir = Path(tmpdir) / "runs" / "codex" / "bare"
+
+            self.assertEqual(summary["provider"], "codex")
+            self.assertEqual(summary["profile"], "bare")
+            self.assertEqual(summary["status"], "preview")
+            self.assertTrue(summary["dryRun"])
+            self.assertEqual(summary["spawnPath"], str(run_dir / "agent_spawn.json"))
+            self.assertTrue((run_dir / "agent_spawn.json").exists())
+            self.assertFalse((run_dir / "agent_observe.json").exists())
+            self.assertFalse((run_dir / "task_transcript.json").exists())
+            self.assertFalse((run_dir / "task_result.json").exists())
+
+        self.assertEqual([name for name, _arguments in client.calls], ["agent_spawn"])
+        self.assertTrue(client.calls[0][1]["dryRun"])
 
     def test_build_env_can_enable_strict_validation(self):
         env = dogfood_compare.build_env("/repo", strict_validation=True)
