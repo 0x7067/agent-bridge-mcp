@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use uuid::Uuid;
 
+const ROUTER_EVIDENCE_UPDATE_LIMIT: usize = 20;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "agent-bridge-mcp",
@@ -290,11 +292,14 @@ async fn run_acp_router_prompt(
         Ok(execution) => execution,
         Err(error) => return Ok(Some(JsonRpcResponse::error(id, -32000, error))),
     };
-    let final_text = manager
+    let transcript = manager
         .transcript(execution.agent_id.clone(), None, Some(500))
         .await
-        .ok()
-        .and_then(|transcript| transcript_final_text(&transcript));
+        .ok();
+    if let Some(transcript) = transcript.as_ref() {
+        write_router_evidence_updates(stdout, &params.session_id, provider, transcript).await?;
+    }
+    let final_text = transcript.as_ref().and_then(transcript_final_text);
     if let Some(text) = final_text.as_deref() {
         let notification = JsonRpcNotification::new(
             "session/update",
@@ -333,6 +338,46 @@ async fn run_acp_router_prompt(
             }
         }),
     )))
+}
+
+async fn write_router_evidence_updates(
+    stdout: &mut io::Stdout,
+    session_id: &str,
+    provider: ProviderKind,
+    transcript: &Value,
+) -> io::Result<()> {
+    let Some(events) = transcript["events"].as_array() else {
+        return Ok(());
+    };
+    let provider_events = events
+        .iter()
+        .filter(|event| event.get("kind").and_then(Value::as_str) == Some("provider_event"))
+        .collect::<Vec<_>>();
+    let truncated = provider_events.len() > ROUTER_EVIDENCE_UPDATE_LIMIT;
+    for event in provider_events.iter().take(ROUTER_EVIDENCE_UPDATE_LIMIT) {
+        let notification = JsonRpcNotification::new(
+            "session/update",
+            json!({
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "agent_bridge_evidence",
+                    "agentBridgeEvidence": {
+                        "type": "provider_internal",
+                        "provider": provider,
+                        "kind": event.get("kind").and_then(Value::as_str).unwrap_or("provider_event"),
+                        "source": event.get("source").and_then(Value::as_str).unwrap_or("provider"),
+                        "eventIndex": event.get("index").and_then(Value::as_u64).unwrap_or(0),
+                        "bounded": {
+                            "limit": ROUTER_EVIDENCE_UPDATE_LIMIT,
+                            "truncated": truncated
+                        }
+                    }
+                }
+            }),
+        );
+        write_json_message(stdout, &notification).await?;
+    }
+    Ok(())
 }
 
 fn acp_prompt_text(prompt: &Value) -> Option<String> {

@@ -892,14 +892,50 @@ fn stdio_acp_router_prompt_runs_one_provider_turn() {
     )
     .unwrap();
 
-    let update = read_json_line(&mut stdout);
-    assert_eq!(update["method"], "session/update");
-    assert_eq!(update["params"]["sessionId"], session_id);
+    let evidence_update = read_json_line(&mut stdout);
+    assert_eq!(evidence_update["method"], "session/update");
+    assert_eq!(evidence_update["params"]["sessionId"], session_id);
     assert_eq!(
-        update["params"]["update"]["sessionUpdate"],
+        evidence_update["params"]["update"]["sessionUpdate"],
+        "agent_bridge_evidence"
+    );
+    assert_eq!(
+        evidence_update["params"]["update"]["agentBridgeEvidence"]["provider"],
+        "claude"
+    );
+    assert_eq!(
+        evidence_update["params"]["update"]["agentBridgeEvidence"]["kind"],
+        "provider_event"
+    );
+    assert!(
+        evidence_update["params"]["update"]["agentBridgeEvidence"]["eventIndex"]
+            .as_u64()
+            .is_some()
+    );
+    assert_eq!(
+        evidence_update["params"]["update"]["agentBridgeEvidence"]["bounded"]["limit"],
+        20
+    );
+    assert_eq!(
+        evidence_update["params"]["update"]["agentBridgeEvidence"]["bounded"]["truncated"],
+        false
+    );
+    let evidence = &evidence_update["params"]["update"]["agentBridgeEvidence"];
+    for raw_key in ["raw", "stdout", "stderr", "transcript", "gitDiff"] {
+        assert!(evidence.get(raw_key).is_none(), "{raw_key}");
+    }
+
+    let final_update = read_json_line(&mut stdout);
+    assert_eq!(final_update["method"], "session/update");
+    assert_eq!(final_update["params"]["sessionId"], session_id);
+    assert_eq!(
+        final_update["params"]["update"]["sessionUpdate"],
         "agent_message_chunk"
     );
-    assert_eq!(update["params"]["update"]["content"]["text"], "fixture ok");
+    assert_eq!(
+        final_update["params"]["update"]["content"]["text"],
+        "fixture ok"
+    );
 
     let response = read_json_line(&mut stdout);
     assert_eq!(response["id"], 3);
