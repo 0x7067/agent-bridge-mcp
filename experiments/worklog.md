@@ -135,6 +135,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Top-level tool descriptions plus enums cover most schema semantics.
 - Next: Look for structural schema byte reductions next.
 
+### Run 19: docs: shorten guidance list descriptions - total_bytes=45170 (KEEP)
+- Timestamp: 2026-06-18 01:09
+- What changed: Shortened prompts/list and resources/list descriptions while leaving detailed bodies intact.
+- Result: total=45170, delta=-542 vs previous best.
+- Insight: List metadata is loaded before the body, so short labels are enough.
+- Next: Evaluate prompt definition arguments field next.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.

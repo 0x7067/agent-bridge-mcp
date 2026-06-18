@@ -40,3 +40,5 @@
 - Run 17 keep: docs: trim spawn and doctor schema descriptions; Schema descriptions are useful only where they disambiguate behavior. Metric 46255 bytes.
 
 - Run 18 keep: docs: trim observe and result schema descriptions; Top-level tool descriptions plus enums cover most schema semantics. Metric 45712 bytes.
+
+- Run 19 keep: docs: shorten guidance list descriptions; List metadata is loaded before the body, so short labels are enough. Metric 45170 bytes.

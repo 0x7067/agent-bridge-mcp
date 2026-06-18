@@ -172,7 +172,7 @@ pub fn output_cadence(provider: ProviderKind) -> Value {
             "recommendedSilentBudgetMs": 240000,
             "fallbackAfterMs": 300000,
             "advisory": true,
-            "note": "Cursor JSON output may be silent until final completion."
+            "note": "May be silent until final JSON."
         }),
         ProviderKind::Claude => json!({
             "cadence": "provider_dependent",
@@ -181,7 +181,7 @@ pub fn output_cadence(provider: ProviderKind) -> Value {
             "recommendedSilentBudgetMs": 120000,
             "fallbackAfterMs": 180000,
             "advisory": true,
-            "note": "Claude output cadence varies by launch strategy and host runner."
+            "note": "Varies by launch strategy/host runner."
         }),
         ProviderKind::Kimi => json!({
             "cadence": "provider_dependent",
@@ -190,7 +190,7 @@ pub fn output_cadence(provider: ProviderKind) -> Value {
             "recommendedSilentBudgetMs": 120000,
             "fallbackAfterMs": 180000,
             "advisory": true,
-            "note": "Kimi output cadence is provider-dependent."
+            "note": "Provider-dependent."
         }),
         ProviderKind::Codex => json!({
             "cadence": "provider_dependent",
@@ -199,7 +199,7 @@ pub fn output_cadence(provider: ProviderKind) -> Value {
             "recommendedSilentBudgetMs": 120000,
             "fallbackAfterMs": 180000,
             "advisory": true,
-            "note": "Codex output cadence is provider-dependent."
+            "note": "Provider-dependent."
         }),
         ProviderKind::Forge => json!({
             "cadence": "provider_dependent",
@@ -208,7 +208,7 @@ pub fn output_cadence(provider: ProviderKind) -> Value {
             "recommendedSilentBudgetMs": 120000,
             "fallbackAfterMs": 180000,
             "advisory": true,
-            "note": "Forge output cadence is provider-dependent."
+            "note": "Provider-dependent."
         }),
         ProviderKind::Antigravity => json!({
             "cadence": "provider_dependent",
@@ -217,7 +217,7 @@ pub fn output_cadence(provider: ProviderKind) -> Value {
             "recommendedSilentBudgetMs": 120000,
             "fallbackAfterMs": 180000,
             "advisory": true,
-            "note": "Antigravity ACP output cadence is provider-dependent."
+            "note": "Provider-dependent."
         }),
     }
 }
