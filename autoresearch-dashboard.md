@@ -1,8 +1,8 @@
 # Autoresearch Dashboard: agent-bridge-cost-efficiency
 
-**Runs:** 6 | **Kept:** 6 | **Discarded:** 0 | **Crashed:** 0
+**Runs:** 7 | **Kept:** 7 | **Discarded:** 0 | **Crashed:** 0
 **Baseline:** total_bytes: 54498bytes (#1)
-**Best:** total_bytes: 53077bytes (#6, -2.6%)
+**Best:** total_bytes: 52742bytes (#7, -3.2%)
 
 | # | commit | total_bytes | status | description |
 |---|--------|-------------|--------|-------------|
@@ -12,3 +12,4 @@
 | 4 | 83eb239 | 53784bytes (-1.3%) | keep | docs: tighten implementation delegation prompt |
 | 5 | 10a0c79 | 53445bytes (-1.9%) | keep | docs: shorten result inspection prompt |
 | 6 | 1cf131b | 53077bytes (-2.6%) | keep | docs: shorten stalled recovery prompt |
+| 7 | e26f02e | 52742bytes (-3.2%) | keep | docs: shorten claude host prompt |

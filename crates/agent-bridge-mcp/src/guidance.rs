@@ -241,11 +241,11 @@ Suggested flow:
 const DOGFOOD_WORKFLOWS_PROMPT: &str = r#"Run Agent Bridge dogfood workflows.
 
 Suggested workflows:
-1. For read-only review, use agent_spawn with mode "review" or "research", isolation "none", a small prompt, bounded agent_observe, and final agent_result review.
-2. For isolated implementation, use agent_spawn with mode "implement", isolation "worktree", inspect reviewPacket, then request agent_result sections:["diff","stdout","stderr"] and changedFiles, then run verification in the main caller.
-3. For stalled-task recovery, use bounded agent_observe, agent_result sections:["stdout","stderr"] with line cursors, agent_observe limit:0 for state, agent_stop if needed, and final agent_result inspection. For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms, inspect cwd, workspace policy, prompt scope, and isolation strategy before retrying.
-4. For provider comparison, run equivalent read-only prompts against selected providers, optionally paired as profile "bridge" and profile "bare"; use profile "unblocked" only for explicit workspace-permission reach checks, not routine read-only comparison. Compare agent_result reviewPacket and sections:["transcript"], profileDiagnostics, and provider prose, and keep final conclusions in the main caller.
-5. Use agent_list when a harness needs the active/recent provider-agent list.
+1. Read-only review: agent_spawn mode "review"/"research", isolation "none", small prompt, bounded agent_observe, final agent_result.
+2. Isolated implementation: agent_spawn mode "implement", isolation "worktree"; inspect reviewPacket, request diff/log sections as needed, then verify in the main caller.
+3. Stalled recovery: bounded agent_observe, agent_result stdout/stderr/transcript cursors, agent_stop only if no longer useful. For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace writes, inspect cwd, workspace policy, prompt scope, and isolation strategy before retrying.
+4. Provider comparison: run equivalent read-only prompts; pair "bridge"/"bare" only when useful, and reserve "unblocked" for workspace-permission checks. Compare reviewPacket, transcript evidence, profileDiagnostics, and provider prose.
+5. Use agent_list for active/recent provider-agent summaries.
 
 Live provider execution remains opt-in and should not be added to default CI."#;
 

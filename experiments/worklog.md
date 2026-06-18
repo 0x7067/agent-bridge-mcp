@@ -51,6 +51,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Safety tests allow concise text as long as the required inspection terms remain.
 - Next: Shorten Claude host lifecycle prompt next.
 
+### Run 7: docs: shorten claude host prompt - total_bytes=52742 (KEEP)
+- Timestamp: 2026-06-18 01:01
+- What changed: Reduced Claude host lifecycle prompt to the runner, doctor, ping, mismatch, stop, and fallback rules.
+- Result: total=52742, delta=-335 vs previous best.
+- Insight: Lifecycle guidance can be terse because detailed socket behavior is also in resources.
+- Next: Shorten dogfood workflow prompt next.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.
