@@ -105,6 +105,12 @@ class DogfoodCompareTests(unittest.TestCase):
         result_args = client.calls[2][1]
         self.assertEqual(result_args["sections"], ["summary", "stdout", "stderr", "transcript"])
 
+    def test_build_env_can_enable_strict_validation(self):
+        env = dogfood_compare.build_env("/repo", strict_validation=True)
+
+        self.assertEqual(env["AGENT_BRIDGE_WORKSPACES"], "/repo")
+        self.assertEqual(env["AGENT_BRIDGE_STRICT_VALIDATION"], "true")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -223,9 +223,11 @@ def default_server_command() -> list[str]:
     return [str(debug_bin)]
 
 
-def build_env(cwd: str) -> dict[str, str]:
+def build_env(cwd: str, strict_validation: bool = False) -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("AGENT_BRIDGE_WORKSPACES", cwd)
+    if strict_validation:
+        env["AGENT_BRIDGE_STRICT_VALIDATION"] = "true"
     return env
 
 
@@ -251,6 +253,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--observe-timeout-ms", type=int, default=180_000)
     parser.add_argument("--transcript-limit", type=int, default=400)
     parser.add_argument("--result-max-bytes", type=int, default=200_000)
+    parser.add_argument(
+        "--strict-validation",
+        action="store_true",
+        help="Run the server with AGENT_BRIDGE_STRICT_VALIDATION=true.",
+    )
     parser.add_argument(
         "--output-dir",
         default=None,
@@ -283,10 +290,15 @@ def main(argv: list[str]) -> int:
         "providers": args.providers,
         "profiles": list(PROFILES),
         "promptFile": None if args.prompt else str(Path(args.prompt_file).resolve()),
+        "strictValidation": args.strict_validation,
         "runs": [],
     }
 
-    with StdioMcpClient(args.server, build_env(config.cwd), output_dir / "server_stderr.log") as client:
+    with StdioMcpClient(
+        args.server,
+        build_env(config.cwd, args.strict_validation),
+        output_dir / "server_stderr.log",
+    ) as client:
         for run in matrix:
             summary = run_one(client, run, config, output_dir)
             manifest["runs"].append(summary)

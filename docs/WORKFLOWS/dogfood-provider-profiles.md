@@ -58,6 +58,12 @@ Compare multiple providers:
 rtk python3 scripts/dogfood_compare.py --providers codex,cursor,kimi
 ```
 
+Bake in strict provider output validation before flipping the default:
+
+```bash
+rtk python3 scripts/dogfood_compare.py --providers codex,cursor,kimi --strict-validation
+```
+
 Use a custom prompt or output directory:
 
 ```bash
