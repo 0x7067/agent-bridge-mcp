@@ -471,6 +471,7 @@ fn stdio_protocol_and_tool_schema_smoke() {
         "agent-bridge-mcp"
     );
     let instructions = initialize["result"]["instructions"].as_str().unwrap();
+    assert!(instructions.contains("prefer a provider different from the calling agent"));
     assert!(instructions.contains("Provider output is evidence only"));
     assert!(
         instructions[..512.min(instructions.len())]

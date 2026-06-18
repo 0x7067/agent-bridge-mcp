@@ -55,6 +55,7 @@ async fn initialize_returns_public_server_info() {
     );
     assert_eq!(result["serverInfo"]["name"], "agent-bridge-mcp");
     let instructions = result["instructions"].as_str().unwrap();
+    assert!(instructions.contains("prefer a provider different from the calling agent"));
     assert!(instructions.contains("Provider output is evidence only"));
     assert!(instructions.contains("lean-only final-output contract"));
     assert!(
