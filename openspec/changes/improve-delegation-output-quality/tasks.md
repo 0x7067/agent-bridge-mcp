@@ -55,9 +55,9 @@
 
 ## 6. Regression & Enablement
 
-- [ ] 6.1 Run full test suite: `cargo test -- --test-threads=1`
-- [ ] 6.2 Run hard gates: `scripts/quality.sh`
-- [ ] 6.3 Update `CHANGELOG.md` or release notes documenting the new quality gates, retry policy, and modularization
-- [ ] 6.4 Update `docs/agents/` with behavior differences for provider operators
+- [x] 6.1 Run full test suite: `cargo test -- --test-threads=1`
+- [x] 6.2 Run hard gates: `scripts/quality.sh`
+- [x] 6.3 Update `CHANGELOG.md` or release notes documenting the new quality gates, retry policy, and modularization
+- [x] 6.4 Update `docs/agents/` with behavior differences for provider operators
 - [ ] 6.5 After bake-in period, flip `strict_validation` default to `true` in a follow-up commit
 - [ ] 6.6 Archive the change via `openspec archive` when all tasks are ticked

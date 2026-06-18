@@ -40,6 +40,7 @@ Deep-dive reference for daily development work.
 | Document | Purpose |
 |----------|---------|
 | [Project Overview](DOCUMENTATION.md) | Comprehensive feature documentation |
+| [Release Notes](RELEASE_NOTES.md) | Operator-visible behavior changes by release slice |
 | [Security Patterns](SECURITY.md) | Roles, permissions, isolation, and threat notes |
 | [Codemaps](CODEMAPS/INDEX.md) | Architecture diagrams and module maps |
 | [Development Workflows](WORKFLOWS/INDEX.md) | How to build tools, endpoints, and tests |

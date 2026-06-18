@@ -46,6 +46,30 @@ next candidate. The final `routerResult` carries selected provider, terminal
 kind, attempts, compact diagnostics, `failoverTrail`, and evidence refs. Normal
 router output does not embed raw stdout, stderr, transcript, or diff bodies.
 
+## Completion Quality
+
+Task completion classifies provider exits in `task/complete.rs` and stores
+operator-readable diagnostics with stable `failureCategory` strings. Codex
+sandbox or approval denial is fatal even when the process exits 0.
+
+Provider output validation is adapter-owned. Each provider declares
+`acceptance_report` and `acceptance_criteria`; broad validation is gated by
+`strict_validation = true` in `~/.agent-bridge-mcp/config.toml` or by
+`AGENT_BRIDGE_STRICT_VALIDATION=true`. The default is false, preserving existing
+exit-0 behavior while the validator bakes in. Claude validates the legacy
+non-empty JSON `result` line; Codex checks denial text; Cursor, Kimi, and
+Antigravity are currently permissive and document that validation gap.
+
+`agent_spawn` may include `retryPolicy` with `maxRetries` and `backoffMs`.
+Retries are actor-owned and apply only to transient failure categories:
+`provider_timeout`, `provider_start_error`, `claude_rate_limit`,
+`claude_model_unavailable`, `runner_timeout`, and `client_disconnected`.
+Each retry is a new task record linked to the original by `parentAgentId`.
+
+If a task finalizes without a final provider result but transcript events exist,
+`agent_result` can expose `partialResults` and `next` suggests continuation or a
+rerun. Partial output remains evidence, not proof of completed work.
+
 ## Module Map (`crates/agent-bridge-mcp/src/`)
 
 | File | Responsibility | Size Hint |

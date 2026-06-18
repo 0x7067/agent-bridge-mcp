@@ -32,6 +32,11 @@ Illegal transitions are rejected. On server startup, orphaned `Queued`/`Running`
 | `resultInspectedAt` | timestamp | When caller first viewed `agent_result` |
 | `transcriptAvailable` | bool | Does `transcript.jsonl` exist with readable events? |
 | `finalResultDetected` | bool | Was a conclusive `provider_result` event recorded? |
+| `partialResultDetected` | bool | Did the transcript contain provider output without a final result? |
+| `partialResults` | list | Bounded transcript-tail summaries exposed in `agent_result` |
+| `retryPolicy` | object/null | Optional caller policy `{ maxRetries, backoffMs }` |
+| `attemptCount` | integer | Retry attempt number for this record |
+| `parentAgentId` | string/null | Original task id when a retry creates a new record |
 | `diagnostic` | JSON | Structured failure snapshot (redacted excerpts, category, metadata) |
 
 ### Registry
