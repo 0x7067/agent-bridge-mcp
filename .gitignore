@@ -1,6 +1,7 @@
 .DS_Store
 __pycache__/
 target/
+.worktrees/
 
 # Local environment and credentials
 .env
