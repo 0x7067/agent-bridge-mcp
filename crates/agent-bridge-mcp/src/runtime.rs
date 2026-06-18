@@ -261,109 +261,142 @@ async fn run_acp_router_prompt(
         Ok(policy) => policy,
         Err(error) => return Ok(Some(JsonRpcResponse::error(id, -32602, error.to_string()))),
     };
-    // ponytail: one attempt for now; 5.2 owns failover coverage.
-    let Some(provider) = policy.candidates.first().copied() else {
+    if policy.candidates.is_empty() {
         return Ok(Some(JsonRpcResponse::error(
             id,
             -32602,
             "router policy requires at least one candidate",
         )));
-    };
+    }
     let manager = match TaskManagerHandle::from_env().await {
         Ok(manager) => manager,
         Err(error) => return Ok(Some(JsonRpcResponse::error(id, -32000, error))),
     };
-    let execution = match manager
-        .run_router_attempt(
-            RoutedAttemptInput {
-                provider,
-                mode: params.mode.unwrap_or(TaskMode::Implement),
-                prompt,
-                title: Some("ACP router turn".to_string()),
-                cwd: session.cwd.clone(),
-                timeout_seconds: params.timeout_seconds,
-                isolation: None,
-                worktree_name: None,
-                profile: None,
-            },
-            params
-                .timeout_seconds
-                .map(|seconds| seconds.saturating_mul(1_000)),
-        )
-        .await
-    {
-        Ok(execution) => execution,
-        Err(error) => return Ok(Some(JsonRpcResponse::error(id, -32000, error))),
-    };
-    let transcript = manager
-        .transcript(execution.agent_id.clone(), None, Some(500))
-        .await
-        .ok();
-    if let Some(transcript) = transcript.as_ref() {
-        write_router_evidence_updates(stdout, &params.session_id, provider, transcript).await?;
-    }
-    let final_text = transcript.as_ref().and_then(transcript_final_text);
-    let failure_category = router_failure_category(&execution.result);
-    let stop_reason = router_stop_reason(&execution.result);
-    let evidence = AttemptEvidence {
-        final_text_present: final_text.is_some(),
-        failure_category,
-        stop_reason,
-    };
-    let disposition = classify_attempt(&evidence);
-    let routed_final_text = (disposition == AttemptDisposition::TrustedFinal)
-        .then(|| final_text.clone())
-        .flatten();
-    if let Some(text) = routed_final_text.as_deref() {
-        let notification = JsonRpcNotification::new(
-            "session/update",
-            json!({
-                "sessionId": params.session_id,
-                "update": {
-                    "sessionUpdate": "agent_message_chunk",
-                    "content": {"type": "text", "text": text}
-                }
-            }),
-        );
-        write_json_message(stdout, &notification).await?;
-    }
-    let response_stop_reason =
-        router_stop_reason_text(stop_reason.unwrap_or(RouterStopReason::EndTurn));
-    let terminal_kind = router_terminal_kind(disposition);
-    let evidence_ref = json!({
-        "agentId": execution.evidence_ref.agent_id,
-        "resultSections": execution.evidence_ref.result_sections,
-        "transcriptAvailable": execution.evidence_ref.transcript_available
-    });
-    let attempt = json!({
-        "provider": provider,
-        "agentId": execution.agent_id,
-        "disposition": disposition,
-        "stopReason": response_stop_reason,
-        "failureCategory": failure_category,
-        "evidenceRef": evidence_ref
-    });
-    Ok(Some(JsonRpcResponse::result(
-        id,
-        json!({
+    let mode = params.mode.unwrap_or(TaskMode::Implement);
+    let timeout_ms = params
+        .timeout_seconds
+        .map(|seconds| seconds.saturating_mul(1_000).saturating_add(1_000));
+    let mut attempts = Vec::new();
+    let mut evidence_refs = Vec::new();
+    let mut failover_trail = Vec::new();
+    let mut pending_failover: Option<Value> = None;
+    let candidate_count = policy.candidates.len();
+    for (index, provider) in policy.candidates.iter().copied().enumerate() {
+        let execution = match manager
+            .run_router_attempt(
+                RoutedAttemptInput {
+                    provider,
+                    mode,
+                    prompt: prompt.clone(),
+                    title: Some("ACP router turn".to_string()),
+                    cwd: session.cwd.clone(),
+                    timeout_seconds: params.timeout_seconds,
+                    isolation: None,
+                    worktree_name: None,
+                    profile: None,
+                },
+                timeout_ms,
+            )
+            .await
+        {
+            Ok(execution) => execution,
+            Err(error) => return Ok(Some(JsonRpcResponse::error(id, -32000, error))),
+        };
+        let transcript = manager
+            .transcript(execution.agent_id.clone(), None, Some(500))
+            .await
+            .ok();
+        if let Some(transcript) = transcript.as_ref() {
+            write_router_evidence_updates(stdout, &params.session_id, provider, transcript).await?;
+        }
+        let final_text = transcript.as_ref().and_then(transcript_final_text);
+        let failure_category = router_failure_category(&execution.result)
+            .or_else(|| router_wait_failure_category(&execution.wait_status));
+        let stop_reason = router_stop_reason(&execution.result);
+        let evidence = AttemptEvidence {
+            final_text_present: final_text.is_some(),
+            failure_category,
+            stop_reason,
+        };
+        let disposition = classify_attempt(&evidence);
+        let response_stop_reason =
+            router_stop_reason_text(stop_reason.unwrap_or(RouterStopReason::EndTurn));
+        let agent_id = execution.agent_id.clone();
+        let evidence_ref = json!({
+            "agentId": execution.evidence_ref.agent_id,
+            "resultSections": execution.evidence_ref.result_sections,
+            "transcriptAvailable": execution.evidence_ref.transcript_available
+        });
+        let attempt = json!({
+            "provider": provider,
+            "agentId": agent_id,
+            "disposition": disposition,
             "stopReason": response_stop_reason,
-            "routerResult": {
-                "provider": provider,
-                "terminalKind": terminal_kind,
-                "finalText": routed_final_text,
+            "failureCategory": failure_category,
+            "evidenceRef": evidence_ref
+        });
+        if let Some(mut trail_entry) = pending_failover.take() {
+            if let Some(object) = trail_entry.as_object_mut() {
+                object.insert("targetProvider".to_string(), json!(provider));
+                object.insert("targetAgentId".to_string(), json!(agent_id));
+            }
+            failover_trail.push(trail_entry);
+        }
+        attempts.push(attempt.clone());
+        evidence_refs.push(evidence_ref.clone());
+        if disposition == AttemptDisposition::FailoverEligible && index + 1 < candidate_count {
+            pending_failover = Some(json!({
+                "sourceProvider": provider,
+                "sourceAgentId": agent_id,
                 "failureCategory": failure_category,
-                "blockerReason": router_blocker_reason(disposition, stop_reason, failure_category),
-                "attempts": [attempt.clone()],
-                "diagnostics": {
+                "reason": "failover_eligible"
+            }));
+            continue;
+        }
+        let routed_final_text = (disposition == AttemptDisposition::TrustedFinal)
+            .then(|| final_text.clone())
+            .flatten();
+        if let Some(text) = routed_final_text.as_deref() {
+            let notification = JsonRpcNotification::new(
+                "session/update",
+                json!({
+                    "sessionId": params.session_id,
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": text}
+                    }
+                }),
+            );
+            write_json_message(stdout, &notification).await?;
+        }
+        let terminal_kind = router_terminal_kind(disposition);
+        return Ok(Some(JsonRpcResponse::result(
+            id,
+            json!({
+                "stopReason": response_stop_reason,
+                "routerResult": {
                     "provider": provider,
                     "terminalKind": terminal_kind,
-                    "attempts": [attempt],
-                    "failoverTrail": [],
-                    "evidenceRefs": [evidence_ref],
-                    "bounded": true
+                    "finalText": routed_final_text,
+                    "failureCategory": failure_category,
+                    "blockerReason": router_blocker_reason(disposition, stop_reason, failure_category),
+                    "attempts": attempts.clone(),
+                    "diagnostics": {
+                        "provider": provider,
+                        "terminalKind": terminal_kind,
+                        "attempts": attempts,
+                        "failoverTrail": failover_trail,
+                        "evidenceRefs": evidence_refs,
+                        "bounded": true
+                    }
                 }
-            }
-        }),
+            }),
+        )));
+    }
+    Ok(Some(JsonRpcResponse::error(
+        id,
+        -32000,
+        "router policy did not produce an attempt",
     )))
 }
 
@@ -372,6 +405,14 @@ fn router_failure_category(result: &Value) -> Option<FailureCategory> {
         .and_then(|diagnostic| diagnostic.get("failureCategory"))
         .and_then(Value::as_str)
         .and_then(|category| category.parse().ok())
+}
+
+fn router_wait_failure_category(wait_status: &Value) -> Option<FailureCategory> {
+    wait_status
+        .get("timedOut")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        .then_some(FailureCategory::RunnerTimeout)
 }
 
 fn router_stop_reason(result: &Value) -> Option<RouterStopReason> {

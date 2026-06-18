@@ -366,8 +366,12 @@ fn fixture_env() -> FixtureEnv {
 }
 
 fn write_fake_provider(env: &FixtureEnv, lines: &[&str]) {
-    std::fs::write(&env.fake_provider, lines.join("\n")).unwrap();
-    make_executable(&env.fake_provider);
+    write_fake_provider_path(&env.fake_provider, lines);
+}
+
+fn write_fake_provider_path(path: &Path, lines: &[&str]) {
+    std::fs::write(path, lines.join("\n")).unwrap();
+    make_executable(path);
 }
 
 fn provider_keys(value: &Value) -> Vec<String> {
@@ -392,6 +396,14 @@ fn sorted_provider_keys(value: &Value) -> Vec<String> {
 }
 
 fn acp_router_command(env: &FixtureEnv) -> Command {
+    acp_router_command_with_bins(env, &env.fake_provider, &env.fake_provider)
+}
+
+fn acp_router_command_with_bins(
+    env: &FixtureEnv,
+    claude_acp_bin: &Path,
+    codex_acp_bin: &Path,
+) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"));
     command
         .arg("acp-router")
@@ -399,10 +411,10 @@ fn acp_router_command(env: &FixtureEnv) -> Command {
         .env("HOME", &env.root)
         .env("AGENT_BRIDGE_WORKSPACES", &env.root)
         .env("AGENT_BRIDGE_STATE_DIR", &env.state_dir)
-        .env("CLAUDE_BIN", &env.fake_provider)
-        .env("CLAUDE_ACP_BIN", &env.fake_provider)
-        .env("CODEX_BIN", &env.fake_provider)
-        .env("CODEX_ACP_BIN", &env.fake_provider);
+        .env("CLAUDE_BIN", claude_acp_bin)
+        .env("CLAUDE_ACP_BIN", claude_acp_bin)
+        .env("CODEX_BIN", codex_acp_bin)
+        .env("CODEX_ACP_BIN", codex_acp_bin);
     command
 }
 
@@ -442,7 +454,14 @@ fn assert_json_rpc_message(message: &Value) {
 fn start_acp_router_session(
     env: &FixtureEnv,
 ) -> (Child, ChildStdin, BufReader<ChildStdout>, String) {
-    let mut child = acp_router_command(env)
+    start_acp_router_session_with_command(env, acp_router_command(env))
+}
+
+fn start_acp_router_session_with_command(
+    env: &FixtureEnv,
+    mut command: Command,
+) -> (Child, ChildStdin, BufReader<ChildStdout>, String) {
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -477,6 +496,25 @@ fn write_acp_router_claude_review_prompt(
     session_id: &str,
     prompt_text: &str,
 ) {
+    write_acp_router_review_prompt(stdin, session_id, prompt_text, &["claude"]);
+}
+
+fn write_acp_router_review_prompt(
+    stdin: &mut ChildStdin,
+    session_id: &str,
+    prompt_text: &str,
+    candidates: &[&str],
+) {
+    write_acp_router_review_prompt_with_timeout(stdin, session_id, prompt_text, candidates, 5);
+}
+
+fn write_acp_router_review_prompt_with_timeout(
+    stdin: &mut ChildStdin,
+    session_id: &str,
+    prompt_text: &str,
+    candidates: &[&str],
+    timeout_seconds: i64,
+) {
     writeln!(
         stdin,
         "{}",
@@ -487,9 +525,9 @@ fn write_acp_router_claude_review_prompt(
             "params":{
                 "sessionId": session_id,
                 "prompt":[{"type":"text","text":prompt_text}],
-                "policy":{"candidates":["claude"]},
+                "policy":{"candidates":candidates},
                 "mode":"review",
-                "timeoutSeconds":5
+                "timeoutSeconds":timeout_seconds
             }
         })
     )
@@ -1049,6 +1087,107 @@ fn stdio_acp_router_prompt_runs_one_provider_turn() {
 }
 
 #[test]
+fn stdio_acp_router_prompt_fails_over_after_infrastructure_failure() {
+    let env = fixture_env();
+    let claude_provider = env.root.join("fake-claude-provider");
+    let codex_provider = env.root.join("fake-codex-provider");
+    write_fake_provider_path(
+        &claude_provider,
+        &[
+            "#!/bin/sh",
+            "case \"$*\" in",
+            "  *--version*) echo fake-claude 1.0.0; exit 0 ;;",
+            "esac",
+            "read init || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+            "read new_session || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"claude-session\"}}'",
+            "read prompt_request || exit 1",
+            "sleep 2",
+            "exit 0",
+        ],
+    );
+    write_fake_provider_path(
+        &codex_provider,
+        &[
+            "#!/bin/sh",
+            "case \"$*\" in",
+            "  *--version*) echo fake-codex 1.0.0; exit 0 ;;",
+            "esac",
+            "read init || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+            "read new_session || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"codex-session\"}}'",
+            "read prompt_request || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"codex-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"codex recovered\"}}}}'",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'",
+            "exit 0",
+        ],
+    );
+
+    let command = acp_router_command_with_bins(&env, &claude_provider, &codex_provider);
+    let (mut child, mut stdin, mut stdout, session_id) =
+        start_acp_router_session_with_command(&env, command);
+
+    write_acp_router_review_prompt_with_timeout(
+        &mut stdin,
+        &session_id,
+        "recover through fallback",
+        &["claude", "codex"],
+        1,
+    );
+
+    let (updates, response) = read_json_response(&mut stdout, 3);
+    assert!(
+        updates
+            .iter()
+            .all(|update| update["method"] == "session/update"),
+        "{updates:?}"
+    );
+    assert_eq!(response["result"]["stopReason"], "end_turn");
+    let router_result = &response["result"]["routerResult"];
+    assert_eq!(router_result["provider"], "codex");
+    assert_eq!(router_result["terminalKind"], "answer");
+    assert_eq!(router_result["finalText"], "codex recovered");
+
+    let attempts = router_result["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0]["provider"], "claude");
+    assert_eq!(attempts[0]["disposition"], "failover_eligible");
+    assert_eq!(attempts[0]["failureCategory"], "provider_timeout");
+    assert_eq!(attempts[1]["provider"], "codex");
+    assert_eq!(attempts[1]["disposition"], "trusted_final");
+    assert!(attempts[1]["failureCategory"].is_null());
+
+    let diagnostics = &router_result["diagnostics"];
+    assert_eq!(diagnostics["provider"], "codex");
+    assert_eq!(diagnostics["terminalKind"], "answer");
+    assert_eq!(diagnostics["attempts"].as_array().unwrap().len(), 2);
+    let failover_trail = diagnostics["failoverTrail"].as_array().unwrap();
+    assert_eq!(failover_trail.len(), 1);
+    assert_eq!(failover_trail[0]["sourceProvider"], "claude");
+    assert_eq!(failover_trail[0]["targetProvider"], "codex");
+    assert_eq!(failover_trail[0]["failureCategory"], "provider_timeout");
+    assert_eq!(failover_trail[0]["reason"], "failover_eligible");
+    assert_eq!(failover_trail[0]["sourceAgentId"], attempts[0]["agentId"]);
+    assert_eq!(failover_trail[0]["targetAgentId"], attempts[1]["agentId"]);
+    let evidence_refs = diagnostics["evidenceRefs"].as_array().unwrap();
+    assert_eq!(evidence_refs.len(), 2);
+    assert_eq!(
+        evidence_refs[0]["agentId"],
+        attempts[0]["evidenceRef"]["agentId"]
+    );
+    assert_eq!(
+        evidence_refs[1]["agentId"],
+        attempts[1]["evidenceRef"]["agentId"]
+    );
+
+    drop(stdin);
+    let status = child.wait().unwrap();
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_acp_router_prompt_returns_blocker_for_refusal_stop_reason() {
     let env = fixture_env();
     write_fake_provider(
@@ -1098,6 +1237,74 @@ fn stdio_acp_router_prompt_returns_blocker_for_refusal_stop_reason() {
         "blocker"
     );
     assert!(response["result"]["routerResult"]["finalText"].is_null());
+
+    drop(stdin);
+    let status = child.wait().unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_acp_router_prompt_returns_blocker_for_cancellation_without_failover() {
+    let env = fixture_env();
+    let claude_provider = env.root.join("fake-cancelled-claude-provider");
+    let codex_provider = env.root.join("fake-marker-codex-provider");
+    write_fake_provider_path(
+        &claude_provider,
+        &[
+            "#!/bin/sh",
+            "case \"$*\" in",
+            "  *--version*) echo fake-claude 1.0.0; exit 0 ;;",
+            "esac",
+            "read init || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+            "read new_session || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"claude-session\"}}'",
+            "read prompt_request || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"claude-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"partial cancellation text\"}}}}'",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"cancelled\"}}'",
+            "exit 0",
+        ],
+    );
+    write_fake_provider_path(
+        &codex_provider,
+        &[
+            "#!/bin/sh",
+            "case \"$*\" in",
+            "  *--version*) echo fake-codex 1.0.0; exit 0 ;;",
+            "esac",
+            "printf called > \"$AGENT_BRIDGE_STATE_DIR/codex-called\"",
+            "read init || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+            "read new_session || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"codex-session\"}}'",
+            "read prompt_request || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'",
+            "exit 0",
+        ],
+    );
+
+    let command = acp_router_command_with_bins(&env, &claude_provider, &codex_provider);
+    let (mut child, mut stdin, mut stdout, session_id) =
+        start_acp_router_session_with_command(&env, command);
+
+    write_acp_router_review_prompt(
+        &mut stdin,
+        &session_id,
+        "cancel without fallback",
+        &["claude", "codex"],
+    );
+
+    let (_updates, response) = read_json_response(&mut stdout, 3);
+    assert_eq!(response["result"]["stopReason"], "cancelled");
+    let router_result = &response["result"]["routerResult"];
+    assert_eq!(router_result["provider"], "claude");
+    assert_eq!(router_result["terminalKind"], "blocker");
+    assert_eq!(router_result["blockerReason"], "cancelled");
+    assert!(router_result["finalText"].is_null());
+    assert_eq!(router_result["attempts"].as_array().unwrap().len(), 1);
+    assert_eq!(router_result["attempts"][0]["disposition"], "blocker");
+    assert_eq!(router_result["diagnostics"]["failoverTrail"], json!([]));
+    assert!(!env.state_dir.join("codex-called").exists());
 
     drop(stdin);
     let status = child.wait().unwrap();
