@@ -1086,7 +1086,7 @@ impl TaskActor {
 
 /// Computes jittered exponential backoff for a retry attempt.
 /// Base doubles each attempt (starting at attempt 1). Clamp to [1000, 30000] ms.
-/// Jitter is +/- 25% drawn from wall-clock nanosecond entropy.
+/// Add up to 25% jitter drawn from wall-clock nanosecond entropy.
 fn compute_jittered_backoff(attempt_count: u32, base_backoff_ms: u64) -> u64 {
     let base = base_backoff_ms.max(1000);
     let exp = attempt_count.saturating_sub(1).min(6);
@@ -1097,12 +1097,8 @@ fn compute_jittered_backoff(attempt_count: u32, base_backoff_ms: u64) -> u64 {
         .unwrap_or_default()
         .as_nanos() as u64;
     let jitter_range = (clamped / 4).max(1);
-    let jitter_window = jitter_range * 2 + 1;
-    let jitter_offset = (jitter_seed.wrapping_add(attempt_count as u64)) % jitter_window;
-    let jittered = clamped
-        .saturating_sub(jitter_range)
-        .saturating_add(jitter_offset);
-    jittered.clamp(1000, 30000)
+    let jitter_offset = (jitter_seed.wrapping_add(attempt_count as u64)) % (jitter_range + 1);
+    clamped.saturating_add(jitter_offset).min(30000)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2456,20 +2452,29 @@ mod tests {
             "attempt 1 backoff out of range: {b1}"
         );
 
+        // Attempt 2: base * 2 = 2000, with only additive jitter allowed.
+        for _ in 0..1000 {
+            let b2 = compute_jittered_backoff(2, 1000);
+            assert!(
+                (2000..=2500).contains(&b2),
+                "attempt 2 backoff out of range: {b2}"
+            );
+        }
+
         // Attempt 4: base * 8 = 8000, still within clamp.
-        let b4 = compute_jittered_backoff(4, 1000);
-        assert!(
-            (6000..=10000).contains(&b4),
-            "attempt 4 backoff out of range: {b4}"
-        );
+        for _ in 0..1000 {
+            let b4 = compute_jittered_backoff(4, 1000);
+            assert!(
+                (8000..=10000).contains(&b4),
+                "attempt 4 backoff out of range: {b4}"
+            );
+        }
 
         // Large base should clamp at 30000.
-        let b_cap = compute_jittered_backoff(1, 60000);
-        assert!(
-            b_cap <= 30000,
-            "capped backoff exceeded max+jitter: {b_cap}"
-        );
-        assert!(b_cap >= 22500, "capped backoff below min+jitter: {b_cap}");
+        for _ in 0..1000 {
+            let b_cap = compute_jittered_backoff(1, 60000);
+            assert_eq!(b_cap, 30000, "capped backoff should stay capped");
+        }
 
         // Small base should floor at 1000.
         let b_floor = compute_jittered_backoff(1, 100);
