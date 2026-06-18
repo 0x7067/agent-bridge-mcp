@@ -64,6 +64,15 @@ Preview the strict-validation spawn matrix without launching providers:
 rtk python3 scripts/dogfood_compare.py --providers codex,cursor,kimi --strict-validation --dry-run
 ```
 
+If Codex or Cursor ACP env vars are not already exported, point them at the
+installed CLIs for preflight:
+
+```bash
+CODEX_ACP_BIN="$(command -v codex)" \
+CURSOR_ACP_BIN="$(command -v cursor-agent)" \
+rtk python3 scripts/dogfood_compare.py --providers codex,cursor,kimi --strict-validation --dry-run
+```
+
 Dry-run preflight writes `manifest.json` and each `agent_spawn.json` preview,
 then stops before `agent_observe` and `agent_result`. If a provider/profile
 cannot be previewed, the harness records that run as `status: "failed"` with
