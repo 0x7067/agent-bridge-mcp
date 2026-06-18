@@ -34,3 +34,5 @@
 - Run 14 keep: docs: shorten dogfood workflows resource; Dogfood guidance can be concise without losing the four reproducible paths. Metric 48077 bytes.
 
 - Run 15 keep: docs: shorten code execution resource; Schemas already expose field lists; guidance should teach usage choices. Metric 47547 bytes.
+
+- Run 16 keep: docs: shorten tool descriptions; Tool descriptions were a strong low-risk tools/list target. Metric 46754 bytes.

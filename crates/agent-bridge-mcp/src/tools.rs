@@ -71,9 +71,9 @@ pub fn tool_definitions() -> Vec<Value> {
             "name": "doctor",
             "description": "Diagnose setup, workspace, state, clients, binary freshness, and provider/host readiness. Set focus:\"providers\" for a readiness-only check; add smoke:true for startup proof.",
             "inputSchema": object_schema(json!({
-                "focus": {"type": "string", "enum": ["all", "providers"], "description": "\"all\" (default) runs full setup diagnostics; \"providers\" runs only provider readiness."},
+                "focus": {"type": "string", "enum": ["all", "providers"], "description": "\"providers\" is readiness-only."},
                 "smoke": {"type": "boolean"},
-                "timeoutMs": {"type": "number", "description": "Per-provider smoke budget when smoke is requested."},
+                "timeoutMs": {"type": "number"},
                 "providers": {"type": "array", "items": {"type": "string", "enum": provider_enum}},
                 "aggregateTimeoutMs": {"type": "integer", "minimum": 1, "maximum": 120000},
                 "providerTimeoutMs": {
@@ -81,8 +81,8 @@ pub fn tool_definitions() -> Vec<Value> {
                     "propertyNames": {"enum": provider_enum},
                     "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 90000}
                 },
-                "profile": {"type": "string", "enum": profile_enum, "description": "Launch profile to smoke-test. Defaults to bridge."},
-                "cwd": {"type": "string", "description": "Workspace directory to validate against configured workspace roots."}
+                "profile": {"type": "string", "enum": profile_enum},
+                "cwd": {"type": "string"}
             }), Vec::<&str>::new()),
             "outputSchema": output_schema_for("doctor"),
             "annotations": read_only_annotations("Diagnose Agent Bridge setup")
@@ -163,9 +163,9 @@ fn spawn_properties(provider_enum: &[&str], mode_enum: &[&str], profile_enum: &[
     json!({
         "provider": {"type": "string", "enum": provider_enum},
         "mode": {"type": "string", "enum": mode_enum},
-        "prompt": {"type": "string", "description": "Task prompt. Maximum 100 KiB UTF-8."},
+        "prompt": {"type": "string"},
         "title": {"type": "string"},
-        "cwd": {"type": "string", "description": "Workspace directory under a configured workspace root."},
+        "cwd": {"type": "string"},
         "timeoutSeconds": {"type": "number"},
         "model": {"type": "string"},
         "effort": {"type": "string"},
@@ -173,7 +173,7 @@ fn spawn_properties(provider_enum: &[&str], mode_enum: &[&str], profile_enum: &[
         "isolation": {"type": "string", "enum": ["none", "worktree"]},
         "worktreeName": {"type": "string"},
         "profile": {"type": "string", "enum": profile_enum},
-        "dryRun": {"type": "boolean", "description": "Preview the launch (command, cwd, environment, profile, isolation) without spawning."}
+        "dryRun": {"type": "boolean"}
     })
 }
 

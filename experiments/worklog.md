@@ -114,6 +114,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Schemas already expose field lists; guidance should teach usage choices.
 - Next: Move to tool description and schema-description reductions.
 
+### Run 16: docs: shorten tool descriptions - total_bytes=46754 (KEEP)
+- Timestamp: 2026-06-18 01:07
+- What changed: Shortened top-level public tool descriptions while keeping compatibility anchor phrases.
+- Result: total=46754, delta=-793 vs previous best.
+- Insight: Tool descriptions were a strong low-risk tools/list target.
+- Next: Shorten schema property descriptions next.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.

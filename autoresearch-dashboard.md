@@ -1,8 +1,8 @@
 # Autoresearch Dashboard: agent-bridge-cost-efficiency
 
-**Runs:** 15 | **Kept:** 15 | **Discarded:** 0 | **Crashed:** 0
+**Runs:** 16 | **Kept:** 16 | **Discarded:** 0 | **Crashed:** 0
 **Baseline:** total_bytes: 54498bytes (#1)
-**Best:** total_bytes: 47547bytes (#15, -12.8%)
+**Best:** total_bytes: 46754bytes (#16, -14.2%)
 
 | # | commit | total_bytes | status | description |
 |---|--------|-------------|--------|-------------|
@@ -21,3 +21,4 @@
 | 13 | 7154439 | 48662bytes (-10.7%) | keep | docs: shorten claude host resource |
 | 14 | f681a14 | 48077bytes (-11.8%) | keep | docs: shorten dogfood workflows resource |
 | 15 | 39cbbcb | 47547bytes (-12.8%) | keep | docs: shorten code execution resource |
+| 16 | 4e8b828 | 46754bytes (-14.2%) | keep | docs: shorten tool descriptions |
