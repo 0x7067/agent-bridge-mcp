@@ -525,14 +525,22 @@ git commit -m "feat: add agent result handoff"
 In `crates/agent-bridge-mcp/tests/server_protocol.rs`, extend `consolidated_agent_read_schemas_expose_lean_next_list` with:
 
 ```rust
-let observe_output = tool("agent_observe")["outputSchema"].clone();
+let observe_output = tools
+    .iter()
+    .find(|tool| tool["name"] == "agent_observe")
+    .unwrap()["outputSchema"]
+    .clone();
 assert_eq!(
     observe_output["properties"]["timeline"]["type"],
     "object",
     "agent_observe should advertise timeline"
 );
 
-let result_output = tool("agent_result")["outputSchema"].clone();
+let result_output = tools
+    .iter()
+    .find(|tool| tool["name"] == "agent_result")
+    .unwrap()["outputSchema"]
+    .clone();
 assert_eq!(
     result_output["properties"]["handoff"]["type"],
     "object",
