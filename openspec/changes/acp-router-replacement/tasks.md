@@ -1,16 +1,16 @@
 ## 1. Contract
 
-- [ ] 1.1 Add `acp-router-contract` spec scenarios for ACP initialize, session creation, prompt finality, compact results, and evidence references.
-- [ ] 1.2 Add `provider-failover-policy` spec scenarios for eligible failover, blockers, trusted finality, and visible diagnostics.
+- [x] 1.1 Add `acp-router-contract` spec scenarios for ACP initialize, session creation, prompt finality, compact results, and evidence references.
+- [x] 1.2 Add `provider-failover-policy` spec scenarios for eligible failover, blockers, trusted finality, and visible diagnostics.
 - [ ] 1.3 Validate the change with `openspec validate acp-router-replacement --strict` when the CLI is available.
 
 ## 2. Router Domain and Policy
 
-- [ ] 2.1 Add a small `router` module and crate export.
-- [ ] 2.2 Define routed-turn input, candidate policy, attempt outcome, terminal result, and disposition types.
-- [ ] 2.3 Restrict router candidates to `codex` and `claude`.
-- [ ] 2.4 Map task/provider evidence into `TrustedFinal`, `FailoverEligible`, `Blocker`, or `TerminalFailure`.
-- [ ] 2.5 Add pure unit tests for finality, blockers, and failover eligibility.
+- [x] 2.1 Add a small `router` module and crate export.
+- [x] 2.2 Define routed-turn input, candidate policy, attempt outcome, terminal result, and disposition types.
+- [x] 2.3 Restrict router candidates to `codex` and `claude`.
+- [x] 2.4 Map task/provider evidence into `TrustedFinal`, `FailoverEligible`, `Blocker`, or `TerminalFailure`.
+- [x] 2.5 Add pure unit tests for finality, blockers, and failover eligibility.
 
 ## 3. Internal Routed-Turn Execution
 
