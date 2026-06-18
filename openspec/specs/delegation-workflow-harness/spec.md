@@ -95,3 +95,18 @@ The system SHALL document that native clients should prioritize active and recen
 - **WHEN** an operator needs older completed task records
 - **THEN** workflow guidance points to filtered or raw registry inspection rather than defaulting the native presentation to all historical tasks.
 
+### Requirement: Delegation workflow distinguishes native and protocol tasks
+The system SHALL document when callers should use Agent Bridge lifecycle tools versus protocol-level MCP task support.
+
+#### Scenario: Default workflow uses Agent Bridge lifecycle tools
+- **WHEN** a caller reads the standard delegation workflow
+- **THEN** the workflow continues to use Agent Bridge `agent_*` tools as the primary stable lifecycle.
+
+#### Scenario: Protocol task workflow is conditional
+- **WHEN** guidance describes MCP task support
+- **THEN** it states that protocol task support depends on negotiated host/client capabilities and may be unavailable.
+
+#### Scenario: Verification boundary remains unchanged
+- **WHEN** guidance describes either task workflow
+- **THEN** it states that provider output remains evidence and project verification remains caller-owned.
+
