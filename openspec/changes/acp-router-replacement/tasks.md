@@ -21,7 +21,7 @@
 
 ## 4. ACP Router Runtime
 
-- [ ] 4.1 Add an explicit `agent-bridge-mcp acp-router` runtime path without changing default MCP behavior.
+- [x] 4.1 Add an explicit `agent-bridge-mcp acp-router` runtime path without changing default MCP behavior.
 - [ ] 4.2 Handle ACP `initialize`, `session/new`, and `session/prompt` over newline-delimited JSON-RPC.
 - [ ] 4.3 Emit bounded `session/update` evidence/debug events for provider internals.
 - [ ] 4.4 Return one final answer, blocker, or classified failure for each prompt turn.

@@ -745,6 +745,37 @@ fn stdio_binary_prints_help_and_version_without_starting_mcp_loop() {
 }
 
 #[test]
+fn stdio_binary_exposes_acp_router_runtime_without_starting_mcp_loop() {
+    let help = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    let help_stdout = String::from_utf8(help.stdout).unwrap();
+    assert!(help_stdout.contains("acp-router"));
+
+    let env = fixture_env();
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"))
+        .arg("acp-router")
+        .env_remove("AGENT_BRIDGE_ALLOWED_ROOT")
+        .env("AGENT_BRIDGE_WORKSPACES", &env.root)
+        .env("AGENT_BRIDGE_STATE_DIR", &env.state_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    assert!(!env.state_dir.join("server.pid").exists());
+}
+
+#[test]
 fn stdio_binary_config_check_prints_effective_config_json() {
     let env = fixture_env();
     let config_dir = env.root.join(".agent-bridge-mcp");

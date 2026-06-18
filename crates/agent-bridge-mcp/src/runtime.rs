@@ -35,6 +35,8 @@ struct Cli {
 enum CliCommand {
     /// Ask a running Agent Bridge server to reload config from disk.
     Reload,
+    /// Run the ACP router runtime over newline-delimited JSON-RPC.
+    AcpRouter,
     /// Run the Agent Bridge-owned Claude host runner on the given Unix socket.
     ClaudeHostRunner { socket: std::path::PathBuf },
 }
@@ -54,6 +56,13 @@ pub async fn main_entry() {
     }
     match cli.command {
         Some(CliCommand::Reload) => exit_with_reload(cli.config),
+        Some(CliCommand::AcpRouter) => {
+            if let Err(error) = run_acp_router().await {
+                tracing::error!(error = %error, "[agent-bridge] fatal {error}");
+                std::process::exit(1);
+            }
+            return;
+        }
         Some(CliCommand::ClaudeHostRunner {
             socket: socket_path,
         }) => {
@@ -103,6 +112,17 @@ pub async fn main_entry() {
             std::process::exit(1);
         }
     }
+}
+
+async fn run_acp_router() -> io::Result<()> {
+    let stdin = io::stdin();
+    let mut lines = BufReader::new(stdin).lines();
+    while let Some(line) = lines.next_line().await? {
+        if line.trim().is_empty() {
+            continue;
+        }
+    }
+    Ok(())
 }
 
 fn exit_with_reload(cli_config: crate::config::ConfigCliOverrides) -> ! {
