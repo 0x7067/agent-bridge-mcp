@@ -58,6 +58,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Lifecycle guidance can be terse because detailed socket behavior is also in resources.
 - Next: Shorten dogfood workflow prompt next.
 
+### Run 8: docs: shorten dogfood workflows prompt - total_bytes=52360 (KEEP)
+- Timestamp: 2026-06-18 01:02
+- What changed: Compressed dogfood prompt workflows while retaining read-only, implementation, stalled recovery, provider comparison, and agent_list paths.
+- Result: total=52360, delta=-382 vs previous best.
+- Insight: The detailed dogfood resource can carry nuance; prompt text only needs route selection.
+- Next: Shorten provider comparison prompt next.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.

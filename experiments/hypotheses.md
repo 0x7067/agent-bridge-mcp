@@ -18,3 +18,5 @@
 - Run 6 keep: docs: shorten stalled recovery prompt; Safety tests allow concise text as long as the required inspection terms remain. Metric 53077 bytes.
 
 - Run 7 keep: docs: shorten claude host prompt; Lifecycle guidance can be terse because detailed socket behavior is also in resources. Metric 52742 bytes.
+
+- Run 8 keep: docs: shorten dogfood workflows prompt; The detailed dogfood resource can carry nuance; prompt text only needs route selection. Metric 52360 bytes.

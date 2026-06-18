@@ -252,10 +252,10 @@ Live provider execution remains opt-in and should not be added to default CI."#;
 const COMPARE_PROVIDERS_PROMPT: &str = r#"Compare Agent Bridge providers safely.
 
 Suggested flow:
-1. Call doctor focus:"providers" for the selected providers only when readiness needs focused verification; use smoke only when startup readiness matters.
-2. Spawn equivalent read-only review or research tasks with short prompts and bounded timeouts. All profiles use the same lean-only final-output contract; use profile "bare" only for reduced-configuration experiments, and reserve profile "unblocked" for explicit workspace-permission reach checks after dry-run review. Set agent_spawn dryRun:true to confirm command shape, cwd, launch strategy, selected profile, profileDiagnostics, and provider options before spawning.
-3. Use agent_observe for progress and agent_result for final evidence for each task; until:"final" blocks to finality when only the outcome matters.
-4. Compare reviewPacket, agent_result sections:["transcript","stdout","stderr"], diagnostics, exit metadata, profileDiagnostics, and provider prose as evidence.
+1. Call doctor focus:"providers" only when selected-provider readiness needs verification; smoke only for startup proof.
+2. Spawn equivalent read-only review/research tasks with short prompts and bounded timeouts. All profiles use the same lean-only final-output contract; use "bare" for reduced config and "unblocked" only for workspace-permission reach after dryRun review.
+3. Use agent_observe for progress and agent_result for final evidence; until:"final" waits for outcome.
+4. Compare reviewPacket, transcript/stdout/stderr sections, diagnostics, exit metadata, profileDiagnostics, and provider prose.
 5. Keep correctness decisions and project verification in the main caller."#;
 
 const CALLER_WORKFLOW_RESOURCE: &str = r#"# Agent Bridge Caller Workflow
