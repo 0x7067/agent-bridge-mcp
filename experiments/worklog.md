@@ -107,6 +107,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Dogfood guidance can be concise without losing the four reproducible paths.
 - Next: Shorten code-execution resource next.
 
+### Run 15: docs: shorten code execution resource - total_bytes=47547 (KEEP)
+- Timestamp: 2026-06-18 01:06
+- What changed: Removed schema-like field lists from code-execution guidance while preserving sections, out-of-context evidence, lean final output, source echo, and verification markers.
+- Result: total=47547, delta=-530 vs previous best.
+- Insight: Schemas already expose field lists; guidance should teach usage choices.
+- Next: Move to tool description and schema-description reductions.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.

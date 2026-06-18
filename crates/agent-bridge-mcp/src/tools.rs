@@ -63,13 +63,13 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "providers_list",
-            "description": "List first-class delegation providers and their agent capabilities.",
+            "description": "List delegation providers and capabilities.",
             "inputSchema": object_schema(json!({}), Vec::<&str>::new()),
             "annotations": read_only_annotations("List delegation providers")
         }),
         json!({
             "name": "doctor",
-            "description": "Diagnose Agent Bridge setup, workspace, state, client config, binary freshness, and provider/host-runner readiness. Set focus: \"providers\" for a readiness-only check (replaces the former providers_check tool); add smoke: true to startup-verify launchability.",
+            "description": "Diagnose setup, workspace, state, clients, binary freshness, and provider/host readiness. Set focus:\"providers\" for a readiness-only check; add smoke:true for startup proof.",
             "inputSchema": object_schema(json!({
                 "focus": {"type": "string", "enum": ["all", "providers"], "description": "\"all\" (default) runs full setup diagnostics; \"providers\" runs only provider readiness."},
                 "smoke": {"type": "boolean"},
@@ -89,13 +89,13 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "agent_spawn",
-            "description": "Start a provider agent with the lean-only final-output contract. Primary follow-ups are agent_observe for progress and agent_result for final evidence. Set dryRun: true to preview the command, cwd, environment, profile, and isolation without spawning (replaces the former agent_preview tool).",
+            "description": "Start a provider agent with the lean-only final-output contract. Primary follow-ups: agent_observe for progress, agent_result for evidence. dryRun:true previews launch without spawning.",
             "inputSchema": object_schema(spawn_properties(&provider_enum, &mode_enum, &profile_enum), vec!["provider", "mode", "prompt"]),
             "annotations": {"title": "Start a provider agent", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": true}
         }),
         json!({
             "name": "agent_list",
-            "description": "List active and recent provider agents as lean summaries (identity, status, phase, progress, primary next action).",
+            "description": "List active/recent provider agents as lean summaries.",
             "inputSchema": object_schema(json!({
                 "status": {
                     "type": "array",
@@ -112,7 +112,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "agent_observe",
-            "description": "Primary progress path: observe a provider agent for new transcript/lifecycle events, progress, and next actions. until \"now\" (default) returns state plus new events; until \"final\" blocks until finality or timeoutMs (replaces agent_wait); limit 0 returns state only (replaces agent_status). The events stream is the agent transcript (replaces agent_transcript).",
+            "description": "Primary progress path: observe transcript/lifecycle events, progress, and next actions. until \"now\" returns state plus events; until \"final\" waits; limit 0 returns state only.",
             "inputSchema": object_schema(json!({
                 "agentId": {"type": "string"},
                 "until": {"type": "string", "enum": ["now", "final"], "description": "\"now\" (default) returns immediately with state and new events; \"final\" blocks until the agent is final or timeoutMs elapses."},
@@ -126,7 +126,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "agent_result",
-            "description": "Primary final evidence path: return the review packet and changed files by default; request raw evidence sections on demand. sections selects [\"summary\",\"stdout\",\"stderr\",\"transcript\",\"diff\",\"changedFiles\"] (default [\"summary\",\"changedFiles\"]); request [\"stdout\",\"stderr\"] for the former agent_logs evidence.",
+            "description": "Primary final evidence path: return review packet and changed files by default; request raw evidence sections on demand.",
             "inputSchema": object_schema(json!({
                 "agentId": {"type": "string"},
                 "sections": {
@@ -146,13 +146,13 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "agent_stop",
-            "description": "Control surface: terminate a running provider agent when it is no longer useful. The stopped agent remains inspectable.",
+            "description": "Terminate a running provider agent; stopped agents remain inspectable.",
             "inputSchema": object_schema(json!({"agentId": {"type": "string"}}), vec!["agentId"]),
             "annotations": {"title": "Stop a provider agent", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false}
         }),
         json!({
             "name": "agent_remove",
-            "description": "Cleanup surface: remove a finished/stopped provider agent after result inspection; managed worktree cleanup failure keeps the agent record.",
+            "description": "Remove a finished/stopped provider agent after result inspection.",
             "inputSchema": object_schema(json!({"agentId": {"type": "string"}}), vec!["agentId"]),
             "annotations": {"title": "Remove a provider agent", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false}
         }),
