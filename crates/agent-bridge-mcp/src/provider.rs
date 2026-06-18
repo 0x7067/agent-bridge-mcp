@@ -134,7 +134,7 @@ pub fn capabilities() -> Value {
             "readOnlyEnforcement": {
                 "research": "prompt_enforced",
                 "review": "prompt_enforced",
-                "note": "Antigravity --sandbox is used for non-mutating modes, but Agent Bridge does not claim verified read-only filesystem enforcement."
+                "note": "--sandbox used; read-only filesystem enforcement unverified."
             }
         }
     })

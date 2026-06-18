@@ -142,6 +142,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: List metadata is loaded before the body, so short labels are enough.
 - Next: Evaluate prompt definition arguments field next.
 
+### Run 20: docs: shorten provider cadence notes - total_bytes=44858 (KEEP)
+- Timestamp: 2026-06-18 01:10
+- What changed: Shortened provider outputCadence notes without changing cadence classifications or timing fields.
+- Result: total=44858, delta=-312 vs previous best.
+- Insight: Capability payload has safe wins in repeated explanatory note strings.
+- Next: Shorten Antigravity read-only enforcement note next.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.

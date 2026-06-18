@@ -42,3 +42,5 @@
 - Run 18 keep: docs: trim observe and result schema descriptions; Top-level tool descriptions plus enums cover most schema semantics. Metric 45712 bytes.
 
 - Run 19 keep: docs: shorten guidance list descriptions; List metadata is loaded before the body, so short labels are enough. Metric 45170 bytes.
+
+- Run 20 keep: docs: shorten provider cadence notes; Capability payload has safe wins in repeated explanatory note strings. Metric 44858 bytes.
