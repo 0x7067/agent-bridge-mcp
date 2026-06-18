@@ -16,7 +16,7 @@
 
 - [x] 3.1 Execute router attempts through `TaskManagerHandle` using existing spawn, wait, and result paths.
 - [x] 3.2 Preserve router-requested workspace confinement and worktree isolation through existing task arguments.
-- [ ] 3.3 Promote ACP `stopReason` into task diagnostics so refusal and cancellation classify without transcript text parsing.
+- [x] 3.3 Promote ACP `stopReason` into task diagnostics so refusal and cancellation classify without transcript text parsing.
 - [ ] 3.4 Return compact attempt evidence references without embedding raw stdout, stderr, transcript, or diff bodies.
 
 ## 4. ACP Router Runtime

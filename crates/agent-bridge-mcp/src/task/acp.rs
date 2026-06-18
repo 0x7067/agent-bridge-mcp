@@ -323,7 +323,8 @@ async fn run_acp_task(runtime: AcpTaskRuntime) -> TaskCompletion {
                 .then_some(ErrorType::Stopped)
                 .or((status == TaskStatus::Failed).then_some(ErrorType::ProviderOutputError));
             let error = empty_output.then(|| "ACP provider returned no final text".to_string());
-            (status, error, error_type, None)
+            let diagnostic = acp_stop_reason_diagnostic(&command, &dialog.stop_reason);
+            (status, error, error_type, diagnostic)
         }
         Ok(Err((error, output))) => {
             finish_child(&mut child, pid, true).await;
@@ -402,6 +403,18 @@ async fn run_acp_task(runtime: AcpTaskRuntime) -> TaskCompletion {
         error_type,
         diagnostic,
     }
+}
+
+fn acp_stop_reason_diagnostic(command: &ProviderCommand, stop_reason: &str) -> Option<Value> {
+    if !matches!(stop_reason, "cancelled" | "refusal") {
+        return None;
+    }
+    Some(json!({
+        "failureCategory": FailureCategory::ProviderOutputError.as_str(),
+        "provider": command_provider_hint(command).as_str(),
+        "launchStrategy": "acp",
+        "acpStopReason": stop_reason,
+    }))
 }
 
 async fn wait_stderr(task: Option<tokio::task::JoinHandle<()>>, agent_dir: &Path) -> Vec<u8> {
@@ -669,4 +682,45 @@ async fn finish_child(child: &mut Child, pid: u32, terminate: bool) {
     }
     terminate_child_tree(pid, libc::SIGKILL);
     let _ = timeout(super::SIGKILL_REAP_GRACE, child.wait()).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{LaunchProfile, ProviderKind};
+    use std::collections::BTreeMap;
+
+    fn command() -> ProviderCommand {
+        ProviderCommand {
+            provider: ProviderKind::Claude,
+            command_kind: Some("acp".to_string()),
+            claude_host: None,
+            command: "claude-agent".to_string(),
+            args: Vec::new(),
+            stdin: None,
+            redactions: Vec::new(),
+            cwd: ".".to_string(),
+            timeout_seconds: 5,
+            env: BTreeMap::new(),
+            profile: LaunchProfile::Bridge,
+            prompt_strategy: "bridge".to_string(),
+            profile_diagnostics: Value::Null,
+        }
+    }
+
+    #[test]
+    fn semantic_stop_reason_is_preserved_in_diagnostic() {
+        for stop_reason in ["refusal", "cancelled"] {
+            let diagnostic = acp_stop_reason_diagnostic(&command(), stop_reason).unwrap();
+
+            assert_eq!(diagnostic["acpStopReason"], stop_reason);
+            assert_eq!(diagnostic["failureCategory"], "provider_output_error");
+            assert_eq!(diagnostic["provider"], "claude");
+        }
+    }
+
+    #[test]
+    fn ordinary_end_turn_has_no_stop_reason_diagnostic() {
+        assert!(acp_stop_reason_diagnostic(&command(), "end_turn").is_none());
+    }
 }

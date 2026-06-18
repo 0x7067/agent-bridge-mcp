@@ -3913,6 +3913,52 @@ fn stdio_claude_agent_failure_modes_are_classified() {
 }
 
 #[test]
+fn stdio_claude_stop_reason_is_structured_diagnostic() {
+    let env = fixture_env();
+    write_fake_provider(
+        &env,
+        &[
+            "#!/bin/sh",
+            "case \"$*\" in",
+            "  *--version*) echo fake-provider 1.0.0; exit 0 ;;",
+            "esac",
+            "read init || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+            "read new_session || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"test-session\"}}'",
+            "read prompt_request || exit 1",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"cannot comply\"}}}}'",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"refusal\"}}'",
+        ],
+    );
+    let mut client = McpClient::start(&env);
+
+    let spawned = client.tool(
+        "agent_spawn",
+        json!({
+            "provider": "claude",
+            "mode": "review",
+            "prompt": "refusal",
+            "cwd": env.root,
+            "timeoutSeconds": 5
+        }),
+    );
+    let agent_id = spawned["agentId"].as_str().unwrap();
+    let waited = client.tool(
+        "agent_observe",
+        json!({"until": "final", "verbosity": "detailed", "agentId": agent_id, "timeoutMs": 30000}),
+    );
+    assert_eq!(waited["status"], "failed");
+    assert_eq!(waited["errorType"], "provider_output_error");
+
+    let result = client.tool("agent_result", json!({"agentId": agent_id}));
+    assert_eq!(
+        result["reviewPacket"]["diagnostic"]["acpStopReason"],
+        "refusal"
+    );
+}
+
+#[test]
 fn stdio_claude_agent_extracts_result_with_surrounding_noise() {
     let env = fixture_env();
     let mut client = McpClient::start(&env);
