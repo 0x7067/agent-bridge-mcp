@@ -20,3 +20,5 @@
 - Run 7 keep: docs: shorten claude host prompt; Lifecycle guidance can be terse because detailed socket behavior is also in resources. Metric 52742 bytes.
 
 - Run 8 keep: docs: shorten dogfood workflows prompt; The detailed dogfood resource can carry nuance; prompt text only needs route selection. Metric 52360 bytes.
+
+- Run 9 keep: docs: shorten provider comparison prompt; Comparison guidance mostly needed wording compression, not structural change. Metric 52026 bytes.

@@ -65,6 +65,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: The detailed dogfood resource can carry nuance; prompt text only needs route selection.
 - Next: Shorten provider comparison prompt next.
 
+### Run 9: docs: shorten provider comparison prompt - total_bytes=52026 (KEEP)
+- Timestamp: 2026-06-18 01:02
+- What changed: Condensed provider comparison steps while retaining readiness, profile, observe/result, evidence, and verification ownership.
+- Result: total=52026, delta=-334 vs previous best.
+- Insight: Comparison guidance mostly needed wording compression, not structural change.
+- Next: Move from prompt bodies to caller workflow resource.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.

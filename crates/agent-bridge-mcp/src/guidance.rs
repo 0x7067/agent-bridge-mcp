@@ -260,29 +260,25 @@ Suggested flow:
 
 const CALLER_WORKFLOW_RESOURCE: &str = r#"# Agent Bridge Caller Workflow
 
-Use Agent Bridge when a separate coding agent can provide useful research, review, command execution, or isolated implementation work.
+Use Agent Bridge when a separate coding agent can help with research, review, commands, or isolated implementation.
 
 Primary flow:
-1. Call `doctor` when setup, workspace, state, provider, host-runner, client registration, or binary freshness is uncertain. Use `focus: "providers"` for a readiness-only check and `smoke: true` when startup readiness matters.
-2. Call `agent_spawn` for the real delegated provider agent. Set `dryRun: true` to preview command, cwd, environment, profile, and isolation without spawning. Every spawned provider receives the same lean-only final-output contract.
-3. Call `agent_observe` with a bounded timeout to wait for transcript and lifecycle progress. `until: "final"` blocks to finality, `limit: 0` returns lifecycle state only, and the `events` stream is the agent transcript.
-4. Once final, call `agent_result` for `reviewPacket`, `changedFiles`, exit metadata, and the single `next` action list. Request `sections: ["stdout","stderr","diff","transcript"]` to fetch raw evidence on demand.
-5. Treat provider output and completion as evidence for the main caller, not as final verification.
-6. Call `agent_remove` intentionally after any managed worktree has been inspected. The `next` list marks cleanup as `unsafe` for managed worktree tasks until result inspection is explicit.
+1. Call `doctor` when setup, workspace, provider, host-runner, client config, or binary freshness is uncertain. Use `focus: "providers"` for readiness-only checks and `smoke: true` for startup proof.
+2. Call `agent_spawn`; use `dryRun: true` to preview launch. Every provider receives the lean-only final-output contract.
+3. Call `agent_observe` with a bounded timeout; `until: "final"` waits, `limit: 0` returns state, and `events` is the transcript.
+4. Once final, call `agent_result` for `reviewPacket`, `changedFiles`, exit metadata, and `next`; request stdout/stderr/diff/transcript sections only when needed.
+5. Treat provider output as evidence, not final verification.
+6. Call `agent_remove` only after inspecting any managed worktree.
 
 Notes:
-- When several providers are launchable, prefer one different from the caller's own client unless same-provider behavior is the point or the other providers lack the needed capability.
-- Inspect `doctor.clients` for static user-level MCP client config diagnostics. It reads only `~/.codex/config.toml`, `~/.claude.json`, and `~/.cursor/mcp.json`; it does not edit config, run client CLIs, search project-level overrides, or prove startup. Follow `kind: "shell"` recommendations such as `codex mcp list` or `claude mcp list` when you need client-side verification.
-- Inspect `doctor.binary` for read-only freshness evidence about the running, installed, and release Agent Bridge binaries. It may recommend shell build/install commands, but it does not build, copy, install, or delete binaries.
-- Inspect `doctor.taskExtensionReadiness` only as passive evidence about task-like client metadata observed during `initialize` or request `_meta`. It always reports `serverAdvertisesTasks: false`; protocol-level `tasks/*`, `CreateTaskResult`, listing, cancellation, and notifications remain unavailable until a future implementation change.
-- Use `AGENT_BRIDGE_WORKSPACES` for workspace policy. `AGENT_BRIDGE_STATE_DIR` is optional; when omitted, runtime state and doctor diagnostics use `~/.agent-bridge-mcp/state`.
-- Tool responses are lean by default (each field once, no GUI chrome). Provider final output is lean-only across launch profiles. Pass `verbosity: "detailed"` on `agent_observe`/`agent_result` for debug metadata.
-- Use `agent_list` for bounded attention summaries: active agents first, then finished agents whose result has not yet been inspected.
+- Prefer a launchable provider different from the caller unless the task needs same-provider behavior.
+- `doctor.clients`, `doctor.binary`, and `doctor.taskExtensionReadiness` are read-only diagnostics; follow shell recommendations when host-side proof is needed.
+- Use `AGENT_BRIDGE_WORKSPACES` for workspace policy; `AGENT_BRIDGE_STATE_DIR` is optional.
+- Tool responses are lean by default; pass `verbosity: "detailed"` on `agent_observe`/`agent_result` for debug metadata.
+- Use `agent_list` for active agents and final agents whose result has not been inspected.
 - Provider agents are not interactive or resumable in v1.
 
-Self-guided clients should read `initialize.instructions`, `structuredContent`, output schemas, and the `next` list when available. Clients that ignore those fields can still follow the primary flow manually.
-
-Protocol-level MCP Tasks are distinct from Agent Bridge agent/task tools. Use `agent_spawn`, `agent_list`, and the stable `agent_*` lifecycle by default; `doctor.taskExtensionReadiness` can report observed client metadata, but protocol task support depends on a future negotiated implementation and remains unavailable here.
+Self-guided clients should read `initialize.instructions`, `structuredContent`, output schemas, and `next`. Protocol-level MCP Tasks are separate; use `agent_spawn`, `agent_list`, and the stable `agent_*` lifecycle here.
 "#;
 
 const SAFETY_RESOURCE: &str = r#"# Agent Bridge Safety Guidance
