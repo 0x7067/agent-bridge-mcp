@@ -1784,6 +1784,39 @@ mod tests {
         assert_eq!(events[0]["index"], 2);
     }
 
+    #[tokio::test]
+    async fn read_transcript_marks_partial_and_final_result_events() {
+        let agent_dir = temp_dir("transcript-result-markers");
+        let mut task = sample_task(TaskStatus::Failed);
+        task.agent_dir = agent_dir.display().to_string();
+        task.partial_results = vec![PartialResult {
+            timestamp: "2026-06-13T12:34:56.000Z".to_string(),
+            source: "stdout".to_string(),
+            kind: "provider_event".to_string(),
+            summary: "draft answer".to_string(),
+        }];
+        fs::write(
+            agent_dir.join("transcript.jsonl"),
+            [
+                br#"{"kind":"provider_event","source":"stdout","raw":"draft answer","ts":"2026-06-13T12:34:56.000Z"}"#.as_slice(),
+                b"\n",
+                br#"{"kind":"provider_result","source":"stdout","raw":"final answer"}"#.as_slice(),
+                b"\n",
+            ]
+            .concat(),
+        )
+        .await
+        .unwrap();
+
+        let transcript = read_transcript(&task, 0, 10).await.unwrap();
+        let events = transcript["events"].as_array().unwrap();
+
+        assert_eq!(events[0]["partialResult"], true);
+        assert!(events[0].get("finalResult").is_none());
+        assert_eq!(events[1]["finalResult"], true);
+        assert!(events[1].get("partialResult").is_none());
+    }
+
     #[test]
     fn transcript_evidence_skips_corrupted_lines() {
         let agent_dir = temp_dir("transcript-evidence-corrupt-line");

@@ -3,7 +3,7 @@ use super::{
     MAX_LOG_BYTES, MAX_OBSERVE_EVENTS, MAX_OBSERVE_MS, MAX_WAIT_MS, PROGRESS_TRANSCRIPT_TAIL_BYTES,
     Registry, ResultSections, TaskListInput, TaskListScope, TaskRecord,
 };
-use crate::domain::{ErrorType, TaskPhase, TaskStatus};
+use crate::domain::{ErrorType, PartialResult, TaskPhase, TaskStatus};
 use crate::provider::{self};
 use chrono::Utc;
 use serde_json::{Value, json};
@@ -71,6 +71,7 @@ pub(super) async fn read_transcript(
             trim_jsonl_line(&mut line);
             let mut event =
                 parse_jsonl_value(&line).unwrap_or_else(|| json!({"kind": "malformed"}));
+            mark_result_event(&mut event, &task.partial_results);
             event = redact_value(event, &provider_env_redactions(task.provider));
             event["index"] = json!(line_index);
             events.push(event);
@@ -89,6 +90,60 @@ pub(super) async fn read_transcript(
         "nextCursor": next_cursor,
         "truncated": truncated
     }))
+}
+
+fn mark_result_event(event: &mut Value, partial_results: &[PartialResult]) {
+    if is_final_result_event(event) {
+        event["finalResult"] = json!(true);
+        return;
+    }
+    if partial_results
+        .iter()
+        .any(|partial| event_matches_partial_result(event, partial))
+    {
+        event["partialResult"] = json!(true);
+    }
+}
+
+fn is_final_result_event(event: &Value) -> bool {
+    event.get("kind").and_then(Value::as_str) == Some("provider_result")
+        || (event.get("type").and_then(Value::as_str) == Some("result")
+            && event.get("result").and_then(Value::as_str).is_some())
+}
+
+fn event_matches_partial_result(event: &Value, partial: &PartialResult) -> bool {
+    let source = event
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let kind = event
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("provider_event");
+    source == partial.source
+        && kind == partial.kind
+        && event_timestamp(event) == partial.timestamp
+        && event_summary(event) == partial.summary
+}
+
+fn event_timestamp(event: &Value) -> String {
+    event
+        .get("ts")
+        .or_else(|| event.get("timestamp"))
+        .or_else(|| event.get("at"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+fn event_summary(event: &Value) -> String {
+    let summary = event
+        .get("raw")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| event.get("parsed").map(|value| value.to_string()))
+        .unwrap_or_default();
+    summary.chars().take(512).collect()
 }
 
 pub(super) fn transcript_evidence(agent_dir: &str) -> (bool, bool, bool) {

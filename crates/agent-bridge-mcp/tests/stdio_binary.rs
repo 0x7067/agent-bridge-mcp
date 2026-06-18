@@ -2724,6 +2724,18 @@ fn stdio_agent_result_preserves_final_result_evidence_after_timeout() {
     assert_eq!(result["reviewPacket"]["transcriptAvailable"], true);
     assert_eq!(result["reviewPacket"]["finalResultDetected"], false);
     assert_eq!(result["reviewPacket"]["partialResultDetected"], true);
+
+    let transcript_result = client.tool(
+        "agent_result",
+        json!({"agentId": agent_id, "sections": ["transcript"]}),
+    );
+    assert!(
+        transcript_result["transcript"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["partialResult"] == true)
+    );
 }
 
 #[test]
