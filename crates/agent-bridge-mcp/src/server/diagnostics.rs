@@ -1336,23 +1336,71 @@ async fn doctor_claude_host_runner() -> Value {
             started.elapsed().as_millis() as u64,
             response,
         ),
-        Ok(Err(error)) => json!({
-            "status": "error",
-            "configured": true,
-            "launchStrategy": "host_runner",
-            "socketPath": socket_path.display().to_string(),
-            "pingDurationMs": started.elapsed().as_millis() as u64,
-            "error": error
-        }),
-        Err(_) => json!({
-            "status": "error",
-            "configured": true,
-            "launchStrategy": "host_runner",
-            "socketPath": socket_path.display().to_string(),
-            "pingDurationMs": started.elapsed().as_millis() as u64,
-            "error": "host runner ping timed out after 1000ms"
-        }),
+        Ok(Err(error)) => doctor_claude_host_runner_error_report(
+            &socket_path,
+            started.elapsed().as_millis() as u64,
+            error,
+        ),
+        Err(_) => doctor_claude_host_runner_error_report(
+            &socket_path,
+            started.elapsed().as_millis() as u64,
+            "host runner ping timed out after 1000ms".to_string(),
+        ),
     }
+}
+
+pub(super) fn doctor_claude_host_runner_error_report(
+    socket_path: &Path,
+    ping_duration_ms: u64,
+    error: String,
+) -> Value {
+    doctor_claude_host_runner_error_report_with(socket_path, ping_duration_ms, error, process_alive)
+}
+
+pub(super) fn doctor_claude_host_runner_error_report_with(
+    socket_path: &Path,
+    ping_duration_ms: u64,
+    error: String,
+    process_alive: impl Fn(u32) -> bool,
+) -> Value {
+    let mut report = json!({
+        "status": "error",
+        "configured": true,
+        "launchStrategy": "host_runner",
+        "socketPath": socket_path.display().to_string(),
+        "pingDurationMs": ping_duration_ms,
+        "error": error
+    });
+    if let Some((pid_path, pid)) = read_host_runner_pid(socket_path) {
+        report["pidPath"] = json!(pid_path.display().to_string());
+        report["pid"] = json!(pid);
+        report["pidStatus"] = json!(if process_alive(pid) {
+            "running"
+        } else {
+            "stale"
+        });
+    }
+    report
+}
+
+fn read_host_runner_pid(socket_path: &Path) -> Option<(PathBuf, u32)> {
+    let pid_path = socket_path.with_extension("pid");
+    let pid = std::fs::read_to_string(&pid_path)
+        .ok()?
+        .trim()
+        .parse::<u32>()
+        .ok()?;
+    Some((pid_path, pid))
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    pid > 0 && unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn process_alive(_pid: u32) -> bool {
+    false
 }
 
 pub(super) fn doctor_claude_host_runner_response(

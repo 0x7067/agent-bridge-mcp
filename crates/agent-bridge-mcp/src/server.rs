@@ -1039,6 +1039,32 @@ mod tests {
     }
 
     #[test]
+    fn doctor_host_runner_error_report_names_stale_pid_file() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-bridge-host-runner-stale-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let socket = root.join("claude-host.sock");
+        let pid_path = root.join("claude-host.pid");
+        std::fs::write(&pid_path, "424242\n").unwrap();
+
+        let report = doctor_claude_host_runner_error_report_with(
+            &socket,
+            7,
+            "host_runner_unavailable: unable to connect to Claude host runner".to_string(),
+            |_| false,
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(report["status"], "error");
+        assert_eq!(report["pid"], 424242);
+        assert_eq!(report["pidStatus"], "stale");
+        assert_eq!(report["pidPath"], pid_path.display().to_string());
+    }
+
+    #[test]
     fn parses_codex_agent_bridge_section_and_env_keys() {
         let registration = parse_codex_registration(
             r#"

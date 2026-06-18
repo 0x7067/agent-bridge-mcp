@@ -4396,11 +4396,11 @@ fn stdio_sends_completion_notification_for_launch_failure() {
     let mut extra_env = BTreeMap::new();
     extra_env.insert(
         "CURSOR_AGENT_BIN".to_string(),
-        env.root.join("missing-provider").into_os_string(),
+        OsString::from("missing-provider-agent-bridge"),
     );
     extra_env.insert(
         "CURSOR_ACP_BIN".to_string(),
-        env.root.join("missing-provider").into_os_string(),
+        OsString::from("missing-provider-agent-bridge"),
     );
     let mut client = McpClient::start_with_extra_env(&env, extra_env);
 
