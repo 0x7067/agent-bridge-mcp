@@ -1741,6 +1741,7 @@ mod tests {
 
         assert_eq!(timeline["state"], "working");
         assert_eq!(timeline["attention"], "wait");
+        assert_eq!(timeline["currentActivity"], "provider is reviewing files");
         assert_eq!(timeline["next"][0]["id"], "observe");
         assert!(
             timeline["headline"]

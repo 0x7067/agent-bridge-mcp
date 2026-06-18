@@ -508,7 +508,7 @@ pub(super) fn agent_timeline(task: &TaskRecord, events: &[Value], progress: &Val
     json!({
         "headline": timeline_headline(task, state),
         "state": state,
-        "currentActivity": highlights.first().cloned().map(Value::String).unwrap_or(Value::Null),
+        "currentActivity": highlights.last().cloned().map(Value::String).unwrap_or(Value::Null),
         "recentHighlights": highlights.into_iter().map(Value::String).collect::<Vec<_>>(),
         "attention": attention,
         "next": next
