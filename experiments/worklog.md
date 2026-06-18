@@ -121,6 +121,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Tool descriptions were a strong low-risk tools/list target.
 - Next: Shorten schema property descriptions next.
 
+### Run 17: docs: trim spawn and doctor schema descriptions - total_bytes=46255 (KEEP)
+- Timestamp: 2026-06-18 01:08
+- What changed: Removed or shortened doctor and spawn property descriptions where enums and field names were sufficient.
+- Result: total=46255, delta=-499 vs previous best.
+- Insight: Schema descriptions are useful only where they disambiguate behavior.
+- Next: Trim observe and result schema descriptions next.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.

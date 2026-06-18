@@ -115,11 +115,11 @@ pub fn tool_definitions() -> Vec<Value> {
             "description": "Primary progress path: observe transcript/lifecycle events, progress, and next actions. until \"now\" returns state plus events; until \"final\" waits; limit 0 returns state only.",
             "inputSchema": object_schema(json!({
                 "agentId": {"type": "string"},
-                "until": {"type": "string", "enum": ["now", "final"], "description": "\"now\" (default) returns immediately with state and new events; \"final\" blocks until the agent is final or timeoutMs elapses."},
+                "until": {"type": "string", "enum": ["now", "final"]},
                 "cursor": {"type": "number", "minimum": 0},
-                "limit": {"type": "number", "minimum": 0, "maximum": 500, "description": "Max transcript events to return; 0 returns lifecycle state without events."},
+                "limit": {"type": "number", "minimum": 0, "maximum": 500, "description": "0 returns state only."},
                 "timeoutMs": {"type": "number", "minimum": 0, "maximum": 120000},
-                "verbosity": {"type": "string", "enum": ["compact", "detailed"], "description": "\"compact\" (default) returns the lean envelope; \"detailed\" adds debug metadata."}
+                "verbosity": {"type": "string", "enum": ["compact", "detailed"]}
             }), vec!["agentId"]),
             "outputSchema": output_schema_for("agent_observe"),
             "annotations": read_only_annotations("Observe a provider agent")
@@ -131,14 +131,13 @@ pub fn tool_definitions() -> Vec<Value> {
                 "agentId": {"type": "string"},
                 "sections": {
                     "type": "array",
-                    "items": {"type": "string", "enum": ["summary", "stdout", "stderr", "transcript", "diff", "changedFiles"]},
-                    "description": "Evidence sections to include. Defaults to [\"summary\",\"changedFiles\"]."
+                    "items": {"type": "string", "enum": ["summary", "stdout", "stderr", "transcript", "diff", "changedFiles"]}
                 },
                 "maxBytes": {"type": "number"},
                 "stdoutLine": {"type": "number"},
                 "stderrLine": {"type": "number"},
-                "cursor": {"type": "number", "minimum": 0, "description": "Transcript cursor when the transcript section is requested."},
-                "limit": {"type": "number", "minimum": 1, "maximum": 500, "description": "Max transcript events when the transcript section is requested."},
+                "cursor": {"type": "number", "minimum": 0},
+                "limit": {"type": "number", "minimum": 1, "maximum": 500},
                 "verbosity": {"type": "string", "enum": ["compact", "detailed"]}
             }), vec!["agentId"]),
             "outputSchema": output_schema_for("agent_result"),

@@ -36,3 +36,5 @@
 - Run 15 keep: docs: shorten code execution resource; Schemas already expose field lists; guidance should teach usage choices. Metric 47547 bytes.
 
 - Run 16 keep: docs: shorten tool descriptions; Tool descriptions were a strong low-risk tools/list target. Metric 46754 bytes.
+
+- Run 17 keep: docs: trim spawn and doctor schema descriptions; Schema descriptions are useful only where they disambiguate behavior. Metric 46255 bytes.
