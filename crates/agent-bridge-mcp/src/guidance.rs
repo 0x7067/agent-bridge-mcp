@@ -284,16 +284,15 @@ Self-guided clients should read `initialize.instructions`, `structuredContent`, 
 const SAFETY_RESOURCE: &str = r#"# Agent Bridge Safety Guidance
 
 - Keep the main caller responsible for project gates and final claims.
-- Run relevant tests, lint, typecheck, build, config validation, or OpenSpec validation before saying work is complete.
-- Prefer `research` and `review` modes for read-only second opinions.
-- Prefer `implement` with `isolation: "worktree"` so provider edits can be inspected before integration.
-- Use `command` mode only for bounded command-oriented work with explicit expected evidence.
-- Do not remove a managed worktree until the final result, git status, diff, and changed files have been inspected.
-- If a task appears stalled, use bounded `agent_observe` (including `until: "final"` and `limit: 0` for a state check) and `agent_stop` only after deciding the agent is no longer useful.
-- Stop or ignore provider agents once they have produced useful evidence; do not spend context waiting for source echo, progress narration, generic checklists, or polish.
-- Use `agent_result` `sections: ["transcript"]` for behavior analysis, provider comparison, and final/partial result evidence; it does not replace raw logs or main-thread verification.
-- For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace write symptoms, use bounded `agent_observe` and final `agent_result`; inspect cwd, workspace policy, prompt scope, and isolation before retrying.
-- Do not loosen Codex sandbox permissions as a reflex or repeat an unchanged request after denial diagnostics.
+- Run relevant tests, lint, typecheck, build, config, or OpenSpec checks before claiming completion.
+- Use `research`/`review` for read-only second opinions; use `implement` with `isolation: "worktree"` for inspectable edits.
+- Use `command` only for bounded work with explicit evidence.
+- Do not remove a managed worktree until final result, git status, diff, and changed files have been inspected.
+- For stalls, use bounded `agent_observe` (`until: "final"` or `limit: 0`) and stop only when no longer useful.
+- Stop or ignore agents after useful evidence; do not wait for source echo, progress narration, generic checklists, or polish.
+- Use `agent_result` transcript sections for behavior analysis; it does not replace raw logs or main-thread verification.
+- For Codex patch rejected, sandbox denial, approval denial, outside of the project, or out-of-workspace writes, use bounded `agent_observe` and final `agent_result`; inspect cwd, workspace policy, prompt scope, and isolation before retrying.
+- Do not loosen Codex sandbox permissions as a reflex or repeat unchanged requests after denial diagnostics.
 "#;
 
 const PROVIDER_CAPABILITIES_RESOURCE: &str = r#"# Agent Bridge Provider Capabilities

@@ -22,3 +22,5 @@
 - Run 8 keep: docs: shorten dogfood workflows prompt; The detailed dogfood resource can carry nuance; prompt text only needs route selection. Metric 52360 bytes.
 
 - Run 9 keep: docs: shorten provider comparison prompt; Comparison guidance mostly needed wording compression, not structural change. Metric 52026 bytes.
+
+- Run 10 keep: docs: shorten caller workflow resource; Resource prose has much bigger wins than individual prompt bodies. Metric 50147 bytes.

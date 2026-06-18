@@ -72,6 +72,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Comparison guidance mostly needed wording compression, not structural change.
 - Next: Move from prompt bodies to caller workflow resource.
 
+### Run 10: docs: shorten caller workflow resource - total_bytes=50147 (KEEP)
+- Timestamp: 2026-06-18 01:03
+- What changed: Reduced caller workflow resource details while retaining doctor, agent_spawn, agent_observe, agent_result, reviewPacket, agent_remove, and lean-contract markers.
+- Result: total=50147, delta=-1879 vs previous best.
+- Insight: Resource prose has much bigger wins than individual prompt bodies.
+- Next: Shorten safety resource next, preserving denial diagnostics.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.

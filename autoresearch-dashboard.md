@@ -1,8 +1,8 @@
 # Autoresearch Dashboard: agent-bridge-cost-efficiency
 
-**Runs:** 9 | **Kept:** 9 | **Discarded:** 0 | **Crashed:** 0
+**Runs:** 10 | **Kept:** 10 | **Discarded:** 0 | **Crashed:** 0
 **Baseline:** total_bytes: 54498bytes (#1)
-**Best:** total_bytes: 52026bytes (#9, -4.5%)
+**Best:** total_bytes: 50147bytes (#10, -8.0%)
 
 | # | commit | total_bytes | status | description |
 |---|--------|-------------|--------|-------------|
@@ -15,3 +15,4 @@
 | 7 | e26f02e | 52742bytes (-3.2%) | keep | docs: shorten claude host prompt |
 | 8 | 4dfa4a2 | 52360bytes (-3.9%) | keep | docs: shorten dogfood workflows prompt |
 | 9 | d5e467a | 52026bytes (-4.5%) | keep | docs: shorten provider comparison prompt |
+| 10 | 2899f33 | 50147bytes (-8.0%) | keep | docs: shorten caller workflow resource |
