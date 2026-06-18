@@ -849,6 +849,7 @@ fn task_preview(arguments: Value) -> Result<Value, String> {
         "launchStrategy": launch_strategy(&command),
         "profile": command.profile,
         "promptStrategy": command.prompt_strategy,
+        "acceptanceCriteria": provider::adapter_for(command.provider).acceptance_criteria(),
         "profileDiagnostics": command.profile_diagnostics
     }))
 }

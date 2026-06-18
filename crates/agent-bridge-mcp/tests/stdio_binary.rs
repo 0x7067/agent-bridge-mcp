@@ -2168,6 +2168,10 @@ fn stdio_providers_preview_and_safety_checks() {
     assert_eq!(preview["profile"], "bare");
     assert_eq!(preview["promptStrategy"], "compact");
     assert_eq!(
+        preview["acceptanceCriteria"],
+        "exit 0 with no sandbox or approval denial on stderr"
+    );
+    assert_eq!(
         preview["profileDiagnostics"]["appliedReductions"],
         json!([
             "compact_prompt",
