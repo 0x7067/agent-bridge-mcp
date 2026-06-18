@@ -1,8 +1,8 @@
 # Autoresearch Dashboard: agent-bridge-cost-efficiency
 
-**Runs:** 24 | **Kept:** 24 | **Discarded:** 0 | **Crashed:** 0
+**Runs:** 25 | **Kept:** 25 | **Discarded:** 0 | **Crashed:** 0
 **Baseline:** total_bytes: 54498bytes (#1)
-**Best:** total_bytes: 44481bytes (#24, -18.4%)
+**Best:** total_bytes: 44319bytes (#25, -18.7%)
 
 | # | commit | total_bytes | status | description |
 |---|--------|-------------|--------|-------------|
@@ -30,3 +30,4 @@
 | 22 | 2f50c8a | 44678bytes (-18.0%) | keep | docs: shorten profile diagnostic notes |
 | 23 | b9d5f2b | 44586bytes (-18.2%) | keep | docs: shorten tool annotation titles |
 | 24 | f92b531 | 44481bytes (-18.4%) | keep | docs: omit empty prompt arguments |
+| 25 | b137e34 | 44319bytes (-18.7%) | keep | docs: omit resource list mime types |

@@ -177,6 +177,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Optional empty metadata costs bytes on every prompts/list call.
 - Next: Check resource list mimeType optionality next.
 
+### Run 25: docs: omit resource list mime types - total_bytes=44319 (KEEP)
+- Timestamp: 2026-06-18 01:13
+- What changed: Removed mimeType from resources/list definitions while keeping mimeType on resources/read contents.
+- Result: total=44319, delta=-162 vs previous best.
+- Insight: MCP marks resource definition mimeType optional; read payloads still carry render type.
+- Next: Run one extra experiment on remaining resource prose for non-baseline count margin.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.

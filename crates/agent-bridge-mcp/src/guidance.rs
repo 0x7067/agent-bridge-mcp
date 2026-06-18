@@ -303,12 +303,6 @@ First-class providers:
 - `forge`: Forge ACP; `FORGE_ACP_BIN` required; `FORGE_ACP_ARGS` appends args.
 - `antigravity`: Antigravity ACP; `ANTIGRAVITY_ACP_BIN` required; `ANTIGRAVITY_ACP_ARGS` appends args. Version checks prove binary availability only; smoke can fail until auth is available.
 
-Supported modes:
-- `research`: read/analyze only.
-- `review`: read-only review.
-- `implement`: write-capable implementation.
-- `command`: bounded command-oriented work.
-
 Use `providers_list` for runtime provider summaries and launch profiles. Use `doctor` focus:"providers" for availability/startup checks. Do not loosen Codex sandbox permissions as a reflex or repeat unchanged requests after denial diagnostics.
 
 Antigravity `research`/`review` pass `--sandbox`, but read-only filesystem enforcement is not verified; treat those modes as prompt-enforced unless local evidence proves more.
