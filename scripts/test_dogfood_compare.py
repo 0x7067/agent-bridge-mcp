@@ -1,4 +1,5 @@
 import json
+import io
 import sys
 import tempfile
 import unittest
@@ -62,6 +63,32 @@ class FakeMcpClient:
 
 
 class DogfoodCompareTests(unittest.TestCase):
+    def test_stdio_request_skips_notifications_before_matching_response(self):
+        client = dogfood_compare.StdioMcpClient(["agent-bridge-mcp"], {}, Path("/tmp/stderr"))
+        client.process = type(
+            "FakeProcess",
+            (),
+            {
+                "stdin": io.StringIO(),
+                "stdout": io.StringIO(
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "notifications/agent_bridge/agent_completed",
+                            "params": {"agentId": "agent_1"},
+                        }
+                    )
+                    + "\n"
+                    + json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"ok": True}})
+                    + "\n"
+                ),
+            },
+        )()
+
+        response = client.request("tools/call", {"name": "agent_result"})
+
+        self.assertEqual(response["result"], {"ok": True})
+
     def test_build_run_matrix_pairs_each_provider_with_bridge_and_bare(self):
         matrix = dogfood_compare.build_run_matrix(["codex", "cursor"])
 

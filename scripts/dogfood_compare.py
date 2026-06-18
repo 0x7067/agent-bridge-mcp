@@ -100,10 +100,14 @@ class StdioMcpClient:
         }
         self.process.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
         self.process.stdin.flush()
-        line = self.process.stdout.readline()
-        if not line:
-            raise McpError(f"MCP server exited before responding to {method}")
-        response = json.loads(line)
+        while True:
+            line = self.process.stdout.readline()
+            if not line:
+                raise McpError(f"MCP server exited before responding to {method}")
+            response = json.loads(line)
+            if "id" not in response and response.get("method"):
+                continue
+            break
         if response.get("id") != request_id:
             raise McpError(f"unexpected MCP response id for {method}: {response}")
         if "error" in response:
