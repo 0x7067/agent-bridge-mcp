@@ -324,20 +324,20 @@ Native-client presentation:
 
 const CLAUDE_HOST_LIFECYCLE_RESOURCE: &str = r#"# Claude Host Runner Lifecycle
 
-Use `agent-bridge-mcp claude-host-runner <socket>` when Claude provider calls need host access that the sandboxed MCP server does not have, such as macOS Keychain-backed Claude Code auth.
+Use `agent-bridge-mcp claude-host-runner <socket>` when Claude calls need host access, such as Keychain-backed auth, that the sandboxed MCP server lacks.
 
 Lifecycle:
-1. Start the runner outside the sandbox with the same `AGENT_BRIDGE_WORKSPACES` value as the MCP server.
-2. Confirm readiness with `doctor`, then use the host-runner `ping` request or a Claude-only `doctor` `focus: "providers"` smoke for focused follow-up.
+1. Start the runner outside the sandbox with the MCP server's `AGENT_BRIDGE_WORKSPACES`.
+2. Confirm readiness with `doctor`; use host-runner `ping` or Claude-only `doctor` focus:"providers" smoke for follow-up.
 3. Configure the MCP server with `AGENT_BRIDGE_CLAUDE_HOST_SOCKET`.
-4. Restart the runner after workspace-policy changes; a `workspace_policy_mismatch` diagnostic means the runner and MCP server disagree about `AGENT_BRIDGE_WORKSPACES`.
-5. Stop the runner with SIGTERM or SIGINT so it stops accepting new connections and terminates active Claude children.
-6. Treat `host_runner_unavailable` as a setup problem to inspect, not as permission to silently fall back to sandboxed Claude execution.
+4. On `workspace_policy_mismatch`, align `AGENT_BRIDGE_WORKSPACES` and restart.
+5. Stop with SIGTERM or SIGINT so active Claude children terminate.
+6. Treat `host_runner_unavailable` as setup to inspect, not permission for silent fallback.
 
 Socket behavior:
 - The socket directory must be owner-only.
-- A stale socket may be removed only after a connection probe confirms no live runner is listening.
-- A live socket causes startup to fail without unlinking it.
+- Remove a stale socket only after probing that no runner is listening.
+- A live socket makes startup fail without unlinking it.
 "#;
 
 const DOGFOOD_WORKFLOWS_RESOURCE: &str = r#"# Agent Bridge Dogfood Workflows

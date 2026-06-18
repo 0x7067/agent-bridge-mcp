@@ -86,6 +86,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Safety prose can be shorter when tests pin the critical diagnostic vocabulary.
 - Next: Shorten provider capabilities resource next.
 
+### Run 12: docs: shorten provider capabilities resource - total_bytes=48959 (KEEP)
+- Timestamp: 2026-06-18 01:04
+- What changed: Reduced provider capability resource to provider env facts, runtime summary routing, readiness notes, and Codex denial handling.
+- Result: total=48959, delta=-889 vs previous best.
+- Insight: Runtime providers_list carries detailed capabilities, so static guidance can point to it.
+- Next: Shorten Claude host lifecycle resource next.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.
