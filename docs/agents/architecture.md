@@ -62,8 +62,7 @@ Antigravity are currently permissive and document that validation gap.
 
 `agent_spawn` may include `retryPolicy` with `maxRetries` and `backoffMs`.
 Retries are actor-owned and apply only to transient failure categories:
-`provider_timeout`, `provider_start_error`, `claude_rate_limit`,
-`claude_model_unavailable`, `runner_timeout`, and `client_disconnected`.
+`provider_timeout`, `provider_start_error`, and `host_runner_unavailable`.
 Each retry is a new task record linked to the original by `parentAgentId`.
 
 If a task finalizes without a final provider result but transcript events exist,

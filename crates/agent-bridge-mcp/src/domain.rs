@@ -182,17 +182,11 @@ pub enum FailureCategory {
 }
 
 impl FailureCategory {
-    /// Returns true for categories that may resolve on retry (timeouts,
-    /// rate limits, transient disconnects).
+    /// Returns true for categories eligible for the automatic retry policy.
     pub fn is_transient(self) -> bool {
         matches!(
             self,
-            Self::ProviderTimeout
-                | Self::ProviderStartError
-                | Self::ClaudeRateLimit
-                | Self::ClaudeModelUnavailable
-                | Self::RunnerTimeout
-                | Self::ClientDisconnected
+            Self::ProviderTimeout | Self::ProviderStartError | Self::HostRunnerUnavailable
         )
     }
 
@@ -406,6 +400,37 @@ mod tests {
             let s = expected.as_str();
             let parsed: FailureCategory = s.parse().unwrap();
             assert_eq!(expected, parsed);
+        }
+    }
+
+    #[test]
+    fn failure_category_transient_retry_set_matches_spec() {
+        let cases = [
+            (FailureCategory::ProviderTimeout, true),
+            (FailureCategory::ProviderOutputError, false),
+            (FailureCategory::ProviderExitError, false),
+            (FailureCategory::ProviderStartError, true),
+            (FailureCategory::ProviderSandboxDenied, false),
+            (FailureCategory::HostRunnerUnavailable, true),
+            (FailureCategory::WorktreeCleanupFailed, false),
+            (FailureCategory::WorktreeReclaimFailed, false),
+            (FailureCategory::AgentDirCleanupFailed, false),
+            (FailureCategory::TranscriptUnavailable, false),
+            (FailureCategory::ClaudeApiError, false),
+            (FailureCategory::ClaudeAuthError, false),
+            (FailureCategory::ClaudeBillingError, false),
+            (FailureCategory::ClaudeRateLimit, false),
+            (FailureCategory::ClaudeModelUnavailable, false),
+            (FailureCategory::ClaudeSetupRequired, false),
+            (FailureCategory::RunnerTimeout, false),
+            (FailureCategory::ClientDisconnected, false),
+        ];
+        for (category, retryable) in cases {
+            assert_eq!(
+                category.is_transient(),
+                retryable,
+                "unexpected retry classification for {category:?}"
+            );
         }
     }
 
