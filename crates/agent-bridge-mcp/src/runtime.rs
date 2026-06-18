@@ -329,28 +329,39 @@ async fn run_acp_router_prompt(
     }
     let response_stop_reason =
         router_stop_reason_text(stop_reason.unwrap_or(RouterStopReason::EndTurn));
+    let terminal_kind = router_terminal_kind(disposition);
+    let evidence_ref = json!({
+        "agentId": execution.evidence_ref.agent_id,
+        "resultSections": execution.evidence_ref.result_sections,
+        "transcriptAvailable": execution.evidence_ref.transcript_available
+    });
+    let attempt = json!({
+        "provider": provider,
+        "agentId": execution.agent_id,
+        "disposition": disposition,
+        "stopReason": response_stop_reason,
+        "failureCategory": failure_category,
+        "evidenceRef": evidence_ref
+    });
     Ok(Some(JsonRpcResponse::result(
         id,
         json!({
             "stopReason": response_stop_reason,
             "routerResult": {
                 "provider": provider,
-                "terminalKind": router_terminal_kind(disposition),
+                "terminalKind": terminal_kind,
                 "finalText": routed_final_text,
                 "failureCategory": failure_category,
                 "blockerReason": router_blocker_reason(disposition, stop_reason, failure_category),
-                "attempts": [{
+                "attempts": [attempt.clone()],
+                "diagnostics": {
                     "provider": provider,
-                    "agentId": execution.agent_id,
-                    "disposition": disposition,
-                    "stopReason": response_stop_reason,
-                    "failureCategory": failure_category,
-                    "evidenceRef": {
-                        "agentId": execution.evidence_ref.agent_id,
-                        "resultSections": execution.evidence_ref.result_sections,
-                        "transcriptAvailable": execution.evidence_ref.transcript_available
-                    }
-                }]
+                    "terminalKind": terminal_kind,
+                    "attempts": [attempt],
+                    "failoverTrail": [],
+                    "evidenceRefs": [evidence_ref],
+                    "bounded": true
+                }
             }
         }),
     )))

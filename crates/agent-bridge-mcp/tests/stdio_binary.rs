@@ -1027,8 +1027,19 @@ fn stdio_acp_router_prompt_runs_one_provider_turn() {
             .is_some()
     );
     let router_result = &response["result"]["routerResult"];
+    let diagnostics = &router_result["diagnostics"];
+    assert_eq!(diagnostics["provider"], "claude");
+    assert_eq!(diagnostics["terminalKind"], "answer");
+    assert_eq!(diagnostics["bounded"], true);
+    assert_eq!(diagnostics["attempts"][0]["provider"], "claude");
+    assert_eq!(diagnostics["failoverTrail"], json!([]));
+    assert_eq!(
+        diagnostics["evidenceRefs"][0]["agentId"],
+        router_result["attempts"][0]["evidenceRef"]["agentId"]
+    );
     for raw_key in ["stdout", "stderr", "transcript", "gitDiff"] {
         assert!(router_result.get(raw_key).is_none(), "{raw_key}");
+        assert!(diagnostics.get(raw_key).is_none(), "{raw_key}");
     }
     assert!(env.log_dir.join("argv.txt").exists());
 
