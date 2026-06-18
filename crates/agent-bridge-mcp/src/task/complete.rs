@@ -175,9 +175,10 @@ pub(super) fn host_completion(
     }
 }
 
-/// Maps a finished direct-child exit into a `TaskCompletion`, applying adapter
-/// denial/parseability checks on success and shaping timeout/exit failures. Reads
-/// the captured stdout/stderr logs from `agent_dir` as needed.
+/// Maps a finished direct-child exit into a `TaskCompletion`, applying fatal
+/// denial checks plus strict-mode acceptance checks on success and shaping
+/// timeout/exit failures. Reads the captured stdout/stderr logs from `agent_dir`
+/// as needed.
 pub(super) fn classify_completion(
     agent_id: String,
     command: &ProviderCommand,
@@ -217,8 +218,8 @@ pub(super) fn classify_completion(
     }
 }
 
-/// Classifies a process that exited 0: a fatal denial or unparseable output still
-/// becomes a failure for adapters that enforce those checks; otherwise success.
+/// Classifies a process that exited 0: fatal denial still fails, and strict-mode
+/// provider acceptance reports may also fail the run; otherwise success.
 pub(super) fn classify_success_exit(
     agent_id: String,
     command: &ProviderCommand,
@@ -228,43 +229,44 @@ pub(super) fn classify_success_exit(
     fatal_denial: bool,
 ) -> TaskCompletion {
     let adapter = provider::adapter_for(command.provider);
-    if adapter.polls_stderr_for_denial() || fatal_denial {
-        let stdout = std::fs::read(agent_dir.join("stdout.log")).unwrap_or_default();
-        let stderr = std::fs::read(agent_dir.join("stderr.log")).unwrap_or_default();
-        if fatal_denial || adapter.detects_fatal_denial(&stderr) {
-            return codex_denial_completion(
-                agent_id,
-                command,
-                timeout_seconds,
-                status.code(),
-                signal_name(&status),
-                &stdout,
-                &stderr,
-            );
+    let stdout = std::fs::read(agent_dir.join("stdout.log")).unwrap_or_default();
+    let stderr = std::fs::read(agent_dir.join("stderr.log")).unwrap_or_default();
+    let acceptance = success_acceptance(
+        adapter,
+        &stdout,
+        &stderr,
+        fatal_denial,
+        crate::config::strict_validation_enabled(),
+    );
+    if !acceptance.acceptable {
+        let category = acceptance
+            .category
+            .unwrap_or(FailureCategory::ProviderOutputError);
+        let mut diagnostic = agent_diagnostic(
+            command,
+            category,
+            timeout_seconds * 1000,
+            status.code(),
+            signal_name(&status),
+            &stdout,
+            &stderr,
+        );
+        if let Some(reason) = acceptance.reason.as_deref() {
+            diagnostic["reason"] = json!(reason);
         }
-    }
-    if adapter.enforces_output_parseable() {
-        let stdout = std::fs::read(agent_dir.join("stdout.log")).unwrap_or_default();
-        let stderr = std::fs::read(agent_dir.join("stderr.log")).unwrap_or_default();
-        if !adapter.output_is_acceptable(&stdout) {
-            return TaskCompletion {
-                agent_id,
-                status: TaskStatus::Failed,
-                exit_code: status.code(),
-                signal: signal_name(&status),
-                error: Some("claude provider output was not parseable".to_string()),
-                error_type: Some(ErrorType::ProviderOutputError),
-                diagnostic: Some(agent_diagnostic(
-                    command,
-                    FailureCategory::ProviderOutputError,
-                    timeout_seconds * 1000,
-                    status.code(),
-                    signal_name(&status),
-                    &stdout,
-                    &stderr,
-                )),
-            };
-        }
+        return TaskCompletion {
+            agent_id,
+            status: TaskStatus::Failed,
+            exit_code: status.code(),
+            signal: signal_name(&status),
+            error: acceptance.reason.or_else(|| Some(category.to_string())),
+            error_type: Some(match category {
+                FailureCategory::ProviderSandboxDenied => ErrorType::CodexSandboxDenied,
+                FailureCategory::ProviderOutputError => ErrorType::ProviderOutputError,
+                _ => ErrorType::ProviderExitError,
+            }),
+            diagnostic: Some(diagnostic),
+        };
     }
     TaskCompletion {
         agent_id,
@@ -275,6 +277,26 @@ pub(super) fn classify_success_exit(
         error_type: None,
         diagnostic: None,
     }
+}
+
+fn success_acceptance(
+    adapter: &dyn provider::ProviderAdapter,
+    stdout: &[u8],
+    stderr: &[u8],
+    fatal_denial: bool,
+    strict_validation: bool,
+) -> provider::AcceptanceReport {
+    if fatal_denial || adapter.detects_fatal_denial(stderr) {
+        return provider::AcceptanceReport {
+            acceptable: false,
+            reason: Some("Codex sandbox or approval denied".to_string()),
+            category: Some(FailureCategory::ProviderSandboxDenied),
+        };
+    }
+    if strict_validation {
+        return adapter.acceptance_report(stdout, stderr);
+    }
+    provider::AcceptanceReport::accepted()
 }
 
 /// Classifies a process that exited non-zero: a fatal denial maps to the denial
@@ -686,6 +708,8 @@ pub(super) fn command_provider_hint(command: &ProviderCommand) -> ProviderKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::LaunchProfile;
+    use std::collections::BTreeMap;
     use std::io::Write;
 
     fn temp_agent_dir() -> String {
@@ -708,6 +732,94 @@ mod tests {
     fn write_transcript_bytes(agent_dir: &str, bytes: &[u8]) {
         let path = PathBuf::from(agent_dir).join("transcript.jsonl");
         std::fs::write(path, bytes).unwrap();
+    }
+
+    fn provider_command(provider: ProviderKind) -> ProviderCommand {
+        ProviderCommand {
+            provider,
+            command_kind: Some("acp".to_string()),
+            claude_host: None,
+            command: provider.as_str().to_string(),
+            args: Vec::new(),
+            stdin: None,
+            redactions: Vec::new(),
+            cwd: "/tmp/work".to_string(),
+            timeout_seconds: 30,
+            env: BTreeMap::new(),
+            profile: LaunchProfile::Bridge,
+            prompt_strategy: "bridge".to_string(),
+            profile_diagnostics: json!({}),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn classify_success_exit_uses_acceptance_report_reason() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let agent_dir = temp_agent_dir();
+        std::fs::write(PathBuf::from(&agent_dir).join("stdout.log"), b"{}").unwrap();
+        std::fs::write(
+            PathBuf::from(&agent_dir).join("stderr.log"),
+            b"Patch rejected: file is outside the workspace",
+        )
+        .unwrap();
+        let command = provider_command(ProviderKind::Codex);
+
+        let completion = classify_success_exit(
+            "agent_test".to_string(),
+            &command,
+            Path::new(&agent_dir),
+            30,
+            std::process::ExitStatus::from_raw(0),
+            false,
+        );
+
+        assert_eq!(completion.status, TaskStatus::Failed);
+        let diagnostic = completion.diagnostic.expect("diagnostic");
+        assert_eq!(diagnostic["failureCategory"], "provider_sandbox_denied");
+        assert_eq!(diagnostic["reason"], "Codex sandbox or approval denied");
+    }
+
+    #[test]
+    fn success_acceptance_preserves_default_permissive_mode() {
+        let adapter = provider::adapter_for(ProviderKind::Claude);
+        let report = success_acceptance(adapter, b"not json", b"", false, false);
+
+        assert!(report.acceptable);
+        assert_eq!(report.reason, None);
+        assert_eq!(report.category, None);
+    }
+
+    #[test]
+    fn success_acceptance_rejects_invalid_output_when_strict() {
+        let adapter = provider::adapter_for(ProviderKind::Claude);
+        let report = success_acceptance(adapter, b"not json", b"", false, true);
+
+        assert!(!report.acceptable);
+        assert_eq!(
+            report.reason.as_deref(),
+            Some("claude provider output was not parseable")
+        );
+        assert_eq!(report.category, Some(FailureCategory::ProviderOutputError));
+    }
+
+    #[test]
+    fn success_acceptance_rejects_codex_denial_without_strict_mode() {
+        let adapter = provider::adapter_for(ProviderKind::Codex);
+        let report = success_acceptance(
+            adapter,
+            b"{}",
+            b"Patch rejected: file is outside the workspace",
+            false,
+            false,
+        );
+
+        assert!(!report.acceptable);
+        assert_eq!(
+            report.category,
+            Some(FailureCategory::ProviderSandboxDenied)
+        );
     }
 
     #[test]

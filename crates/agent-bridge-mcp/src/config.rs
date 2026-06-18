@@ -14,6 +14,7 @@ const ENV_WORKSPACES: &str = "AGENT_BRIDGE_WORKSPACES";
 const ENV_STATE_DIR: &str = "AGENT_BRIDGE_STATE_DIR";
 const ENV_CLAUDE_HOST_SOCKET: &str = "AGENT_BRIDGE_CLAUDE_HOST_SOCKET";
 const ENV_MAX_ACTIVE_TASKS: &str = "AGENT_BRIDGE_MAX_ACTIVE_TASKS";
+const ENV_STRICT_VALIDATION: &str = "AGENT_BRIDGE_STRICT_VALIDATION";
 
 static RUNTIME_WORKSPACE_ROOTS: OnceLock<RwLock<Option<Vec<PathBuf>>>> = OnceLock::new();
 
@@ -23,6 +24,7 @@ pub struct Config {
     state_dir: PathBuf,
     claude_host_socket: Option<PathBuf>,
     max_active_tasks: usize,
+    strict_validation: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -58,6 +60,7 @@ struct FileConfig {
     state_dir: Option<PathBuf>,
     claude_host_socket: Option<PathBuf>,
     max_active_tasks: Option<usize>,
+    strict_validation: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -123,12 +126,14 @@ impl Config {
             .max_active_tasks
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_MAX_ACTIVE_TASKS);
+        let strict_validation = builder.strict_validation.unwrap_or(false);
 
         Ok(Self {
             workspaces,
             state_dir,
             claude_host_socket,
             max_active_tasks,
+            strict_validation,
         })
     }
 
@@ -151,6 +156,16 @@ impl Config {
     pub fn max_active_tasks(&self) -> usize {
         self.max_active_tasks
     }
+
+    pub fn strict_validation(&self) -> bool {
+        self.strict_validation
+    }
+}
+
+pub fn strict_validation_enabled() -> bool {
+    Config::from_env(ConfigCliOverrides::default())
+        .map(|config| config.strict_validation())
+        .unwrap_or(false)
 }
 
 pub fn install_runtime_config(config: &Config) -> Result<(), String> {
@@ -198,6 +213,7 @@ struct ConfigBuilder {
     state_dir: Option<PathBuf>,
     claude_host_socket: Option<PathBuf>,
     max_active_tasks: Option<usize>,
+    strict_validation: Option<bool>,
 }
 
 impl ConfigBuilder {
@@ -216,6 +232,9 @@ impl ConfigBuilder {
         }
         if let Some(max_active_tasks) = file.max_active_tasks {
             self.max_active_tasks = Some(max_active_tasks);
+        }
+        if let Some(strict_validation) = file.strict_validation {
+            self.strict_validation = Some(strict_validation);
         }
     }
 
@@ -237,6 +256,9 @@ impl ConfigBuilder {
         if let Some(value) = env.get(ENV_MAX_ACTIVE_TASKS) {
             warn_legacy_env(ENV_MAX_ACTIVE_TASKS);
             self.max_active_tasks = value.to_string_lossy().parse::<usize>().ok();
+        }
+        if let Some(value) = env.get(ENV_STRICT_VALIDATION) {
+            self.strict_validation = parse_bool(value);
         }
     }
 
@@ -313,6 +335,14 @@ fn split_paths(value: &OsString) -> Vec<PathBuf> {
     env::split_paths(value)
         .filter(|path| !path.as_os_str().is_empty())
         .collect()
+}
+
+fn parse_bool(value: &OsString) -> Option<bool> {
+    match value.to_string_lossy().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 fn warn_legacy_env(key: &str) {

@@ -1433,7 +1433,7 @@ fn stdio_binary_config_check_prints_effective_config_json() {
     std::fs::write(
         config_dir.join("config.toml"),
         format!(
-            "workspaces = [\"{}\"]\nstate_dir = \"{}\"\nmax_active_tasks = 7\n",
+            "workspaces = [\"{}\"]\nstate_dir = \"{}\"\nmax_active_tasks = 7\nstrict_validation = true\n",
             env.root.display(),
             env.state_dir.display()
         ),
@@ -1453,6 +1453,7 @@ fn stdio_binary_config_check_prints_effective_config_json() {
     assert_eq!(value["status"], "ok");
     assert_eq!(value["valid"], true);
     assert_eq!(value["maxActiveTasks"], 7);
+    assert_eq!(value["strictValidation"], true);
     assert_eq!(value["stateDir"], env.state_dir.display().to_string());
     assert_eq!(
         value["workspaces"],

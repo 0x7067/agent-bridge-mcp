@@ -1,5 +1,5 @@
 use crate::claude_host::ClaudeHostCommand;
-use crate::domain::{LaunchProfile, ProviderKind, TaskMode};
+use crate::domain::{FailureCategory, LaunchProfile, ProviderKind, TaskMode};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::env;
@@ -58,6 +58,23 @@ pub struct ProviderTask<'a> {
     pub effort: Option<&'a str>,
     pub thinking: Option<&'a str>,
     pub profile: LaunchProfile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptanceReport {
+    pub acceptable: bool,
+    pub reason: Option<String>,
+    pub category: Option<FailureCategory>,
+}
+
+impl AcceptanceReport {
+    pub fn accepted() -> Self {
+        Self {
+            acceptable: true,
+            reason: None,
+            category: None,
+        }
+    }
 }
 
 pub fn capabilities() -> Value {
@@ -436,15 +453,14 @@ pub trait ProviderAdapter: Sync {
         false
     }
 
-    /// Whether a successful exit still requires an output-parseability check.
-    /// Defaults to no.
-    fn enforces_output_parseable(&self) -> bool {
-        false
+    /// Whether captured output is acceptable for a zero-exit provider run.
+    fn acceptance_report(&self, _stdout: &[u8], _stderr: &[u8]) -> AcceptanceReport {
+        AcceptanceReport::accepted()
     }
 
-    /// Whether the provider's stdout is acceptable. Defaults to always.
-    fn output_is_acceptable(&self, _stdout: &[u8]) -> bool {
-        true
+    /// Human-readable acceptance criteria for previews and diagnostics.
+    fn acceptance_criteria(&self) -> &'static str {
+        "exit 0 accepted"
     }
 
     /// Validate task options against this provider's declared capabilities.
@@ -624,6 +640,21 @@ impl ProviderAdapter for ClaudeAdapter {
         &["low", "medium", "high", "xhigh", "max"]
     }
 
+    fn acceptance_report(&self, stdout: &[u8], _stderr: &[u8]) -> AcceptanceReport {
+        if claude_output_is_parseable(stdout) {
+            return AcceptanceReport::accepted();
+        }
+        AcceptanceReport {
+            acceptable: false,
+            reason: Some("claude provider output was not parseable".to_string()),
+            category: Some(FailureCategory::ProviderOutputError),
+        }
+    }
+
+    fn acceptance_criteria(&self) -> &'static str {
+        "stdout contains a JSON line with a non-empty result field"
+    }
+
     fn supported_profiles(&self) -> &'static [LaunchProfile] {
         UNBLOCKED_PROFILES
     }
@@ -634,6 +665,21 @@ impl ProviderAdapter for ClaudeAdapter {
             LaunchProfile::Bridge | LaunchProfile::Bare => &[],
         }
     }
+}
+
+/// A successful legacy Claude run must emit at least one JSON line carrying a
+/// non-empty `result` field. ACP and owned-runner paths validate separately.
+fn claude_output_is_parseable(stdout: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(stdout);
+    text.lines().any(|line| {
+        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+            return false;
+        };
+        value
+            .get("result")
+            .and_then(Value::as_str)
+            .is_some_and(|result| !result.is_empty())
+    })
 }
 
 /// Codex can exit zero while reporting a fatal sandbox/approval/patch denial in
@@ -668,12 +714,28 @@ fn codex_denial_text(stderr: &[u8]) -> bool {
 }
 
 impl ProviderAdapter for CursorAdapter {
+    fn acceptance_report(&self, _stdout: &[u8], _stderr: &[u8]) -> AcceptanceReport {
+        AcceptanceReport::accepted()
+    }
+
+    fn acceptance_criteria(&self) -> &'static str {
+        "exit 0 accepted; Cursor output validation not implemented"
+    }
+
     fn supports_mode(&self, mode: TaskMode) -> bool {
         mode != TaskMode::Command
     }
 }
 
 impl ProviderAdapter for KimiAdapter {
+    fn acceptance_report(&self, _stdout: &[u8], _stderr: &[u8]) -> AcceptanceReport {
+        AcceptanceReport::accepted()
+    }
+
+    fn acceptance_criteria(&self) -> &'static str {
+        "exit 0 accepted; Kimi output validation not implemented"
+    }
+
     fn supported_thinking(&self) -> &'static [&'static str] {
         &["off", "minimal", "low", "medium", "high", "xhigh"]
     }
@@ -715,11 +777,34 @@ impl ProviderAdapter for CodexAdapter {
     fn detects_fatal_denial(&self, stderr: &[u8]) -> bool {
         codex_denial_text(stderr)
     }
+
+    fn acceptance_report(&self, _stdout: &[u8], stderr: &[u8]) -> AcceptanceReport {
+        if self.detects_fatal_denial(stderr) {
+            return AcceptanceReport {
+                acceptable: false,
+                reason: Some("Codex sandbox or approval denied".to_string()),
+                category: Some(FailureCategory::ProviderSandboxDenied),
+            };
+        }
+        AcceptanceReport::accepted()
+    }
+
+    fn acceptance_criteria(&self) -> &'static str {
+        "exit 0 with no sandbox or approval denial on stderr"
+    }
 }
 
 impl ProviderAdapter for ForgeAdapter {}
 
 impl ProviderAdapter for AntigravityAdapter {
+    fn acceptance_report(&self, _stdout: &[u8], _stderr: &[u8]) -> AcceptanceReport {
+        AcceptanceReport::accepted()
+    }
+
+    fn acceptance_criteria(&self) -> &'static str {
+        "exit 0 accepted; Antigravity output validation not implemented"
+    }
+
     fn supported_profiles(&self) -> &'static [LaunchProfile] {
         UNBLOCKED_PROFILES
     }
@@ -1196,8 +1281,47 @@ mod tests {
 
     #[test]
     fn acp_adapters_do_not_parse_legacy_cli_output() {
-        assert!(!adapter_for(ProviderKind::Claude).enforces_output_parseable());
-        assert!(!adapter_for(ProviderKind::Codex).enforces_output_parseable());
-        assert!(adapter_for(ProviderKind::Codex).output_is_acceptable(b"anything"));
+        let codex = adapter_for(ProviderKind::Codex)
+            .acceptance_report(b"{}", b"Patch rejected: file is outside the workspace");
+        assert!(!codex.acceptable);
+        assert_eq!(
+            codex.category,
+            Some(crate::domain::FailureCategory::ProviderSandboxDenied)
+        );
+    }
+
+    #[test]
+    fn claude_acceptance_report_requires_result_json_line() {
+        let adapter = adapter_for(ProviderKind::Claude);
+
+        let accepted = adapter.acceptance_report(b"{\"result\":\"done\"}\n", b"");
+        assert!(accepted.acceptable);
+        assert_eq!(accepted.reason, None);
+        assert_eq!(accepted.category, None);
+
+        let rejected = adapter.acceptance_report(b"not json\n{\"result\":\"\"}\n", b"");
+        assert!(!rejected.acceptable);
+        assert_eq!(
+            rejected.reason.as_deref(),
+            Some("claude provider output was not parseable")
+        );
+        assert_eq!(
+            rejected.category,
+            Some(crate::domain::FailureCategory::ProviderOutputError)
+        );
+    }
+
+    #[test]
+    fn permissive_acceptance_reports_document_current_gaps() {
+        for provider in [
+            ProviderKind::Cursor,
+            ProviderKind::Kimi,
+            ProviderKind::Antigravity,
+        ] {
+            let adapter = adapter_for(provider);
+            let report = adapter.acceptance_report(b"not json", b"");
+            assert!(report.acceptable, "{provider:?}");
+            assert!(adapter.acceptance_criteria().contains("not implemented"));
+        }
     }
 }

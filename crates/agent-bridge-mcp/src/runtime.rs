@@ -722,6 +722,7 @@ fn exit_with_config_check(cli_config: crate::config::ConfigCliOverrides) -> ! {
                 "claudeHostSocket": config.claude_host_socket()
                     .map(|path| path.display().to_string()),
                 "maxActiveTasks": config.max_active_tasks(),
+                "strictValidation": config.strict_validation(),
             }));
             std::process::exit(0);
         }

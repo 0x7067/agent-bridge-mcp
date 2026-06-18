@@ -23,6 +23,7 @@ workspaces = ["{}"]
 state_dir = "{}/file-state"
 claude_host_socket = "{}/file.sock"
 max_active_tasks = 3
+strict_validation = true
 "#,
             file_workspace.display(),
             root.display(),
@@ -74,6 +75,7 @@ max_active_tasks = 3
         Some(root.join("cli.sock").as_path())
     );
     assert_eq!(config.max_active_tasks(), 12);
+    assert!(config.strict_validation());
 }
 
 #[test]
@@ -151,6 +153,7 @@ fn config_missing_file_uses_defaults_and_current_workspace() {
     assert_eq!(config.state_dir(), home.join(".agent-bridge-mcp/state"));
     assert_eq!(config.claude_host_socket(), None);
     assert_eq!(config.max_active_tasks(), 16);
+    assert!(!config.strict_validation());
 }
 
 fn unique_temp(prefix: &str) -> PathBuf {

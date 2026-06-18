@@ -21,16 +21,16 @@
 
 ## 3. Universal Output Validation
 
-- [ ] 3.1 Add `acceptance_report` and `acceptance_criteria` defaulted methods to `ProviderAdapter` trait in `provider.rs`
-- [ ] 3.2 Implement `acceptance_report` for `ClaudeAdapter` migrating the existing `claude_output_is_parseable` check
-- [ ] 3.3 Implement `acceptance_report` for `CodexAdapter` incorporating `codex_denial_text` into the acceptance logic
-- [ ] 3.4 Implement `acceptance_report` for `CursorAdapter` (initially permissive, documenting the gap)
-- [ ] 3.5 Implement `acceptance_report` for `KimiAdapter` (initially permissive, documenting the gap)
-- [ ] 3.6 Implement `acceptance_report` for `AntigravityAdapter` (initially permissive, documenting the gap)
-- [ ] 3.7 Integrate `acceptance_report` into `classify_success_exit` in `task/complete.rs`
-- [ ] 3.8 Add `strict_validation` bool to `Config` (default false) and gate the universal acceptance check behind it
-- [ ] 3.9 Add unit tests for `AcceptanceReport` permutations (acceptable true/false, with/without reason)
-- [ ] 3.10 Run `scripts/quality.sh` and verify no new warnings or machete hits
+- [x] 3.1 Add `acceptance_report` and `acceptance_criteria` defaulted methods to `ProviderAdapter` trait in `provider.rs`
+- [x] 3.2 Implement `acceptance_report` for `ClaudeAdapter` migrating the existing `claude_output_is_parseable` check
+- [x] 3.3 Implement `acceptance_report` for `CodexAdapter` incorporating `codex_denial_text` into the acceptance logic
+- [x] 3.4 Implement `acceptance_report` for `CursorAdapter` (initially permissive, documenting the gap)
+- [x] 3.5 Implement `acceptance_report` for `KimiAdapter` (initially permissive, documenting the gap)
+- [x] 3.6 Implement `acceptance_report` for `AntigravityAdapter` (initially permissive, documenting the gap)
+- [x] 3.7 Integrate `acceptance_report` into `classify_success_exit` in `task/complete.rs`
+- [x] 3.8 Add `strict_validation` bool to `Config` (default false) and gate the universal acceptance check behind it
+- [x] 3.9 Add unit tests for `AcceptanceReport` permutations (acceptable true/false, with/without reason)
+- [x] 3.10 Run `scripts/quality.sh` and verify no new warnings or machete hits
 
 ## 4. Auto Retry Policy
 
