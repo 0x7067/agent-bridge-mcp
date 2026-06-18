@@ -211,15 +211,9 @@ Suggested flow:
 
 const INSPECT_RESULT_PROMPT: &str = r#"Inspect an Agent Bridge task result.
 
-Use agent_result for the final payload, then review:
-- reviewPacket as the concise operator summary
-- status and errorType
-- stdout/stderr excerpts and diagnostics (request sections:["stdout","stderr"])
-- transcript evidence (request sections:["transcript"]) and final/partial result evidence
-- gitStatus, diff, and changedFiles (request sections:["diff"])
-- provider exit metadata
+Use agent_result for the final payload. Start with reviewPacket, status, changedFiles, and next; request sections:["stdout","stderr","transcript","diff"] only when raw evidence is needed.
 
-Default agent_result is compact (review packet plus changed files); request heavier evidence sections only when needed. Do not treat provider completion as final verification. The main caller remains responsible for checking the result against the original request and running the smallest relevant proof before claiming completion."#;
+Do not treat provider completion as final verification. The main caller remains responsible for checking the original request and running the smallest relevant proof before claiming completion."#;
 
 const RECOVER_STALLED_PROMPT: &str = r#"Recover a stalled Agent Bridge task.
 

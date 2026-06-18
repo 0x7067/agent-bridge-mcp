@@ -30,10 +30,18 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Prompt bodies have measurable repeated phrasing and can shrink safely under substring tests.
 - Next: Apply the same compacting to isolated implementation guidance.
 
+### Run 4: docs: tighten implementation delegation prompt - total_bytes=53784 (KEEP)
+- Timestamp: 2026-06-18 00:59
+- What changed: Compacted isolated implementation flow while preserving worktree cleanup and caller verification.
+- Result: total=53784, prompts=9535, delta=-261 vs best.
+- Insight: Implementation guidance had more removable launch prose than review.
+- Next: Shorten result-inspection guidance.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.
 - Review prompt compaction preserved behavior and lowered `prompts_bytes`.
+- Implementation prompt compaction produced the largest prompt win so far.
 
 ## Next Ideas
 - Shorten repeated tool descriptions while preserving the eight-tool mapping.
