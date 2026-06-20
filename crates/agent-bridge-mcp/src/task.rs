@@ -1648,20 +1648,21 @@ mod tests {
         // Lean envelope: a single `next` list, no GUI `presentation`/`actions`.
         assert!(running_public.get("presentation").is_none());
         let running_ids = next_ids(&running_public);
-        assert_eq!(next_action(&running_public, 0)["id"], "observe");
+        assert_eq!(next_action(&running_public, 0)["id"], "wait_final");
         assert_eq!(next_action(&running_public, 0)["tool"], "agent_observe");
         assert_eq!(
             next_action(&running_public, 0)["arguments"]["agentId"],
             running.agent_id
         );
+        assert_eq!(next_action(&running_public, 0)["arguments"]["until"], "final");
         assert_eq!(next_action(&running_public, 0)["safety"], "safe");
+        assert!(running_ids.contains(&"observe".to_string()));
         assert!(running_ids.contains(&"wait_final".to_string()));
         assert!(running_ids.contains(&"stop".to_string()));
         assert!(!running_ids.contains(&"inspect_result".to_string()));
-        // wait_final subsumes the former agent_wait via agent_observe until:"final".
-        let wait = next_item(&running_public, "wait_final");
-        assert_eq!(wait["tool"], "agent_observe");
-        assert_eq!(wait["arguments"]["until"], "final");
+        let observe = next_item(&running_public, "observe");
+        assert_eq!(observe["tool"], "agent_observe");
+        assert_eq!(observe["arguments"]["until"], "now");
 
         let mut final_task = sample_task(TaskStatus::Succeeded);
         final_task.transcript_available = false;
@@ -1742,7 +1743,7 @@ mod tests {
         assert_eq!(timeline["state"], "working");
         assert_eq!(timeline["attention"], "wait");
         assert_eq!(timeline["currentActivity"], "provider is reviewing files");
-        assert_eq!(timeline["next"][0]["id"], "observe");
+        assert_eq!(timeline["next"][0]["id"], "wait_final");
         assert!(
             timeline["headline"]
                 .as_str()
@@ -1775,7 +1776,7 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        assert_eq!(public["timeline"]["next"][0]["id"], "observe");
+        assert_eq!(public["timeline"]["next"][0]["id"], "wait_final");
     }
 
     #[test]

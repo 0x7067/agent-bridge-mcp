@@ -803,19 +803,19 @@ pub(super) fn next_actions(task: &TaskRecord, progress: &Value) -> Value {
         let recommended_poll_ms = progress["recommendedPollMs"].as_i64().unwrap_or(30_000);
         let stall_risk = progress["stallRisk"].as_str().unwrap_or("low");
         actions.push(next_action(
-            "observe",
-            Some("agent_observe"),
-            json!({ "agentId": task.agent_id, "until": "now", "cursor": 0, "limit": 100, "timeoutMs": recommended_poll_ms }),
-            "available",
-            "Observe bounded transcript and lifecycle progress before deciding whether to wait, inspect, or stop.",
-            "safe",
-        ));
-        actions.push(next_action(
             "wait_final",
             Some("agent_observe"),
             json!({ "agentId": task.agent_id, "until": "final", "timeoutMs": recommended_poll_ms.min(MAX_WAIT_MS) }),
             "available",
-            "Block until the agent reaches a final state using the provider-aware polling interval.",
+            "Wait quietly for finality; use observe only when transcript or stall evidence is needed.",
+            "safe",
+        ));
+        actions.push(next_action(
+            "observe",
+            Some("agent_observe"),
+            json!({ "agentId": task.agent_id, "until": "now", "cursor": 0, "limit": 100, "timeoutMs": recommended_poll_ms }),
+            "available",
+            "Observe bounded transcript and lifecycle progress for diagnostics before deciding whether to stop.",
             "safe",
         ));
         actions.push(next_action(

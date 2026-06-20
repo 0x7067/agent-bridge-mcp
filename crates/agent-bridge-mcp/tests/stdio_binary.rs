@@ -4319,8 +4319,9 @@ fn stdio_agent_list_defaults_to_native_presentation_and_filters() {
     assert_eq!(agents[0]["agentId"], active_id);
     assert_eq!(agents[0]["phase"], "active");
     assert!(agents[0].get("presentation").is_none());
-    assert_eq!(agents[0]["next"][0]["id"], "observe");
+    assert_eq!(agents[0]["next"][0]["id"], "wait_final");
     assert_eq!(agents[0]["next"][0]["tool"], "agent_observe");
+    assert_eq!(agents[0]["next"][0]["arguments"]["until"], "final");
     assert_eq!(agents[1]["agentId"], completed_id);
     assert_eq!(agents[1]["status"], "succeeded");
     assert_eq!(agents[1]["isFinal"], true);
