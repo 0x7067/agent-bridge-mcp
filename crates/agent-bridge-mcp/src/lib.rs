@@ -8,6 +8,7 @@ pub mod guidance;
 pub mod mcp;
 pub mod provider;
 pub mod router;
+pub mod router_runtime;
 pub mod runtime;
 pub mod server;
 pub mod task;

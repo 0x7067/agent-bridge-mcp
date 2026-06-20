@@ -1109,6 +1109,12 @@ fn stdio_acp_router_prompt_runs_one_provider_turn() {
             .is_some()
     );
     let router_result = &response["result"]["routerResult"];
+    assert_eq!(router_result["verificationStatus"], "not_verified");
+    assert!(!router_result["evidenceRefs"].as_array().unwrap().is_empty());
+    assert_eq!(
+        router_result["diagnostics"]["evidenceRefs"],
+        router_result["evidenceRefs"]
+    );
     let diagnostics = &router_result["diagnostics"];
     assert_eq!(diagnostics["provider"], "claude");
     assert_eq!(diagnostics["terminalKind"], "answer");
