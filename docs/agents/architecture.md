@@ -8,7 +8,7 @@ path is an explicit ACP router runtime that owns one prompt turn.
 ## At a Glance
 
 - Eight MCP tools only on the compatibility surface — extend via options, not new tools.
-- `agent-bridge-mcp acp-router` is the ACP replacement prompt-turn contract.
+- `agent-bridge-mcp` with no subcommand is the ACP replacement prompt-turn contract.
 - Three conceptual layers: protocol (`mcp.rs`), dispatch (`server.rs`), lifecycle (`task.rs` + `provider.rs`).
 - Finalized current-session agents emit a server-to-client JSON-RPC notification with a compact action summary.
 - Claude is special: it runs through an owned PTY host runner bridged by Unix socket.
@@ -27,7 +27,7 @@ but it is not the final routed-collaboration product contract.
 
 ## ACP Router Runtime
 
-`agent-bridge-mcp acp-router` runs a separate newline-delimited JSON-RPC runtime
+`agent-bridge-mcp` with no subcommand runs a separate newline-delimited JSON-RPC runtime
 for ACP clients. It handles `initialize`, `session/new`, and `session/prompt`;
 it does not advertise MCP tools.
 

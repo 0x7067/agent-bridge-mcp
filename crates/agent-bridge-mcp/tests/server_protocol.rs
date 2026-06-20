@@ -223,7 +223,7 @@ async fn acp_router_migration_guidance_is_documented() {
     .await;
     let result = response.unwrap().result.unwrap();
     let text = result["contents"][0]["text"].as_str().unwrap();
-    assert!(text.contains("agent-bridge-mcp acp-router"));
+    assert!(text.contains("`agent-bridge-mcp` with no subcommand"));
     assert!(text.contains("replacement prompt-turn contract"));
     assert!(text.contains("MCP lifecycle"));
     assert!(text.contains("migration compatibility"));
