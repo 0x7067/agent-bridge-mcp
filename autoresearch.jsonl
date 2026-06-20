@@ -26,3 +26,4 @@
 {"run":25,"commit":"b137e34","metric":44319,"metrics":{"dryrun_bytes":1664,"initialize_bytes":1309,"prompts_bytes":7267,"providers_list_bytes":16804,"resources_bytes":10348,"tools_list_bytes":6927},"status":"keep","description":"docs: omit resource list mime types","timestamp":1781755997,"segment":0}
 {"run":26,"commit":"4044226","metric":44143,"metrics":{"dryrun_bytes":1664,"initialize_bytes":1309,"prompts_bytes":7267,"providers_list_bytes":16804,"resources_bytes":10172,"tools_list_bytes":6927},"status":"keep","description":"docs: remove duplicated provider mode prose","timestamp":1781756025,"segment":0}
 {"type":"config","name":"agent-bridge-polling-friction","metricName":"polling_friction","metricUnit":"points","bestDirection":"lower"}
+{"run":27,"commit":"e12477e","metric":1,"metrics":{"running_first_observe":1,"running_first_wait_final":0},"status":"keep","description":"baseline polling next action order","timestamp":1781923441,"segment":1}

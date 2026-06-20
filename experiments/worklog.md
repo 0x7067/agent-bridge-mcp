@@ -191,6 +191,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: Avoid duplicating structured capability data in prose resources.
 - Next: Run final quality gate and commit final autoresearch logs.
 
+### Run 27: baseline polling next action order - polling_friction=1 (KEEP)
+- Timestamp: 2026-06-19 23:44
+- What changed: Reinitialized the experiment target to caller polling friction and measured current running-agent next action order.
+- Result: polling_friction=1, running_first_observe=1, running_first_wait_final=0.
+- Insight: The current `next` list still encourages immediate observation before quiet finality waiting.
+- Next: Change tests to require `wait_final` first, then reorder the running next actions.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.
@@ -199,6 +206,7 @@ The primary metric is `total_bytes` lower-is-better.
 - Resource prose produced the largest safe reductions because most detail duplicated schemas or runtime tools.
 - Tool/schema metadata should explain only ambiguous behavior; enums, bounds, and top-level descriptions carry the rest.
 - Optional empty metadata (`prompt.arguments: []`, resource-list `mimeType`) costs bytes on discovery responses and can be omitted when the read/get payload keeps the needed detail.
+- Running-agent `next` ordering directly affects caller behavior; `observe` first nudges repeated polling even when completion notifications and `until:"final"` exist.
 
 ## Next Ideas
 - Segment 1: Reduce visible polling loops by making `wait_final` the first
