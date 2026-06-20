@@ -29,11 +29,11 @@ Illegal transitions are rejected. On server startup, orphaned `Queued`/`Running`
 | `isolation` | `Isolation` | `None` or `Worktree` |
 | `worktreeManaged` | bool | Did Agent Bridge create and own the worktree? |
 | `agentDir` | path string | Private directory for captured logs and transcript |
-| `resultInspectedAt` | timestamp | When caller first viewed `agent_result` |
+| `resultInspectedAt` | timestamp | When the result reader first returned the review packet |
 | `transcriptAvailable` | bool | Does `transcript.jsonl` exist with readable events? |
 | `finalResultDetected` | bool | Was a conclusive `provider_result` event recorded? |
 | `partialResultDetected` | bool | Did the transcript contain provider output without a final result? |
-| `partialResults` | list | Bounded transcript-tail summaries exposed in `agent_result` |
+| `partialResults` | list | Bounded transcript-tail summaries exposed by the result reader |
 | `retryPolicy` | object/null | Optional caller policy `{ maxRetries, backoffMs }` |
 | `attemptCount` | integer | Retry attempt number for this record |
 | `parentAgentId` | string/null | Original task id when a retry creates a new record |

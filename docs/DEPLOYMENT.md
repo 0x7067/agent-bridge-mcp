@@ -1,11 +1,13 @@
 # Deployment Guide
 
-**Last verified:** 2026-06-07
-**Deployment method:** CI/CD pipeline (GitHub Actions) for release binaries; manual distribution for MCP server configs.
+**Last verified:** 2026-06-20
+**Deployment method:** CI/CD pipeline (GitHub Actions) for release binaries; manual distribution for ACP/MCP adapter client configs.
 
 ## Environments
 
-This project ships as a **standalone binary**, not a hosted service. "Environments" refer to the machine where the MCP server runs alongside the consuming agent client.
+This project ships as a **standalone binary**, not a hosted service.
+"Environments" refer to the machine where Agent Bridge runs alongside the
+consuming agent client.
 
 | Environment | Delivery Method | Trigger | Approval Required |
 |-------------|-----------------|---------|-------------------|
@@ -46,16 +48,18 @@ Runs in parallel for three targets:
 
 ### Manual Distribution
 
-Download the appropriate artifact from the GitHub Actions run (or attach to a Release), place it on PATH, and wire it into your MCP client JSON config.
+Download the appropriate artifact from the GitHub Actions run (or attach to a
+Release), place it on PATH, and wire it into either your ACP client launch
+configuration or your MCP client JSON config.
 
-Example MCP client snippet:
+Example MCP adapter client snippet:
 
 ```json
 {
   "mcpServers": {
     "agent-bridge": {
       "command": "/usr/local/bin/agent-bridge-mcp",
-      "args": [],
+      "args": ["mcp-adapter"],
       "env": {
         "AGENT_BRIDGE_WORKSPACES": "/home/user/projects",
         "AGENT_BRIDGE_STATE_DIR": "~/.agent-bridge-mcp/state"
@@ -69,8 +73,8 @@ Example MCP client snippet:
 
 | Check | Command or Step | Expected Result |
 |-------|-----------------|-----------------|
-| Binary executes | `agent-bridge-mcp --version` or sending `{ "jsonrpc":"2.0", "id":1, "method":"initialize", "params":{...} }` | Responds with `serverInfo` |
-| Doctor smoke | Send `doctor` tool with `smoke:true` | Reports provider readiness |
+| Binary executes | `agent-bridge-mcp --version` or an ACP `initialize` request | Responds with version/server metadata |
+| Provider smoke | `agent-bridge-mcp --doctor-smoke --provider codex` | Reports provider readiness |
 | Registry state | `ls ~/.agent-bridge-mcp/state` | Directory readable/writeable |
 
 ## Rollback Procedure
@@ -78,13 +82,13 @@ Example MCP client snippet:
 ### When to Rollback
 
 - Binary panics on initialization
-- MCP handshake fails
+- ACP or MCP-adapter handshake fails
 - Regression in delegated task behavior
 
 ### Steps
 
 1. Replace the binary on PATH with the previous known-good artifact.
-2. Restart the MCP client (most MCP hosts restart the subprocess on reconnect).
+2. Restart the consuming client (most MCP hosts restart the subprocess on reconnect).
 3. Verify with the Post-Deployment Verification checks above.
 
 ### No Database Migrations
@@ -99,6 +103,6 @@ This project does not use a relational database. State is stored as JSON files i
 |---------|-------------|------------|
 | `cargo build --release` fails | Missing C toolchain | Install Clang/Xcode/GCC |
 | Release artifact won’t start | Wrong target triple | Download the artifact matching your CPU/OS |
-| MCP client disconnects instantly | Binary crashes on startup | Run binary directly in terminal to see stderr |
+| Client disconnects instantly | Binary crashes on startup | Run binary directly in terminal to see stderr |
 | Claude provider “host runner” not ready | Socket not running or wrong path | Start `claude-host-runner` subcommand and verify socket path |
 | Duplicate code gate fails | Refactoring drift | Review `jscpd` report; refactor shared helpers |

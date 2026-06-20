@@ -1,17 +1,16 @@
-# Dogfood Provider/Profile Comparison
+# Archived Dogfood Provider/Profile Comparison
 
-Use this workflow to run the same read-only prompt through one or more providers
-with both launch profiles: `bridge` and `bare`. The harness talks to the local
-Agent Bridge MCP server over stdio, waits for finality, and writes evidence for
-each provider/profile pair.
+This page documents a removed workflow. The legacy Python harness used the old
+MCP lifecycle tools, so it was deleted when Agent Bridge moved to the ACP router
+and the two-tool MCP adapter.
 
-`unblocked` is intentionally outside this default read-only comparison harness.
-Use it only for explicit workspace-permission reach checks after reviewing the
-dry-run command and profile diagnostics.
+Use this page only when reading older artifacts. New provider checks should use
+the ACP router directly or the `agent_delegate` / `agent_evidence` adapter path
+after a new harness is built.
 
-## What It Captures
+## Legacy Artifacts
 
-For each run, the harness writes:
+For each run, the removed harness wrote:
 
 ```text
 artifacts/dogfood/<timestamp>/
@@ -20,104 +19,40 @@ artifacts/dogfood/<timestamp>/
 └── runs/
     └── <provider>/
         ├── bridge/
-        │   ├── agent_spawn.json
-        │   ├── agent_observe.json
+        │   ├── spawn-preview.json
+        │   ├── observe-events.json
         │   ├── task_result.json
         │   └── task_transcript.json
         └── bare/
-            ├── agent_spawn.json
-            ├── agent_observe.json
+            ├── spawn-preview.json
+            ├── observe-events.json
             ├── task_result.json
             └── task_transcript.json
 ```
 
-`task_transcript.json` is copied from `agent_result` with
-`sections: ["transcript"]`. `task_result.json` is the full `agent_result`
-evidence payload with `sections: ["summary", "stdout", "stderr", "transcript"]`.
+`task_transcript.json` and `task_result.json` were copied from the legacy result
+reader. Equivalent ACP-era evidence should be captured through `agent_evidence`.
 
 Provider output is evidence, not proof. Use the artifacts to compare provider
 behavior, then verify conclusions in the main caller.
 
-## Run It
+## Current Replacement
 
-Build the stdio server:
-
-```bash
-rtk cargo build --bin agent-bridge-mcp
-```
-
-Run the default checked-in prompt against Codex with both profiles:
+For provider readiness, use the built-in smoke diagnostic:
 
 ```bash
-rtk python3 scripts/dogfood_compare.py --providers codex
+agent-bridge-mcp --doctor-smoke --provider <name>
 ```
 
-Compare multiple providers:
-
-```bash
-rtk python3 scripts/dogfood_compare.py --providers codex,cursor,kimi
-```
-
-Preview the strict-validation spawn matrix without launching providers:
-
-```bash
-rtk python3 scripts/dogfood_compare.py --providers codex,cursor,kimi --strict-validation --dry-run --require-success
-```
-
-To mirror configured client apps, run preflight against the installed MCP
-binary. If ACP env vars are not already exported, point them at the installed
-provider CLIs:
-
-```bash
-AGENT_BRIDGE_MCP_BIN="$(command -v agent-bridge-mcp)" \
-CODEX_ACP_BIN="$(command -v codex)" \
-CURSOR_ACP_BIN="$(command -v cursor-agent)" \
-KIMI_ACP_BIN="$(command -v pi)" \
-rtk python3 scripts/dogfood_compare.py --providers codex,cursor,kimi --strict-validation --dry-run --require-success
-```
-
-Dry-run preflight writes `manifest.json` and each `agent_spawn.json` preview,
-then stops before `agent_observe` and `agent_result`. If a provider/profile
-cannot be previewed, the harness records that run as `status: "failed"` with
-`error.json` and continues the rest of the matrix. It does not launch providers,
-but it still validates provider configuration such as required binary
-environment variables. In dry-run mode, `--require-success` requires every
-provider/profile summary to be `status: "preview"`. Explicit ACP binary env
-paths must exist and be executable. ACP arg env values must parse cleanly.
-
-Bake in strict provider output validation before flipping the default:
-
-```bash
-AGENT_BRIDGE_MCP_BIN="$(command -v agent-bridge-mcp)" \
-CODEX_ACP_BIN="$(command -v codex)" \
-CURSOR_ACP_BIN="$(command -v cursor-agent)" \
-KIMI_ACP_BIN="$(command -v pi)" \
-rtk python3 scripts/dogfood_compare.py --providers codex,cursor,kimi --strict-validation --require-success
-```
-
-Use a custom prompt or output directory:
-
-```bash
-rtk python3 scripts/dogfood_compare.py \
-  --providers codex,cursor \
-  --prompt-file examples/dogfood/read-only-prompt.md \
-  --output-dir artifacts/dogfood/local-comparison
-```
-
-The harness defaults `AGENT_BRIDGE_WORKSPACES` to the selected `--cwd` when the
-environment does not already set it. If provider readiness is uncertain, use an
-MCP client to call `doctor` with `focus: "providers"` first. Add `smoke: true`
-only when you are ready to launch provider CLIs as part of live comparison
-prep.
-
-For Claude, start the host runner and export `AGENT_BRIDGE_CLAUDE_HOST_SOCKET`
-before running the harness.
+For end-to-end delegated work, use an ACP `session/prompt` turn or the MCP
+adapter's `agent_delegate` tool, then fetch bounded evidence with
+`agent_evidence`.
 
 ## Interpreting Results
 
 Open `manifest.json` first. It lists each provider/profile run, the `agentId`,
 final status, and paths to the captured transcript and result evidence.
-Dry-run summaries use `status: "preview"` and `spawnPath` instead of
+Dry-run summaries used `status: "preview"` and `spawnPath` instead of
 `agentId`, `resultPath`, and `transcriptPath`.
 Failed preview summaries use `status: "failed"` and `errorPath`.
 
@@ -129,7 +64,7 @@ Compare these fields across `bridge` and `bare`:
 - `task_transcript.json` `events`
 - final provider prose in `task_result.json`
 
-The prompt is read-only and `agent_spawn` uses `isolation: "none"`, so the run is
-intended for behavior comparison rather than implementation. If a provider
-changes files anyway, treat that as a provider/profile finding and inspect the
-workspace before continuing.
+The removed prompt was read-only and the legacy spawn request used
+`isolation: "none"`, so the run was intended for behavior comparison rather than
+implementation. If an older artifact shows file changes anyway, treat that as a
+provider/profile finding and inspect the workspace before continuing.

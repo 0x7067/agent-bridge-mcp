@@ -3,7 +3,7 @@
 ## At a Glance
 
 - **Never print to stdout** — it's the MCP protocol channel. Use stderr.
-- **Keep the tool surface at eight** — extend via options, not new tools.
+- **Keep the public surface small** — ACP router by default; MCP adapter exposes only `agent_delegate` and `agent_evidence`.
 - **Provider output is evidence, not proof** — verify locally before claiming done.
 - **No secrets anywhere** — code, fixtures, commits, logs must stay clean.
 - **PTY tests run single-threaded** — global process state flakes under parallelism.
@@ -26,8 +26,8 @@ through PTYs. Tests exercising it touch **global process state**, so:
   print debug output to stdout; use stderr/logging. A stray println corrupts the framing.
 - `serde_json` is configured with `preserve_order`; keep field ordering stable in
   tool schemas and responses where callers or fixtures depend on it.
-- Keep the tool surface at eight tools (see `architecture.md`). Extend via options,
-  not new tools, unless there's a strong reason.
+- Keep the public surface small (see `architecture.md`). ACP hosts use the router
+  directly; MCP hosts use `agent_delegate` and `agent_evidence`.
 
 ## Evidence vs. Proof
 

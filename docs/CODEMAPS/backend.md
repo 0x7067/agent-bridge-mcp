@@ -1,7 +1,7 @@
 # Backend Codemap
 
-**Last Updated:** 2026-06-07
-**Entry Points:** `src/main.rs`, `src/runtime.rs`, `src/server.rs`, `src/task.rs`
+**Last Updated:** 2026-06-20
+**Entry Points:** `src/main.rs`, `src/runtime.rs`, `src/router_runtime.rs`, `src/mcp_adapter.rs`, `src/task.rs`
 
 ## Architecture
 
@@ -10,16 +10,17 @@ block-beta
     columns 3
     MAIN["main.rs<br/>tokio::main"]:1
     RUNTIME["runtime.rs<br/>stdio loop + signals"]:1
-    SERVER["server.rs<br/>JSON-RPC dispatch"]:1
+    ROUTER["router_runtime.rs<br/>ACP JSON-RPC"]:1
+    ADAPTER["mcp_adapter.rs<br/>MCP adapter"]:1
     space:2
     TASK["task.rs<br/>manager façade"]:1
     DOMAIN["domain.rs<br/>types / enums"]:1
-    GUIDANCE["guidance.rs<br/>prompts + resources"]:1
 
     MAIN --> RUNTIME
-    RUNTIME --> SERVER
-    SERVER --> TASK
-    SERVER --> GUIDANCE
+    RUNTIME --> ROUTER
+    RUNTIME --> ADAPTER
+    ROUTER --> TASK
+    ADAPTER --> TASK
     TASK --> DOMAIN
 ```
 
@@ -28,9 +29,11 @@ block-beta
 | Module | Purpose | Exports | Dependencies |
 |--------|---------|---------|--------------|
 | `main.rs` | Binary entrypoint | `main()` | `runtime::main_entry` |
-| `runtime.rs` | Stdio loop, panic hook, shutdown signal handling, host-runner subcommand routing | `main_entry()` | `mcp`, `server`, `task`, `claude_host`, `libc` |
-| `server.rs` | JSON-RPC method dispatcher (`initialize`, `tools/list`, `tools/call`, `prompts/*`, `resources/*`) | `handle_request()` | `tools`, `task`, `guidance`, `provider`, `diagnostics` |
-| `server/diagnostics.rs` | `doctor` tool implementation + provider readiness/smoke checks | `doctor()` | `provider`, `env`, `tokio::process` |
+| `runtime.rs` | CLI parsing, stdio loop selection, panic hook, shutdown signal handling, host-runner subcommand routing | `main_entry()` | `mcp`, `router_runtime`, `mcp_adapter`, `server`, `task`, `claude_host`, `libc` |
+| `router_runtime.rs` | Default ACP stdio runtime (`initialize`, `session/new`, `session/prompt`) | `run_stdio()`, `execute_prompt_turn()` | `mcp`, `router`, `task` |
+| `mcp_adapter.rs` | Compatibility MCP surface (`agent_delegate`, `agent_evidence`) | `run_stdio()` | `mcp`, `task` |
+| `server.rs` | Internal diagnostics wrapper for provider smoke/readiness | `doctor_report()` | `diagnostics` |
+| `server/diagnostics.rs` | Provider readiness/smoke diagnostics | `doctor()` | `provider`, `env`, `tokio::process` |
 | `task.rs` | Facade + `TaskManagerHandle` singleton + `TaskActor` message loop | `TaskManagerHandle`, `TaskRecord`, `Registry` | `task/*` submodules |
 | `task/registry.rs` | Atomic registry load/save, legacy normalization, temp cleanup | `load_registry`, `save_registry`, `validate_registry_text` | `tokio::fs`, `serde_json` |
 | `task/spawn.rs` | Argument validation, worktree creation, process launch, host-runner bridging | `validate_spawn_arguments`, `launch_task`, `safe_cwd` | `tokio::process`, `provider`, `domain` |
@@ -38,22 +41,20 @@ block-beta
 | `task/complete.rs` | Completion classification, host-response ingestion, transcript scanning, git snapshots | `classify_completion`, `scan_partial_results`, `git_snapshot` | `std::fs`, `serde_json` |
 | `task/review.rs` | Payload shaping, progress calculation, `next` action lists, listing/filtering | `public_task`, `observe_payload`, `review_packet`, `list_tasks` | `chrono`, `serde_json` |
 | `domain.rs` | Core enums and strongly-typed wrappers | `ProviderKind`, `TaskMode`, `TaskStatus`, `FailureCategory`, `TimeoutSeconds`, `WorktreeName` | `serde` |
-| `guidance.rs` | MCP prompts and resources; self-describing usage instructions | `INITIALIZATION_INSTRUCTIONS`, `prompt_definitions`, `resource_definitions` | `serde_json` |
 | `mcp.rs` | Plain JSON-RPC 2.0 types | `JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcId`, `JsonRpcError` | `serde` |
-| `tools.rs` | Tool schemas, input deserializers, `deny_unknown_fields` | `ToolName`, `ToolCallParams`, `tool_definitions()` | `serde_json` |
 
 ## Data Flow
 
-1. **Request arrival:** MCP client writes ND-JSON to stdin. `runtime.rs` (`BufReader` over stdin) deserializes into `JsonRpcRequest`.
-2. **Dispatch:** `runtime.rs` calls `server::handle_request(request)`, which matches `method`.
-3. **Tool call:** `tools/call` resolves `ToolName`, validates arguments, and fans out to task-manager methods or `doctor()`.
+1. **Request arrival:** Client writes ND-JSON to stdin. `runtime.rs` deserializes into `JsonRpcRequest`.
+2. **Runtime selection:** no subcommand runs `router_runtime`; `mcp-adapter` runs `mcp_adapter`.
+3. **Public dispatch:** ACP requests route through `session/prompt`; MCP compatibility calls route through `agent_delegate` or `agent_evidence`.
 4. **Task lifecycle:** `TaskManagerHandle` serializes commands through an async MPSC channel to the `TaskActor`.
-5. **Actor execution:** `TaskActor::run` processes `ActorCommand` variants (`Spawn`, `Stop`, `Get`, `List`, …) against in-memory registry and filesystem state.
-6. **Spawn path:** `spawn.rs` validates → creates worktree (optional) → builds `ProviderCommand` → launches process (or host-runner task) → registers PID → begins IO drains.
-7. **Supervision path:** `supervision.rs` `wait_for_child` polls exit status, timeout, and stderr denial. On completion, signals are escalated (SIGTERM → SIGKILL).
+5. **Actor execution:** `TaskActor::run` processes actor commands against in-memory registry and filesystem state.
+6. **Spawn path:** `spawn.rs` validates, creates a worktree when requested, builds `ProviderCommand`, launches the provider, registers PID, and begins IO drains.
+7. **Supervision path:** `supervision.rs` `wait_for_child` polls exit status, timeout, and stderr denial. On completion, signals are escalated (SIGTERM to SIGKILL).
 8. **Classification path:** `complete.rs` reads captured stdout/stderr, classifies exit status, builds `TaskCompletion`, and saves it to the registry.
-9. **Observation path:** `review.rs` reads the registry and transcript JSONL, computing progress metrics and `next` action lists for the caller.
-10. **Response:** `server.rs` wraps the result/error in `JsonRpcResponse` and writes ND-JSON to stdout.
+9. **Evidence path:** `review.rs` reads the registry and transcript JSONL, computing summaries, bounded evidence, and `next` action lists.
+10. **Response:** The selected runtime wraps the result/error in `JsonRpcResponse` and writes ND-JSON to stdout.
 
 ## External Dependencies
 

@@ -1,7 +1,7 @@
 # Testing Workflows
 
-**Last Updated:** 2026-06-07
-**Based on patterns from:** `tests/protocol_models.rs`, `tests/server_protocol.rs`, `tests/binary_panic.rs`, `tests/claude_interactive_runner.rs`
+**Last Updated:** 2026-06-20
+**Based on patterns from:** `tests/protocol_models.rs`, `tests/mcp_adapter_protocol.rs`, `tests/stdio_binary.rs`, `tests/binary_panic.rs`, `tests/claude_interactive_runner.rs`
 
 ## How to Write a Deterministic Fake-Provider Test
 
@@ -13,8 +13,8 @@ Place a fake provider script in `tests/fixtures/my_provider/fake.sh`:
 
 ```bash
 #!/usr/bin/env bash
-# Simulates a provider that prints a marker and exits 0.
-echo "AGENT_BRIDGE_PROVIDER_SMOKE_OK"
+# Simulates a provider that prints a final result and exits 0.
+echo "provider smoke ok"
 ```
 
 Make it executable:
@@ -23,46 +23,31 @@ Make it executable:
 chmod +x tests/fixtures/my_provider/fake.sh
 ```
 
-In a Rust test, temporarily manipulate PATH or provider lookup to invoke the fake:
+In a Rust test, temporarily point the relevant provider binary environment
+variable at the fake. Prefer the existing env guard helpers in the test suite so
+global process environment is restored even when the assertion fails:
 
 ```rust
-// tests/server_protocol.rs
-use std::env;
-
 #[test]
 fn my_provider_smoke_ok() {
-    // Arrange: point the test at the fake script
-    let fake_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/my_provider");
-    let original_path = env::var_os("PATH");
-    env::set_var("PATH", format!("{}:{} {}", fake_dir, original_path.as_ref().unwrap()));
-
-    // Act: call doctor with smoke targeting the provider
-    let response = call_doctor_sync(json!({
-        "focus": "providers",
-        "smoke": true,
-        "providers": ["my_provider"]
-    }));
-
-    // Assert
-    assert_eq!(response["providers"]["my_provider"]["readiness"]["state"], "ready");
-
-    // Cleanup
-    if let Some(p) = original_path { env::set_var("PATH", p); }
+    let _env = EnvGuard::set("CODEX_ACP_BIN", fake_provider_path());
+    // Exercise the public surface that should launch the provider.
+    // Prefer stdio_binary.rs for full stdio behavior or
+    // mcp_adapter_protocol.rs for adapter-only behavior.
 }
 ```
 
 ### Pattern: Protocol Model Roundtrip
 
-For anything touching `JsonRpcRequest`/`JsonRpcResponse` or tool param parsing, add a model test in `tests/protocol_models.rs`:
+For anything touching `JsonRpcRequest`/`JsonRpcResponse` or adapter input
+parsing, add a model or adapter test:
 
 ```rust
-// tests/protocol_models.rs
 #[test]
-fn my_new_tool_params_deserialize_correctly() {
-    let input = r#"{"requiredField":"hi","optionalFlag":true}"#;
-    let parsed: MyNewToolInput = serde_json::from_str(input).unwrap();
-    assert_eq!(parsed.required_field, "hi");
-    assert!(parsed.optional_flag.unwrap());
+fn adapter_input_contains_required_fields() {
+    let value: serde_json::Value =
+        serde_json::from_str(r#"{"prompt":"hi","provider":"codex","mode":"research"}"#).unwrap();
+    assert_eq!(value["prompt"], "hi");
 }
 ```
 
@@ -116,17 +101,19 @@ fn forced_panic_kills_children() {
 }
 ```
 
-## How to Write a Server Protocol Test
+## How to Write a Stdio Protocol Test
 
-Use the synchronous helpers in `tests/server_protocol.rs`:
+Use the synchronous helpers in `tests/stdio_binary.rs` or
+`tests/mcp_adapter_protocol.rs`:
 
 ```rust
-fn call_tool_sync(method: &str, arguments: Value) -> Value {
+fn call_adapter_tool(name: &str, arguments: Value) -> Value {
     // ...spawns the server, sends ND-JSON, reads response...
 }
 ```
 
-Assert on the resulting JSON. Avoid asserting on unstable timestamps or UUIDs; assert presence/absence of keys and status enumerations.
+Assert on the resulting JSON. Avoid unstable timestamps or UUIDs; assert
+presence/absence of keys and status enumerations.
 
 ### Checklist
 

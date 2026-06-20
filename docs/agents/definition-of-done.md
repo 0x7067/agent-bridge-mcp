@@ -28,8 +28,9 @@ Integration tests live in `crates/agent-bridge-mcp/tests/` with fixtures under
 `tests/fixtures/`.
 
 ```bash
-cargo test                          # full suite
-cargo test --test server_protocol   # one integration test target
+cargo test -p agent-bridge-mcp -- --test-threads=1
+cargo test -p agent-bridge-mcp --test mcp_adapter_protocol
+cargo test -p agent-bridge-mcp --test stdio_binary -- --test-threads=1
 ```
 
 Notes:
@@ -49,4 +50,3 @@ Notes:
 - [Guardrails](guardrails.md) — PTY test hazards, MCP protocol contract, secrets
 - [Testing workflows](../WORKFLOWS/unit-tests.md) — patterns for fake-provider tests, PTY tests, protocol tests
 - [Quality workflow](../WORKFLOWS/backend.md) — running quality gates, interpreting output
-

@@ -392,7 +392,7 @@ fn provider_diagnostic(
     });
     if provider == ProviderKind::Claude && crate::claude_host::socket_path_from_env().is_none() {
         diagnostic["recommendation"] = json!(
-            "Start the Agent Bridge Claude host runner and retry doctor with focus: providers and smoke: true"
+            "Start the Agent Bridge Claude host runner and retry `agent-bridge-mcp --doctor-smoke --provider claude`"
         );
     }
     diagnostic

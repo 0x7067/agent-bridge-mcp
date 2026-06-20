@@ -37,7 +37,7 @@ pub(super) async fn doctor(arguments: Value) -> Result<Value, String> {
         serde_json::from_value(arguments).map_err(|error| error.to_string())?;
     match input.focus.as_deref() {
         None | Some("all") => {}
-        Some("providers") => return providers_check(doctor_provider_arguments(&input)).await,
+        Some("providers") => return provider_diagnostics(doctor_provider_arguments(&input)).await,
         Some(other) => {
             return Err(format!(
                 "focus must be one of: all, providers (got {other})"
@@ -51,7 +51,7 @@ pub(super) async fn doctor(arguments: Value) -> Result<Value, String> {
     let clients = doctor_clients();
     let task_extension_readiness = doctor_task_extension_readiness();
     let claude_host_runner = doctor_claude_host_runner().await;
-    let provider_report = providers_check(doctor_provider_arguments(&input)).await?;
+    let provider_report = provider_diagnostics(doctor_provider_arguments(&input)).await?;
     let providers = provider_report
         .get("providers")
         .cloned()
@@ -1462,7 +1462,7 @@ fn aggregate_status<'a>(statuses: impl IntoIterator<Item = &'a str>) -> &'static
     aggregate
 }
 
-async fn providers_check(arguments: Value) -> Result<Value, String> {
+async fn provider_diagnostics(arguments: Value) -> Result<Value, String> {
     let input: ProvidersCheckInput =
         serde_json::from_value(arguments).map_err(|error| error.to_string())?;
     let selected = selected_providers(input.providers.as_deref())?;

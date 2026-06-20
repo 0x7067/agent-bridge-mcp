@@ -1,6 +1,6 @@
 # Security
 
-Threat model and protective mechanisms for a single-operator desktop MCP server.
+Threat model and protective mechanisms for a single-operator desktop delegation runtime.
 
 ## At a Glance
 
@@ -19,7 +19,7 @@ Threat model and protective mechanisms for a single-operator desktop MCP server.
 | Secrets in logs | Redaction heuristic + env-clear on spawn | May miss novel secret names |
 | API key theft | Keys never held by Agent Bridge | Host compromise still exposes ambient creds |
 | Orphan processes | Active PID registry + panic-hook SIGTERM | Small race window around crash |
-| Prompt injection via MCP | `deny_unknown_fields` + prompt length cap | Semantic injection in prompt content not defended |
+| Prompt injection via protocol input | strict adapter inputs + prompt length cap | Semantic injection in prompt content not defended |
 
 ## Layers
 
@@ -31,7 +31,7 @@ Threat model and protective mechanisms for a single-operator desktop MCP server.
 
 ### Input Sanitization
 
-- All tool inputs: `#[serde(deny_unknown_fields)]` — hallucinated params rejected.
+- Adapter tool inputs use strict deserialization so hallucinated params are rejected.
 - Prompts capped at `MAX_PROMPT_BYTES` (100 KiB).
 - Numeric arguments clamped to sane ranges.
 
@@ -44,7 +44,7 @@ Threat model and protective mechanisms for a single-operator desktop MCP server.
 ### Isolation
 
 - `isolation: Worktree` creates disposable git worktrees on `agent-bridge/...` branches.
-- Preserved until explicit `agent_remove`; auto-cleaned on crash if managed.
+- Preserved until the caller cleans up the managed worktree; auto-cleaned on crash if managed.
 
 ## Going Deeper
 

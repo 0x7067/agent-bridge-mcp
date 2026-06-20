@@ -2,7 +2,10 @@
 
 **Last updated:** 2026-06-07
 
-Agent Bridge MCP is a Rust stdio MCP server that delegates bounded tasks from a primary coding agent to local provider agents (Claude Code, Codex, Cursor, Kimi/Pi, Forge, Antigravity). It exposes a unified lifecycle — preview, spawn, observe, inspect, stop, remove — while keeping the caller responsible for verification.
+Agent Bridge MCP is a Rust stdio runtime that delegates bounded work from a
+primary coding agent to local provider agents (Claude Code, Codex, Cursor,
+Kimi/Pi, Forge, Antigravity). It runs an ACP router by default and keeps the
+caller responsible for verification.
 
 ## Tech Stack
 
@@ -21,20 +24,15 @@ Agent Bridge MCP is a Rust stdio MCP server that delegates bounded tasks from a 
 
 ### Delegation Surface
 
-Eight MCP tools constitute the public API:
+The public surface is ACP-router-first:
 
-| Tool | Former Names | Capability |
-|------|-------------|------------|
-| `providers_list` | — | Enumerate providers, modes, profiles, cadences |
-| `doctor` | `providers_check` | Diagnostics: setup, readiness, smoke tests |
-| `agent_spawn` | `agent_preview` | Queue a task (optionally dry-run) |
-| `agent_observe` | `agent_status`, `agent_wait`, `agent_transcript` | Stream events, block to finality, or poll state |
-| `agent_result` | `agent_logs` | Review packet + on-demand evidence sections |
-| `agent_list` | — | Query active agents and finished agents needing inspection |
-| `agent_stop` | — | Terminate a running task |
-| `agent_remove` | — | Purge a finished task and its worktree |
+| Surface | Command | Capability |
+|------|---------|------------|
+| ACP router | `agent-bridge-mcp` | `initialize`, `session/new`, and `session/prompt` over newline-delimited JSON-RPC |
+| MCP adapter | `agent-bridge-mcp mcp-adapter` | `agent_delegate` for one routed turn and `agent_evidence` for bounded evidence reads |
+| Diagnostics | `agent-bridge-mcp --doctor-smoke` | Provider readiness and smoke checks without starting stdio routing |
 
-Links: [Backend Codemap](CODEMAPS/backend.md), [Backend Workflows](WORKFLOWS/backend.md), [ADR-0001](ADR/0001-consolidate-eight-tools.md)
+Links: [Backend Codemap](CODEMAPS/backend.md), [Backend Workflows](WORKFLOWS/backend.md), [Architecture](agents/architecture.md)
 
 ### Task Lifecycle
 
@@ -42,10 +40,9 @@ Tasks progress through a strictly-validated state machine:
 
 `Queued → Running → Succeeded|Failed|Stopped|FailedStale → Removed`
 
-When a current-session agent reaches a final state, the stdio server emits one
-JSON-RPC notification, `notifications/agent_bridge/agent_completed`, with a
-compact summary and recommended next action. The caller still inspects
-`agent_result` for evidence and performs local verification.
+When a routed turn reaches a terminal result, the router returns a compact
+`routerResult` with `verificationStatus: "not_verified"`. The caller treats
+provider output as evidence and performs local verification.
 
 On server startup, orphaned `Queued`/`Running` records are reconciled to `FailedStale` and their worktrees reclaimed.
 
@@ -66,14 +63,19 @@ Links: [Integrations](INTEGRATIONS.md), [Integrations Codemap](CODEMAPS/integrat
 
 ### Worktree Isolation
 
-Mutable tasks (`implement`, `command`) may request `isolation: Worktree`. Agent Bridge creates a disposable git worktree on a branch named `agent-bridge/...`, runs the provider inside it, and preserves the worktree until explicit `agent_remove`. This isolates provider mutations from the caller's original working directory.
+Mutable internal tasks (`implement`, `command`) may request `isolation:
+Worktree`. Agent Bridge creates a disposable git worktree on a branch named
+`agent-bridge/...`, runs the provider inside it, and preserves the worktree
+until cleanup after inspection. This isolates provider mutations from the
+caller's original working directory.
 
 Links: [Data Model](DATA-MODEL.md), [Business Context](BUSINESS-CONTEXT.md)
 
 ### Observability & Diagnostics
 
 - **Transcripts:** Every stdout/stderr line and lifecycle event is appended to `transcript.jsonl` with redaction.
-- **Progress:** `agent_observe` returns a computed `progress` object with `stallRisk`, `elapsedMs`, `timeoutRemainingMs`, and `recommendedNextTool`.
+- **Evidence:** `agent_evidence` can fetch bounded transcript, stdout, stderr,
+  diff, summary, and changed-file sections by evidence reference.
 - **Diagnostics:** On failure, a structured `diagnostic` JSON includes failure category, excerpted/redacted stdout/stderr, and provider metadata.
 - **Doctor:** Built-in readiness checks for workspace, state directory, client config, binary freshness, and per-provider smokability.
 

@@ -14,12 +14,13 @@ Cargo workspace, `resolver = "3"`, single member `crates/agent-bridge-mcp`
 
 ## Binaries
 
-- `agent-bridge-mcp` — `src/main.rs`, the primary stdio MCP server.
+- `agent-bridge-mcp` — `src/main.rs`, the primary stdio ACP router. Use
+  `agent-bridge-mcp mcp-adapter` for MCP hosts.
 - `agent-bridge-mcp-rs` — `src/bin/agent-bridge-mcp-rs.rs`, alternate entrypoint.
 
 ```bash
 cargo build                       # debug build, both binaries
-cargo run --bin agent-bridge-mcp  # run the stdio server
+cargo run --bin agent-bridge-mcp  # run the ACP stdio router
 ```
 
 ## Dependencies
@@ -50,4 +51,3 @@ cargo install cargo-modules cargo-machete --locked
 - [Definition of Done](definition-of-done.md) — exact gate commands and thresholds
 - [Setup](../SETUP.md) — full environment setup, troubleshooting, Claude host-runner
 - [Deployment](../DEPLOYMENT.md) — release builds, CI pipeline, rollback
-

@@ -25,7 +25,7 @@ Understand why the system was built this way. Prefer the terse `docs/agents/` ca
 
 | Document | Purpose |
 |----------|---------|
-| [Agents: Architecture](agents/architecture.md) *(terse)* | Module map, boundaries, eight-tool surface |
+| [Agents: Architecture](agents/architecture.md) *(terse)* | Module map, boundaries, ACP default, MCP adapter |
 | [Agents: Data Model](agents/data-model.md) *(terse)* | Registry, task states, filesystem layout |
 | [Agents: Security](agents/security.md) *(terse)* | Threat model, workspace confinement, secrets |
 | [Architecture Decisions](ADR/INDEX.md) | ADRs explaining significant "why" decisions |

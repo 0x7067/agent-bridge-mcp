@@ -47,7 +47,7 @@ block-beta
 │       ├── stderr.log
 │       └── transcript.jsonl
 └── worktrees/
-    └── <provider>-<mode>-<suffix>/   ← Git worktrees (removed on agent_remove)
+    └── <provider>-<mode>-<suffix>/   ← Git worktrees (removed during managed cleanup)
 ```
 
 ## External Dependencies

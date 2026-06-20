@@ -226,7 +226,7 @@ impl TaskManagerHandle {
             .await
     }
 
-    /// Lean state-only read (subsumes the former agent_status tool / observe limit:0).
+    /// Lean state-only read.
     pub async fn status(&self, agent_id: String, detailed: bool) -> Result<Value, String> {
         let task: TaskRecord = self
             .request(|reply| ActorCommand::Get(agent_id.clone(), reply))
@@ -238,7 +238,7 @@ impl TaskManagerHandle {
         Ok(value)
     }
 
-    /// Block until finality or timeout (subsumes the former agent_wait tool / observe until:"final").
+    /// Block until finality or timeout.
     pub async fn wait(
         &self,
         agent_id: String,

@@ -1,6 +1,6 @@
 # Getting Started
 
-Clone, build, and run the MCP server in under 15 minutes.
+Clone, build, and run Agent Bridge in under 15 minutes.
 
 ## At a Glance
 
@@ -46,8 +46,9 @@ export AGENT_BRIDGE_STATE_DIR="$HOME/.agent-bridge-mcp/state"
 # Full suite (isolate PTY/process tests to single-threaded)
 cargo test -- --test-threads=1
 
-# Specific target
-cargo test --test server_protocol
+# Specific targets
+cargo test -p agent-bridge-mcp --test mcp_adapter_protocol
+cargo test -p agent-bridge-mcp --test stdio_binary -- --test-threads=1
 ```
 
 ## First Contribution

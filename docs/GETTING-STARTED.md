@@ -1,6 +1,6 @@
 # Getting Started
 
-**Last verified:** 2026-06-07
+**Last verified:** 2026-06-20
 
 ## Prerequisites
 
@@ -42,15 +42,18 @@ Minimal recommended environment:
 | `AGENT_BRIDGE_WORKSPACES` | `/home/user/projects:/opt/repos`   | Allowed workspace roots for delegated tasks      |
 | `AGENT_BRIDGE_STATE_DIR`  | `~/.agent-bridge-mcp/state`        | Persistent state directory (auto-created)        |
 
-## Start the MCP Server
+## Start Agent Bridge
 
 ```bash
 ./target/release/agent-bridge-mcp
 ```
 
-The server reads newline-delimited JSON-RPC requests from **stdin** and writes responses to **stdout**. Blank lines are ignored.
+The default process runs the ACP router. It reads newline-delimited JSON-RPC
+requests from **stdin** and writes responses to **stdout**. Blank lines are
+ignored.
 
-There is no web UI — interact via an MCP-compatible client (e.g., Claude Desktop, VS Code with MCP extension).
+There is no web UI. Use an ACP-capable client directly, or run
+`agent-bridge-mcp mcp-adapter` for hosts that require MCP tools.
 
 ## Run Tests
 

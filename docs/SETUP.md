@@ -1,6 +1,6 @@
 # Full Environment Setup
 
-**Last verified:** 2026-06-07
+**Last verified:** 2026-06-20
 **Estimated time:** 15–25 minutes
 **Target OS:** macOS / Linux (Windows untested)
 
@@ -23,7 +23,8 @@ No `.nvmrc` or `.node-version` file exists — Node is only needed for the `jscp
 
 ### System Services
 
-No host-local services (database, cache, queue) are required. The server is standalone.
+No host-local services (database, cache, queue) are required. Agent Bridge is a
+standalone stdio process.
 
 | Service | Version | Install | Verify |
 |---------|---------|---------|--------|
@@ -44,7 +45,8 @@ cargo build --release --bin agent-bridge-mcp
 
 ## Step 3: Environment Configuration
 
-No `.env.example` exists. Export variables directly or inject them via your MCP client configuration.
+No `.env.example` exists. Export variables directly or inject them via your ACP
+client launch configuration or MCP adapter client configuration.
 
 ### Environment Variables Reference
 
@@ -64,7 +66,7 @@ mkdir -p ~/.agent-bridge-mcp/run
 agent-bridge-mcp claude-host-runner ~/.agent-bridge-mcp/run/claude-host.sock
 ```
 
-Then expose `AGENT_BRIDGE_CLAUDE_HOST_SOCKET` to the MCP server.
+Then expose `AGENT_BRIDGE_CLAUDE_HOST_SOCKET` to the Agent Bridge process.
 
 ## Step 4: Local Services
 
@@ -92,15 +94,17 @@ Should contain JSON registry files after the first delegated task.
 ./target/release/agent-bridge-mcp
 ```
 
-**Verify the server is running:**
+**Verify the ACP router is running:**
 
-Send an MCP initialize request via stdin (or use an MCP client):
+Send an ACP initialize request via stdin:
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
 ```
 
-Expected response: a JSON-RPC result containing `serverInfo.name` = `agent-bridge-mcp`.
+Expected response: a JSON-RPC result containing Agent Bridge server metadata.
+For MCP hosts, run `agent-bridge-mcp mcp-adapter` and send the MCP
+`initialize` request to that subprocess.
 
 ## Step 7: Run the Test Suite
 

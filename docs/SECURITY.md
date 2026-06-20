@@ -55,7 +55,7 @@ Not applicable. Single-tenant. However, the **Worktree Isolation** pattern achie
 
 - **Strategy:** Each mutable task may receive a disposable git worktree.
 - **Creation:** `git worktree add -b agent-bridge/...` in a subdirectory of `STATE_DIR/worktrees`.
-- **Cleanup:** Removed on `agent_remove` or reclaimed automatically if the server crashed while the task was running.
+- **Cleanup:** Removed during managed cleanup after inspection, or reclaimed automatically if the server crashed while the task was running.
 - **Boundary:** The worktree is a sibling checkout of the same repo; it does not protect against malicious providers that escape the working directory via absolute paths.
 
 ## Threat Model Notes

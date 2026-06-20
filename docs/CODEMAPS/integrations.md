@@ -45,9 +45,9 @@ block-beta
 
 ## Data Flow
 
-1. **Capability inquiry:** `providers_list` calls `provider::capabilities()` returning a JSON map of every provider's supported modes, profiles, cadences, and readiness.
-2. **Smoke / doctor:** `doctor` iterates providers, constructing minimal commands via `provider::minimal_smoke_command()` and executing them to verify launchability.
-3. **Normal spawn:** `task/spawn.rs` calls `provider::prepare_command(...)` receiving a populated `ProviderCommand` with `command`, `args`, `cwd`, `env`, `stdin`, and `redactions`.
+1. **Capability registry:** `provider::capabilities()` returns a JSON map of every provider's supported modes, profiles, cadences, and readiness for internal diagnostics and routing.
+2. **Smoke / doctor:** `--doctor-smoke` iterates providers, constructing minimal commands via `provider::minimal_smoke_command()` and executing them to verify launchability.
+3. **Normal routed turn:** `task/spawn.rs` calls `provider::prepare_command(...)` receiving a populated `ProviderCommand` with `command`, `args`, `cwd`, `env`, `stdin`, and `redactions`.
 4. **Direct fork/exec:** For non-Claude providers, `launch_task` clears env, sets allowlisted vars, spawns the process, and attaches IO drains.
 5. **Claude host path:** `launch_task` detects Claude + socket availability, converts `ProviderCommand` into a `ClaudeHostCommand`, and hands off to `launch_host_runner_task`.
 6. **Host runner task:** `run_host_task` connects to the Unix socket, sends a framed `HostRequest` (`RunClaude`), and awaits the `HostResponse`.

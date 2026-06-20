@@ -11,7 +11,7 @@ title System Context Diagram — Agent Bridge MCP
     Person(primary_agent, "Primary Coding Agent", "An AI coding agent (e.g., Claude Desktop, Kimi/Pi) that delegates bounded work to other local agents")
     Person(operator, "Human Operator", "Configures workspaces, installs provider CLIs, and monitors delegated tasks")
 
-    System(agent_bridge, "Agent Bridge MCP", "Stdio MCP server that spawns, observes, and manages local provider agents on behalf of the primary agent")
+    System(agent_bridge, "Agent Bridge MCP", "Stdio ACP router with a small MCP adapter for delegating bounded provider turns")
 
     System_Ext(claude_cli, "Claude CLI", "Anthropic Claude Code — launched via PTY host runner")
     System_Ext(codex_cli, "Codex CLI", "OpenAI Codex CLI — noninteractive execution")
@@ -19,7 +19,7 @@ title System Context Diagram — Agent Bridge MCP
     System_Ext(kimi_cli, "Kimi/Pi CLI", "Local Kimi CLI — prompt mode")
     System_ext(agv_cli, "Antigravity CLI", "AGY CLI — print/research/review mode")
 
-    Rel(primary_agent, agent_bridge, "Delegates tasks via MCP tools", "JSON-RPC over stdio")
+    Rel(primary_agent, agent_bridge, "Delegates turns via ACP or the MCP adapter", "JSON-RPC over stdio")
     Rel(operator, agent_bridge, "Configures and monitors", "Shell / File system")
     Rel(agent_bridge, claude_cli, "Spawns and controls", "Unix socket + PTY")
     Rel(agent_bridge, codex_cli, "Spawns and controls", "Process fork/exec")
@@ -32,7 +32,7 @@ title System Context Diagram — Agent Bridge MCP
 
 | Actor | Type | Relationship to System |
 |-------|------|------------------------|
-| Primary Coding Agent | User | Sends MCP tool requests (e.g., `agent_spawn`, `agent_observe`) over stdio to delegate work |
+| Primary Coding Agent | User | Sends ACP `session/prompt` requests or MCP adapter `agent_delegate` calls over stdio to delegate work |
 | Human Operator | User | Installs provider CLIs, sets workspace/environment config, and drains/removes tasks |
 
 ## External Dependencies
@@ -45,4 +45,4 @@ title System Context Diagram — Agent Bridge MCP
 | Kimi/Pi CLI | Executes `research`, `review`, `implement` tasks | Fork/exec + pipes | Kimi provider unavailable |
 | Antigravity CLI | Executes `research`, `review` tasks (sandboxed) | Fork/exec + pipes | Antigravity provider unavailable |
 | Filesystem | Stores task registry, transcripts, stdout/stderr, diffs | POSIX fs ops | Loss of persistence across restarts |
-| Git | Produces diff/status for review packets | Shell invocation | Diff/status missing in `agent_result` |
+| Git | Produces diff/status for review packets | Shell invocation | Diff/status missing from evidence payloads |

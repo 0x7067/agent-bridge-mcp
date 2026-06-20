@@ -35,7 +35,7 @@
 | `gitStatus` | Optional string | Short-form git status of the working directory at completion |
 | `gitDiff` | Optional string | Diff patch produced by the provider |
 | `changedFiles` | Optional string[] | Filenames modified, obtained via `git diff --name-only` |
-| `resultInspectedAt` | Optional ISO8601 | Timestamp when the caller first queried `agent_result` |
+| `resultInspectedAt` | Optional ISO8601 | Timestamp when the result reader first returned evidence |
 | `transcriptAvailable` | Boolean | Whether transcript.jsonl exists and has readable events |
 | `finalResultDetected` | Boolean | Whether a conclusive `provider_result` event was recorded |
 | `partialResultDetected` | Boolean | Whether partial output events exist without a final result |
@@ -53,18 +53,18 @@
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Queued: agent_spawn succeeds
+    [*] --> Queued: internal spawn succeeds
     Queued --> Running: process forks / host runner accepts
     Queued --> Failed: launch error (validation, bad cwd, provider absent)
     Queued --> FailedStale: server crashed before launch
     Running --> Succeeded: exit(0) + parseable output + no denial
     Running --> Failed: exit(non-zero) / timeout / denial / unparseable output
-    Running --> Stopped: agent_stop issued
+    Running --> Stopped: internal stop issued
     Running --> FailedStale: server crashed while running
-    Succeeded --> Removed: agent_remove after inspection
-    Failed --> Removed: agent_remove after inspection
-    Stopped --> Removed: agent_remove after inspection
-    FailedStale --> Removed: agent_remove
+    Succeeded --> Removed: cleanup after inspection
+    Failed --> Removed: cleanup after inspection
+    Stopped --> Removed: cleanup after inspection
+    FailedStale --> Removed: cleanup
 ```
 
 ### Registry
