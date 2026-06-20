@@ -198,6 +198,13 @@ The primary metric is `total_bytes` lower-is-better.
 - Insight: The current `next` list still encourages immediate observation before quiet finality waiting.
 - Next: Change tests to require `wait_final` first, then reorder the running next actions.
 
+### Run 28: fix: prefer final wait before polling - polling_friction=0 (KEEP)
+- Timestamp: 2026-06-19 23:46
+- What changed: Reordered running-agent `next` actions so `wait_final` comes first and `observe` remains available for diagnostics.
+- Result: polling_friction=0, running_first_observe=0, running_first_wait_final=1.
+- Insight: A small action-order change removes the bridge-side nudge toward repeated visible polling.
+- Next: Run the full quality gate; then consider whether wait timeout length still needs a separate experiment.
+
 ## Key Insights
 - Provider capability JSON is the largest bucket, but guidance/resources/prompts are safer first targets.
 - Shortening initialization guidance directly lowers every MCP initialization.
@@ -207,6 +214,7 @@ The primary metric is `total_bytes` lower-is-better.
 - Tool/schema metadata should explain only ambiguous behavior; enums, bounds, and top-level descriptions carry the rest.
 - Optional empty metadata (`prompt.arguments: []`, resource-list `mimeType`) costs bytes on discovery responses and can be omitted when the read/get payload keeps the needed detail.
 - Running-agent `next` ordering directly affects caller behavior; `observe` first nudges repeated polling even when completion notifications and `until:"final"` exist.
+- Putting `wait_final` first preserves the eight-tool surface and keeps raw transcript polling available without making it the default path.
 
 ## Next Ideas
 - Segment 1: Reduce visible polling loops by making `wait_final` the first
