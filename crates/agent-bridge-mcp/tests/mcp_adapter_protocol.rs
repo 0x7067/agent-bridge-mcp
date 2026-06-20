@@ -44,10 +44,6 @@ async fn tools_list_contains_delegate_evidence_and_no_lifecycle_tools() {
         .collect();
 
     assert_eq!(names, vec!["agent_delegate", "agent_evidence"]);
-    assert!(!names.contains(&"agent_spawn"));
-    assert!(!names.contains(&"agent_observe"));
-    assert!(!names.contains(&"agent_result"));
-
     let candidates = tools[0]["inputSchema"]["properties"]["policy"]["properties"]["candidates"]
         ["items"]["enum"]
         .as_array()

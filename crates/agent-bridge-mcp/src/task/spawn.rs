@@ -13,7 +13,7 @@ use crate::domain::{
     ErrorType, FailureCategory, LaunchProfile, ProviderKind, TaskMode, TaskStatus, WorktreeName,
 };
 use crate::provider::{self, ProviderCommand};
-use crate::tools::TaskPreviewInput;
+use crate::task::TaskPreviewInput;
 use serde_json::{Value, json};
 use std::env;
 use std::path::{Path, PathBuf};

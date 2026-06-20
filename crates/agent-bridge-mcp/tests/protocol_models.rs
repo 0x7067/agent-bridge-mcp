@@ -1,6 +1,6 @@
 use agent_bridge_mcp::domain::{ProviderKind, TaskMode, TimeoutSeconds, WorktreeName};
 use agent_bridge_mcp::mcp::{JsonRpcId, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
-use agent_bridge_mcp::tools::{TaskPreviewInput, ToolCallParams, ToolName};
+use agent_bridge_mcp::task::TaskPreviewInput;
 
 #[test]
 fn json_rpc_request_distinguishes_requests_and_notifications() {
@@ -47,15 +47,6 @@ fn json_rpc_notification_serializes_without_id() {
     );
     assert_eq!(value["params"]["agentId"], "agent_1");
     assert!(value.get("id").is_none());
-}
-
-#[test]
-fn tool_call_params_parse_known_tool_names() {
-    let params: ToolCallParams = serde_json::from_str(
-        r#"{"name":"agent_spawn","arguments":{"provider":"codex","mode":"review","prompt":"x","dryRun":true}}"#,
-    )
-    .unwrap();
-    assert_eq!(params.name, ToolName::AgentSpawn);
 }
 
 #[test]

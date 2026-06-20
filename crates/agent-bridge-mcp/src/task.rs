@@ -57,6 +57,9 @@ use complete::{append_transcript_event, git_snapshot, provider_env_redactions, r
 
 pub(crate) mod acp;
 
+pub mod input;
+pub use input::TaskPreviewInput;
+
 mod spawn;
 use spawn::{
     apply_launch_outcome, create_worktree, default_launch_profile, launch_task, safe_cwd,
@@ -194,7 +197,7 @@ impl TaskManagerHandle {
         let spawned = self.spawn(input.spawn_arguments()).await?;
         let agent_id = spawned["agentId"]
             .as_str()
-            .ok_or_else(|| "agent_spawn did not return agentId".to_string())?
+            .ok_or_else(|| "task spawn did not return agentId".to_string())?
             .to_string();
         let wait_status = self.wait(agent_id.clone(), wait_timeout_ms, false).await?;
         let result = self
@@ -352,7 +355,7 @@ impl TaskManagerHandle {
 
     /// Final evidence. The review packet (`summary`) and `changedFiles` are returned by
     /// default; raw `stdout`/`stderr`/`diff`/`transcript` sections are fetched on demand so
-    /// large evidence stays out of context until requested (subsumes the former agent_logs tool).
+    /// large evidence stays out of context until requested.
     #[allow(clippy::too_many_arguments)]
     pub async fn result(
         &self,
@@ -468,7 +471,7 @@ fn refresh_wait_duration(remaining: Duration, locally_active: bool) -> Duration 
     }
 }
 
-/// Evidence sections a caller can request from `agent_result`. The review-packet
+/// Evidence sections a caller can request from `agent_evidence`. The review-packet
 /// summary is always returned; these gate the larger, on-demand evidence.
 #[derive(Debug, Clone, Copy)]
 pub struct ResultSections {
@@ -614,7 +617,7 @@ impl TaskActor {
         let limit = max_active_tasks();
         if self.active.len() >= limit {
             return Err(format!(
-                "too many active tasks: {} of {} slots in use. Wait for a task to finish or stop one (agent_stop) before spawning. Raise the ceiling with AGENT_BRIDGE_MAX_ACTIVE_TASKS.",
+                "too many active tasks: {} of {} slots in use. Wait for a task to finish before spawning. Raise the ceiling with AGENT_BRIDGE_MAX_ACTIVE_TASKS.",
                 self.active.len(),
                 limit
             ));
@@ -1643,29 +1646,20 @@ mod tests {
         assert!(running_public.get("presentation").is_none());
         let running_ids = next_ids(&running_public);
         assert_eq!(next_action(&running_public, 0)["id"], "wait_final");
-        assert_eq!(next_action(&running_public, 0)["tool"], "agent_observe");
+        assert!(next_action(&running_public, 0)["tool"].is_null());
         assert_eq!(
             next_action(&running_public, 0)["arguments"]["agentId"],
             running.agent_id
         );
-        assert_eq!(
-            next_action(&running_public, 0)["arguments"]["until"],
-            "final"
-        );
         assert_eq!(next_action(&running_public, 0)["safety"], "safe");
-        assert!(running_ids.contains(&"observe".to_string()));
         assert!(running_ids.contains(&"wait_final".to_string()));
-        assert!(running_ids.contains(&"stop".to_string()));
         assert!(!running_ids.contains(&"inspect_result".to_string()));
-        let observe = next_item(&running_public, "observe");
-        assert_eq!(observe["tool"], "agent_observe");
-        assert_eq!(observe["arguments"]["until"], "now");
 
         let mut final_task = sample_task(TaskStatus::Succeeded);
         final_task.transcript_available = false;
         let final_public = public_task(&final_task);
         assert_eq!(next_action(&final_public, 0)["id"], "inspect_result");
-        assert_eq!(next_action(&final_public, 0)["tool"], "agent_result");
+        assert_eq!(next_action(&final_public, 0)["tool"], "agent_evidence");
         assert!(!next_ids(&final_public).contains(&"cleanup".to_string()));
 
         let mut worktree = sample_task(TaskStatus::Succeeded);
@@ -1694,7 +1688,7 @@ mod tests {
         let stale_public = public_task(&stale);
         assert_eq!(stale_public["phase"], "done");
         assert_eq!(next_action(&stale_public, 0)["id"], "inspect_evidence");
-        assert_eq!(next_action(&stale_public, 0)["tool"], "agent_result");
+        assert_eq!(next_action(&stale_public, 0)["tool"], "agent_evidence");
     }
 
     #[test]
@@ -1840,7 +1834,7 @@ mod tests {
         inspected_final.updated_at = "2026-06-03T00:00:00.000Z".to_string();
         inspected_final.result_inspected_at = Some("2026-06-03T00:00:01.000Z".to_string());
         let mut removed = sample_task(TaskStatus::Removed);
-        removed.agent_id = "agent_removed".to_string();
+        removed.agent_id = "removed_agent".to_string();
 
         for task in [old_final, running, recent_final, inspected_final, removed] {
             registry.tasks.insert(task.agent_id.clone(), task);

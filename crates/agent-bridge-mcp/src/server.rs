@@ -1,25 +1,18 @@
-use crate::domain::{
-    FailureCategory, Isolation, LaunchProfile, ProviderKind, TimeoutSeconds, WorktreeName,
-};
-use crate::guidance;
-use crate::mcp::{JsonRpcId, JsonRpcRequest, JsonRpcResponse};
-use crate::provider::{self, ProviderTask};
-use crate::task::{TaskManagerHandle, validate_registry_text};
-use crate::tools::{TaskPreviewInput, ToolCallParams, ToolName, tool_definitions};
+use crate::domain::{FailureCategory, LaunchProfile, ProviderKind};
+use crate::provider;
+use crate::task::validate_registry_text;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, timeout};
 mod diagnostics;
-use diagnostics::{doctor, observe_task_extension_metadata};
+use diagnostics::doctor;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
-const MAX_PROMPT_BYTES: usize = 100 * 1024;
 const VERSION_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_AGGREGATE_TIMEOUT_MS: u64 = 110_000;
 const MAX_AGGREGATE_TIMEOUT_MS: i64 = 120_000;
@@ -27,299 +20,9 @@ const MAX_PROVIDER_TIMEOUT_MS: i64 = 90_000;
 const CHILD_SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 const MAX_CLIENT_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_BINARY_FINGERPRINT_BYTES: u64 = 16 * 1024 * 1024;
-const TASKS_EXTENSION_ID: &str = "io.modelcontextprotocol/tasks";
-
-pub async fn handle_request(request: JsonRpcRequest) -> Option<JsonRpcResponse> {
-    request.id.as_ref()?;
-    observe_task_extension_metadata(&request);
-    let id = request.id.clone().unwrap_or(JsonRpcId::Null);
-    let response = match request.method.as_str() {
-        "initialize" => JsonRpcResponse::result(
-            id,
-            json!({
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": { "tools": {}, "prompts": {}, "resources": {} },
-                "serverInfo": { "name": "agent-bridge-mcp", "version": "0.1.0" },
-                "instructions": guidance::INITIALIZATION_INSTRUCTIONS
-            }),
-        ),
-        "tools/list" => JsonRpcResponse::result(id, json!({ "tools": tool_definitions() })),
-        "prompts/list" => {
-            JsonRpcResponse::result(id, json!({ "prompts": guidance::prompt_definitions() }))
-        }
-        "prompts/get" => match guidance::get_prompt(request.params.unwrap_or_else(|| json!({}))) {
-            Ok(result) => JsonRpcResponse::result(id, result),
-            Err(error) => JsonRpcResponse::error(id, -32602, error),
-        },
-        "resources/list" => {
-            JsonRpcResponse::result(id, json!({ "resources": guidance::resource_definitions() }))
-        }
-        "resources/read" => {
-            match guidance::read_resource(request.params.unwrap_or_else(|| json!({}))) {
-                Ok(result) => JsonRpcResponse::result(id, result),
-                Err(error) => JsonRpcResponse::error(id, -32002, error),
-            }
-        }
-        "tools/call" => JsonRpcResponse::result(
-            id,
-            call_tool(request.params.unwrap_or_else(|| json!({}))).await,
-        ),
-        _ => JsonRpcResponse::error(id, -32601, format!("Method not found: {}", request.method)),
-    };
-    Some(response)
-}
 
 pub async fn doctor_report(arguments: Value) -> Result<Value, String> {
     doctor(arguments).await
-}
-
-async fn call_tool(params: Value) -> Value {
-    let parsed: Result<ToolCallParams, _> = serde_json::from_value(params);
-    let params = match parsed {
-        Ok(params) => params,
-        Err(error) => return tool_error(error.to_string()),
-    };
-    if let Err(error) = reject_unknown_arguments(params.name, &params.arguments) {
-        return tool_error(error);
-    }
-    match params.name {
-        ToolName::ProvidersList => tool_json(json!({ "providers": provider::capabilities() })),
-        ToolName::Doctor => tool_result(doctor(params.arguments).await),
-        ToolName::AgentSpawn => {
-            let dry_run = params
-                .arguments
-                .get("dryRun")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            if dry_run {
-                // dryRun subsumes the former agent_preview tool.
-                match task_preview(params.arguments) {
-                    Ok(payload) => tool_json(payload),
-                    Err(error) => tool_error(error),
-                }
-            } else {
-                let mut args = params.arguments.clone();
-                if let Some(object) = args.as_object_mut() {
-                    object.remove("dryRun");
-                }
-                match TaskManagerHandle::from_env().await {
-                    Ok(manager) => tool_result(manager.spawn(args).await),
-                    Err(error) => tool_error(error),
-                }
-            }
-        }
-        ToolName::AgentList => match TaskManagerHandle::from_env().await {
-            Ok(manager) => tool_result(agent_list(manager, params.arguments).await),
-            Err(error) => tool_error(error),
-        },
-        ToolName::AgentObserve => handle_agent_observe(params.arguments).await,
-        ToolName::AgentResult => handle_agent_result(params.arguments).await,
-        ToolName::AgentStop => match (
-            require_agent_id(&params.arguments),
-            TaskManagerHandle::from_env().await,
-        ) {
-            (Ok(agent_id), Ok(manager)) => tool_result(manager.stop(agent_id).await),
-            (Err(error), _) | (_, Err(error)) => tool_error(error),
-        },
-        ToolName::AgentRemove => match (
-            require_agent_id(&params.arguments),
-            TaskManagerHandle::from_env().await,
-        ) {
-            (Ok(agent_id), Ok(manager)) => tool_result(manager.remove(agent_id).await),
-            (Err(error), _) | (_, Err(error)) => tool_error(error),
-        },
-    }
-}
-
-/// Handles `agent_observe`, which subsumes the former agent_status (limit:0),
-/// agent_wait (until:"final"), and agent_transcript (events) tools.
-async fn handle_agent_observe(arguments: Value) -> Value {
-    let detailed = is_detailed(&arguments);
-    let until = arguments
-        .get("until")
-        .and_then(Value::as_str)
-        .unwrap_or("now");
-    let cursor = arguments.get("cursor").and_then(Value::as_u64);
-    let limit = arguments.get("limit").and_then(Value::as_u64);
-    let timeout_ms = arguments.get("timeoutMs").and_then(Value::as_i64);
-    match (
-        require_agent_id(&arguments),
-        TaskManagerHandle::from_env().await,
-    ) {
-        (Ok(agent_id), Ok(manager)) => {
-            if until == "final" {
-                tool_result(manager.wait(agent_id, timeout_ms, detailed).await)
-            } else if limit == Some(0) {
-                tool_result(manager.status(agent_id, detailed).await)
-            } else {
-                tool_result(
-                    manager
-                        .observe(agent_id, cursor, limit, timeout_ms, detailed)
-                        .await,
-                )
-            }
-        }
-        (Err(error), _) | (_, Err(error)) => tool_error(error),
-    }
-}
-
-/// Handles `agent_result`, which subsumes the former agent_logs tool via sections.
-async fn handle_agent_result(arguments: Value) -> Value {
-    let detailed = is_detailed(&arguments);
-    let sections = result_sections(&arguments);
-    let max_bytes = arguments.get("maxBytes").and_then(Value::as_i64);
-    let stdout_line = arguments
-        .get("stdoutLine")
-        .and_then(Value::as_u64)
-        .map(|value| value as usize);
-    let stderr_line = arguments
-        .get("stderrLine")
-        .and_then(Value::as_u64)
-        .map(|value| value as usize);
-    let cursor = arguments.get("cursor").and_then(Value::as_u64);
-    let limit = arguments.get("limit").and_then(Value::as_u64);
-    match (
-        require_agent_id(&arguments),
-        TaskManagerHandle::from_env().await,
-    ) {
-        (Ok(agent_id), Ok(manager)) => tool_result(
-            manager
-                .result(
-                    agent_id,
-                    sections,
-                    max_bytes,
-                    stdout_line,
-                    stderr_line,
-                    cursor,
-                    limit,
-                    detailed,
-                )
-                .await,
-        ),
-        (Err(error), _) | (_, Err(error)) => tool_error(error),
-    }
-}
-
-fn is_detailed(arguments: &Value) -> bool {
-    arguments.get("verbosity").and_then(Value::as_str) == Some("detailed")
-}
-
-fn result_sections(arguments: &Value) -> crate::task::ResultSections {
-    match arguments.get("sections").and_then(Value::as_array) {
-        Some(items) => {
-            crate::task::ResultSections::from_names(items.iter().filter_map(Value::as_str))
-        }
-        None => crate::task::ResultSections::default_sections(),
-    }
-}
-
-fn reject_unknown_arguments(name: ToolName, arguments: &Value) -> Result<(), String> {
-    let allowed = match name {
-        ToolName::ProvidersList => &[][..],
-        ToolName::Doctor => &[
-            "focus",
-            "smoke",
-            "timeoutMs",
-            "providers",
-            "aggregateTimeoutMs",
-            "providerTimeoutMs",
-            "cwd",
-            "profile",
-        ][..],
-        ToolName::AgentSpawn => &[
-            "provider",
-            "mode",
-            "prompt",
-            "title",
-            "cwd",
-            "timeoutSeconds",
-            "model",
-            "effort",
-            "thinking",
-            "isolation",
-            "worktreeName",
-            "profile",
-            "dryRun",
-        ][..],
-        ToolName::AgentList => &[
-            "status",
-            "provider",
-            "mode",
-            "cwd",
-            "titleContains",
-            "limit",
-        ][..],
-        ToolName::AgentStop | ToolName::AgentRemove => &["agentId"][..],
-        ToolName::AgentObserve => &[
-            "agentId",
-            "until",
-            "cursor",
-            "limit",
-            "timeoutMs",
-            "verbosity",
-        ][..],
-        ToolName::AgentResult => &[
-            "agentId",
-            "sections",
-            "maxBytes",
-            "stdoutLine",
-            "stderrLine",
-            "cursor",
-            "limit",
-            "verbosity",
-        ][..],
-    };
-    let Some(object) = arguments.as_object() else {
-        return Ok(());
-    };
-    for key in object.keys() {
-        if !allowed.contains(&key.as_str()) {
-            return Err(format!(
-                "Unknown argument for {}: {key}",
-                tool_name_str(name)
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn tool_name_str(name: ToolName) -> &'static str {
-    match name {
-        ToolName::ProvidersList => "providers_list",
-        ToolName::Doctor => "doctor",
-        ToolName::AgentSpawn => "agent_spawn",
-        ToolName::AgentList => "agent_list",
-        ToolName::AgentObserve => "agent_observe",
-        ToolName::AgentResult => "agent_result",
-        ToolName::AgentStop => "agent_stop",
-        ToolName::AgentRemove => "agent_remove",
-    }
-}
-
-async fn agent_list(manager: TaskManagerHandle, arguments: Value) -> Result<Value, String> {
-    let raw = manager.list(agent_list_arguments(arguments)?).await?;
-    Ok(agent_list_response(raw))
-}
-
-fn agent_list_arguments(arguments: Value) -> Result<Value, String> {
-    let mut object = match arguments {
-        Value::Null => serde_json::Map::new(),
-        Value::Object(object) => object,
-        _ => return Err("agent_list arguments must be an object".to_string()),
-    };
-    object.insert("presentation".to_string(), json!(true));
-    object.insert("scope".to_string(), json!("active_recent"));
-    Ok(Value::Object(object))
-}
-
-fn agent_list_response(mut raw: Value) -> Value {
-    let Some(object) = raw.as_object_mut() else {
-        return raw;
-    };
-    let agents = object.remove("tasks").unwrap_or_else(|| json!([]));
-    object.remove("presentation");
-    object.insert("agents".to_string(), agents);
-    raw
 }
 
 struct ProbeResult {
@@ -804,73 +507,6 @@ fn default_cwd() -> String {
         .to_string()
 }
 
-fn task_preview(arguments: Value) -> Result<Value, String> {
-    let input: TaskPreviewInput =
-        serde_json::from_value(arguments).map_err(|error| error.to_string())?;
-    validate_preview_input(&input)?;
-    let timeout = TimeoutSeconds::new(input.timeout_seconds);
-    let cwd = safe_cwd(input.cwd.as_deref())?;
-    let task = ProviderTask {
-        provider: input.provider,
-        mode: input.mode,
-        prompt: &input.prompt,
-        title: input.title.as_deref(),
-        cwd: &cwd,
-        timeout_seconds: timeout.get(),
-        model: input.model.as_deref(),
-        effort: input.effort.as_deref(),
-        thinking: input.thinking.as_deref(),
-        profile: input
-            .profile
-            .unwrap_or(crate::domain::LaunchProfile::Bridge),
-    };
-    let command = provider::build_command(&task)?;
-    let env = provider::provider_env(input.provider);
-    let args: Vec<String> = command
-        .args
-        .iter()
-        .map(|arg| {
-            if arg.contains(&input.prompt) {
-                "<prompt redacted>".to_string()
-            } else {
-                arg.clone()
-            }
-        })
-        .collect();
-    let env_keys: Vec<String> = env.keys().cloned().collect();
-    Ok(json!({
-        "command": command.command,
-        "cwd": command.cwd,
-        "timeoutSeconds": command.timeout_seconds,
-        "args": args,
-        "stdin": command.stdin.as_ref().map(|_| "<prompt redacted>"),
-        "envKeys": env_keys,
-        "commandKind": command_kind(&command),
-        "launchStrategy": launch_strategy(&command),
-        "profile": command.profile,
-        "promptStrategy": command.prompt_strategy,
-        "acceptanceCriteria": provider::adapter_for(command.provider).acceptance_criteria(),
-        "profileDiagnostics": command.profile_diagnostics
-    }))
-}
-
-fn validate_preview_input(input: &TaskPreviewInput) -> Result<(), String> {
-    if input.prompt.is_empty() {
-        return Err("prompt is required".to_string());
-    }
-    if input.prompt.len() > MAX_PROMPT_BYTES {
-        return Err(format!("prompt exceeds {MAX_PROMPT_BYTES} bytes"));
-    }
-    if let Some(name) = input.worktree_name.as_deref() {
-        WorktreeName::new(name)?;
-    }
-    let isolation = input.isolation.unwrap_or(Isolation::None);
-    if !matches!(isolation, Isolation::None | Isolation::Worktree) {
-        return Err("isolation must be one of: none, worktree".to_string());
-    }
-    Ok(())
-}
-
 fn safe_cwd(cwd: Option<&str>) -> Result<String, String> {
     let default_cwd = env::current_dir().map_err(|error| error.to_string())?;
     let cwd = cwd.map(PathBuf::from).unwrap_or(default_cwd);
@@ -884,7 +520,7 @@ fn safe_cwd(cwd: Option<&str>) -> Result<String, String> {
     let workspace_roots = configured_workspace_roots()?;
     if !workspace_roots
         .iter()
-        .any(|root| is_inside(&real_cwd, root))
+        .any(|root| real_cwd == *root || real_cwd.strip_prefix(root).is_ok())
     {
         return Err(format!(
             "cwd is outside configured workspaces: {}",
@@ -900,42 +536,6 @@ fn safe_cwd(cwd: Option<&str>) -> Result<String, String> {
 
 fn configured_workspace_roots() -> Result<Vec<PathBuf>, String> {
     crate::config::runtime_workspace_roots()
-}
-
-fn is_inside(candidate: &Path, root: &Path) -> bool {
-    candidate == root || candidate.strip_prefix(root).is_ok()
-}
-
-fn tool_json(value: Value) -> Value {
-    let text = serde_json::to_string_pretty(&value).unwrap();
-    json!({
-        "content": [{ "type": "text", "text": text }],
-        "structuredContent": value,
-        "isError": false
-    })
-}
-
-fn tool_result(result: Result<Value, String>) -> Value {
-    match result {
-        Ok(value) => tool_json(value),
-        Err(error) => tool_error(error),
-    }
-}
-
-fn tool_error(error: impl Into<String>) -> Value {
-    json!({
-        "content": [{ "type": "text", "text": error.into() }],
-        "isError": true
-    })
-}
-
-fn require_agent_id(arguments: &Value) -> Result<String, String> {
-    arguments
-        .get("agentId")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| "agentId is required".to_string())
 }
 
 #[cfg(test)]

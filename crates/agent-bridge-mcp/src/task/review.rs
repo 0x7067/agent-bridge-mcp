@@ -350,7 +350,7 @@ pub(super) fn agent_progress(task: &TaskRecord) -> Value {
         "stallRisk": stall_risk,
         "timeoutRemainingMs": timeout_remaining_ms,
         "noFurtherPollingNeeded": final_task,
-        "recommendedNextTool": if final_task { "agent_result" } else { "agent_observe" }
+        "recommendedNextTool": if final_task { "agent_evidence" } else { "wait" }
     })
 }
 
@@ -795,36 +795,17 @@ pub(super) fn display_title(task: &TaskRecord) -> String {
         .unwrap_or_else(|| format!("{} {} task", task.provider.as_str(), task.mode.as_str()))
 }
 
-/// Single deduplicated `next` action list. Targets only the consolidated
-/// eight-tool surface (agent_observe / agent_result / agent_stop / agent_remove).
-pub(super) fn next_actions(task: &TaskRecord, progress: &Value) -> Value {
+/// Single deduplicated `next` action list for adapter-visible task evidence.
+pub(super) fn next_actions(task: &TaskRecord, _progress: &Value) -> Value {
     let mut actions = Vec::new();
     if !is_final(task.status) {
-        let recommended_poll_ms = progress["recommendedPollMs"].as_i64().unwrap_or(30_000);
-        let stall_risk = progress["stallRisk"].as_str().unwrap_or("low");
         actions.push(next_action(
             "wait_final",
-            Some("agent_observe"),
-            json!({ "agentId": task.agent_id, "until": "final", "timeoutMs": recommended_poll_ms.min(MAX_WAIT_MS) }),
-            "available",
-            "Wait quietly for finality; use observe only when transcript or stall evidence is needed.",
-            "safe",
-        ));
-        actions.push(next_action(
-            "observe",
-            Some("agent_observe"),
-            json!({ "agentId": task.agent_id, "until": "now", "cursor": 0, "limit": 100, "timeoutMs": recommended_poll_ms }),
-            "available",
-            "Observe bounded transcript and lifecycle progress for diagnostics before deciding whether to stop.",
-            "safe",
-        ));
-        actions.push(next_action(
-            "stop",
-            Some("agent_stop"),
+            None,
             json!({ "agentId": task.agent_id }),
             "available",
-            if stall_risk == "high" { "Stop only after deciding the agent is no longer useful; stopped agents remain inspectable." } else { "Stop only when the agent is no longer useful; provider silence within the observation budget is not enough by itself." },
-            "unsafe",
+            "Wait for the delegated turn to reach a terminal state before requesting evidence.",
+            "safe",
         ));
         return Value::Array(actions);
     }
@@ -832,8 +813,8 @@ pub(super) fn next_actions(task: &TaskRecord, progress: &Value) -> Value {
     if task.result_inspected_at.is_none() {
         actions.push(next_action(
             "inspect_result",
-            Some("agent_result"),
-            json!({ "agentId": task.agent_id }),
+            Some("agent_evidence"),
+            json!({ "evidenceRef": { "agentId": task.agent_id } }),
             "available",
             "Inspect the review packet, then request stdout/stderr/diff/transcript sections as needed before cleanup or verification.",
             "safe",
@@ -841,7 +822,7 @@ pub(super) fn next_actions(task: &TaskRecord, progress: &Value) -> Value {
         if task.worktree_managed {
             actions.push(next_action(
                 "cleanup",
-                Some("agent_remove"),
+                None,
                 json!({ "agentId": task.agent_id }),
                 "unsafe",
                 "Managed worktree cleanup requires explicit final result inspection first.",
@@ -858,8 +839,8 @@ pub(super) fn next_actions(task: &TaskRecord, progress: &Value) -> Value {
     {
         actions.push(next_action(
             "inspect_evidence",
-            Some("agent_result"),
-            json!({ "agentId": task.agent_id, "sections": ["summary", "stdout", "stderr"] }),
+            Some("agent_evidence"),
+            json!({ "evidenceRef": { "agentId": task.agent_id }, "sections": ["summary", "stdout", "stderr"] }),
             "available",
             "Inspect logs and diagnostics before deciding whether to rerun, narrow the prompt, or continue manually.",
             "safe",
@@ -867,8 +848,8 @@ pub(super) fn next_actions(task: &TaskRecord, progress: &Value) -> Value {
         if task.transcript_available {
             actions.push(next_action(
                 "inspect_transcript",
-                Some("agent_result"),
-                json!({ "agentId": task.agent_id, "sections": ["transcript"] }),
+                Some("agent_evidence"),
+                json!({ "evidenceRef": { "agentId": task.agent_id }, "sections": ["transcript"] }),
                 "available",
                 "Inspect transcript evidence when provider behavior or final-state classification is unclear.",
                 "safe",
@@ -881,10 +862,10 @@ pub(super) fn next_actions(task: &TaskRecord, progress: &Value) -> Value {
             }
             actions.push(next_action(
                 "continue_rerun",
-                Some("agent_spawn"),
+                None,
                 rerun_args,
                 "available",
-                "Partial results were collected before the task ended. Consider rerunning with the same or narrowed parameters.",
+                "Partial results were collected before the task ended. Consider running a new delegated turn with the same or narrowed parameters.",
                 "safe",
             ));
         }
@@ -902,7 +883,7 @@ pub(super) fn next_actions(task: &TaskRecord, progress: &Value) -> Value {
     if task.worktree_managed {
         actions.push(next_action(
             "cleanup",
-            Some("agent_remove"),
+            None,
             json!({ "agentId": task.agent_id }),
             "available",
             "Remove the managed worktree only after inspecting the result and preserving any needed changes.",
@@ -1014,10 +995,8 @@ pub(super) fn review_packet(
 pub(super) fn recommended_actions(task: &TaskRecord, has_changes: bool) -> Vec<&'static str> {
     if !is_final(task.status) {
         return vec![
-            "Use agent_observe with a bounded timeout before treating silence as a stall.",
-            "Use agent_observe with limit:0 to confirm whether the agent is still active.",
-            "Use agent_observe with until:final when only finality matters.",
-            "Use agent_stop if the agent is no longer useful.",
+            "Wait for the delegated turn to finish before requesting evidence.",
+            "Treat prolonged silence as a provider-run diagnostic, not as verified completion.",
         ];
     }
 
@@ -1034,7 +1013,7 @@ pub(super) fn recommended_actions(task: &TaskRecord, has_changes: bool) -> Vec<&
     let mut actions =
         vec!["Inspect stdout, stderr, diagnostics, git status, diff, and changed files."];
     if task.transcript_available {
-        actions.push("Request agent_result sections:[\"transcript\"] when provider behavior or final-state classification is unclear.");
+        actions.push("Request agent_evidence sections:[\"transcript\"] when provider behavior or final-state classification is unclear.");
     }
     if has_changes {
         actions.push("Inspect gitStatus, gitDiff, and changedFiles before verification.");
@@ -1052,7 +1031,7 @@ pub(super) fn recommended_actions(task: &TaskRecord, has_changes: bool) -> Vec<&
         actions.push("Run the relevant project verification before claiming completion.");
     }
     if task.worktree_managed {
-        actions.push("Call agent_remove only after inspecting the managed worktree result.");
+        actions.push("Clean up the managed worktree only after inspecting the result.");
     }
     actions
 }
