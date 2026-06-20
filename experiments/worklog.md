@@ -201,6 +201,8 @@ The primary metric is `total_bytes` lower-is-better.
 - Optional empty metadata (`prompt.arguments: []`, resource-list `mimeType`) costs bytes on discovery responses and can be omitted when the read/get payload keeps the needed detail.
 
 ## Next Ideas
+- Segment 1: Reduce visible polling loops by making `wait_final` the first
+  running-agent next action; keep `observe` for diagnostics and stalls.
 - If continuing, measure provider prompt bytes directly; the current primary metric covers MCP responses and dry-run metadata, not redacted provider stdin.
 - Consider a compatibility review before removing any structured provider capability keys; tests currently protect key fields, but clients may rely on more.
 - Keep safety and caller-owned verification wording explicit.
