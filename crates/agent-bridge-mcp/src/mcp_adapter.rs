@@ -15,6 +15,8 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 enum AdapterToolName {
     #[serde(rename = "agent_delegate")]
     AgentDelegate,
+    #[serde(rename = "agent_evidence")]
+    AgentEvidence,
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,6 +41,26 @@ struct DelegateArguments {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DelegatePolicy {
     candidates: Vec<ProviderKind>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EvidenceArguments {
+    evidence_ref: EvidenceRefArgument,
+    #[serde(default)]
+    sections: Vec<String>,
+    max_bytes: Option<i64>,
+    stdout_line: Option<u64>,
+    stderr_line: Option<u64>,
+    cursor: Option<u64>,
+    limit: Option<u64>,
+    verbosity: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EvidenceRefArgument {
+    agent_id: String,
 }
 
 pub async fn run() -> io::Result<()> {
@@ -101,7 +123,37 @@ async fn call_tool(params: Value) -> Value {
             Ok(result) => tool_json(result),
             Err(error) => tool_error(error),
         },
+        AdapterToolName::AgentEvidence => match agent_evidence(parsed.arguments).await {
+            Ok(result) => tool_json(result),
+            Err(error) => tool_error(error),
+        },
     }
+}
+
+async fn agent_evidence(arguments: Value) -> Result<Value, String> {
+    let arguments: EvidenceArguments =
+        serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+    let sections = if arguments.sections.is_empty() {
+        crate::task::ResultSections::default_sections()
+    } else {
+        crate::task::ResultSections::from_names(arguments.sections.iter().map(String::as_str))
+    };
+    let stdout_line = arguments.stdout_line.map(|value| value as usize);
+    let stderr_line = arguments.stderr_line.map(|value| value as usize);
+    let detailed = arguments.verbosity.as_deref() == Some("detailed");
+    let manager = crate::task::TaskManagerHandle::from_env().await?;
+    manager
+        .result(
+            arguments.evidence_ref.agent_id,
+            sections,
+            arguments.max_bytes,
+            stdout_line,
+            stderr_line,
+            arguments.cursor,
+            arguments.limit,
+            detailed,
+        )
+        .await
 }
 
 async fn agent_delegate(arguments: Value) -> Result<Value, String> {
@@ -133,37 +185,71 @@ fn router_prompt_error_text(error: RouterPromptError) -> String {
 }
 
 fn adapter_tool_definitions() -> Vec<Value> {
-    vec![json!({
-        "name": "agent_delegate",
-        "description": "Run one routed provider turn and return a terminal router result. The caller remains responsible for verification.",
-        "inputSchema": object_schema(
-            json!({
-                "prompt": {"type": "string"},
-                "cwd": {"type": "string"},
-                "mode": {"type": "string", "enum": ["review", "implement", "command"]},
-                "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 1800},
-                "policy": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "candidates": {
-                            "type": "array",
-                            "items": {"type": "string", "enum": ["codex", "claude", "cursor", "kimi", "forge", "antigravity"]}
-                        }
+    vec![
+        json!({
+            "name": "agent_delegate",
+            "description": "Run one routed provider turn and return a terminal router result. The caller remains responsible for verification.",
+            "inputSchema": object_schema(
+                json!({
+                    "prompt": {"type": "string"},
+                    "cwd": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["review", "implement", "command"]},
+                    "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 1800},
+                    "policy": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "candidates": {
+                                "type": "array",
+                                "items": {"type": "string", "enum": ["codex", "claude", "cursor", "kimi", "forge", "antigravity"]}
+                            }
+                        },
+                        "required": ["candidates"]
+                    }
+                }),
+                vec!["prompt"]
+            ),
+            "annotations": {
+                "title": "Delegate to agent",
+                "readOnlyHint": false,
+                "destructiveHint": false,
+                "idempotentHint": false,
+                "openWorldHint": true
+            }
+        }),
+        json!({
+            "name": "agent_evidence",
+            "description": "Fetch bounded evidence for an evidenceRef returned by agent_delegate.",
+            "inputSchema": object_schema(
+                json!({
+                    "evidenceRef": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {"agentId": {"type": "string"}},
+                        "required": ["agentId"]
                     },
-                    "required": ["candidates"]
-                }
-            }),
-            vec!["prompt"]
-        ),
-        "annotations": {
-            "title": "Delegate to agent",
-            "readOnlyHint": false,
-            "destructiveHint": false,
-            "idempotentHint": false,
-            "openWorldHint": true
-        }
-    })]
+                    "sections": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["summary", "stdout", "stderr", "transcript", "diff", "changedFiles"]}
+                    },
+                    "maxBytes": {"type": "integer", "minimum": 1},
+                    "stdoutLine": {"type": "integer", "minimum": 0},
+                    "stderrLine": {"type": "integer", "minimum": 0},
+                    "cursor": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+                    "verbosity": {"type": "string", "enum": ["compact", "detailed"]}
+                }),
+                vec!["evidenceRef"]
+            ),
+            "annotations": {
+                "title": "Read agent evidence",
+                "readOnlyHint": true,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": false
+            }
+        }),
+    ]
 }
 
 fn object_schema(properties: Value, required: Vec<&str>) -> Value {

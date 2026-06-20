@@ -30,7 +30,7 @@ async fn initialize_advertises_minimal_mcp_adapter() {
 }
 
 #[tokio::test]
-async fn tools_list_contains_delegate_and_no_lifecycle_tools() {
+async fn tools_list_contains_delegate_evidence_and_no_lifecycle_tools() {
     let response = handle_request_for_test(request("tools/list", 2, json!({})))
         .await
         .unwrap();
@@ -43,7 +43,7 @@ async fn tools_list_contains_delegate_and_no_lifecycle_tools() {
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
 
-    assert_eq!(names, vec!["agent_delegate"]);
+    assert_eq!(names, vec!["agent_delegate", "agent_evidence"]);
     assert!(!names.contains(&"agent_spawn"));
     assert!(!names.contains(&"agent_observe"));
     assert!(!names.contains(&"agent_result"));
@@ -54,4 +54,32 @@ async fn tools_list_contains_delegate_and_no_lifecycle_tools() {
         .unwrap();
     assert!(candidates.contains(&json!("kimi")));
     assert!(!candidates.contains(&json!("pi")));
+}
+
+#[tokio::test]
+async fn evidence_schema_requires_evidence_ref_only() {
+    let response = handle_request_for_test(request("tools/list", 3, json!({})))
+        .await
+        .unwrap();
+    let tools = response.result.unwrap()["tools"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let evidence = tools
+        .iter()
+        .find(|tool| tool["name"] == "agent_evidence")
+        .expect("agent_evidence tool");
+
+    assert_eq!(evidence["inputSchema"]["required"], json!(["evidenceRef"]));
+    assert_eq!(
+        evidence["inputSchema"]["properties"]["sections"]["items"]["enum"],
+        json!([
+            "summary",
+            "stdout",
+            "stderr",
+            "transcript",
+            "diff",
+            "changedFiles"
+        ])
+    );
 }

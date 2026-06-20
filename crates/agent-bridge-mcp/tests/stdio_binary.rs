@@ -5304,7 +5304,7 @@ fn stdio_codex_agent_success_still_reports_success() {
 }
 
 #[test]
-fn mcp_adapter_lists_only_delegate_tool_before_evidence_task() {
+fn mcp_adapter_lists_only_delegate_and_evidence_tools() {
     let env = FixtureEnv::new("mcp-adapter-tool-list");
     let mut client = McpClient::start_with_command(mcp_adapter_command(&env));
     let response = client.request("tools/list", json!({}));
@@ -5314,7 +5314,7 @@ fn mcp_adapter_lists_only_delegate_tool_before_evidence_task() {
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
 
-    assert_eq!(names, vec!["agent_delegate"]);
+    assert_eq!(names, vec!["agent_delegate", "agent_evidence"]);
     for removed in [
         "providers_list",
         "doctor",
@@ -5327,6 +5327,37 @@ fn mcp_adapter_lists_only_delegate_tool_before_evidence_task() {
     ] {
         assert!(!names.contains(&removed), "adapter exposed {removed}");
     }
+}
+
+#[test]
+fn mcp_adapter_agent_evidence_reads_bounded_sections() {
+    let env = FixtureEnv::new("mcp-adapter-agent-evidence");
+    let mut client = McpClient::start_with_command(mcp_adapter_command(&env));
+
+    let result = client.tool(
+        "agent_delegate",
+        json!({
+            "prompt": "review this change",
+            "cwd": env.root,
+            "mode": "review",
+            "timeoutSeconds": 5,
+            "policy": {"candidates": ["codex"]}
+        }),
+    );
+    let evidence_ref = result["evidenceRefs"][0].clone();
+    let evidence = client.tool(
+        "agent_evidence",
+        json!({
+            "evidenceRef": evidence_ref,
+            "sections": ["summary", "transcript"],
+            "limit": 5,
+            "maxBytes": 4096
+        }),
+    );
+
+    assert_eq!(evidence["agentId"], result["evidenceRefs"][0]["agentId"]);
+    assert!(evidence["reviewPacket"].is_object());
+    assert!(evidence["transcript"]["events"].as_array().unwrap().len() <= 5);
 }
 
 #[test]
