@@ -1654,7 +1654,10 @@ mod tests {
             next_action(&running_public, 0)["arguments"]["agentId"],
             running.agent_id
         );
-        assert_eq!(next_action(&running_public, 0)["arguments"]["until"], "final");
+        assert_eq!(
+            next_action(&running_public, 0)["arguments"]["until"],
+            "final"
+        );
         assert_eq!(next_action(&running_public, 0)["safety"], "safe");
         assert!(running_ids.contains(&"observe".to_string()));
         assert!(running_ids.contains(&"wait_final".to_string()));
