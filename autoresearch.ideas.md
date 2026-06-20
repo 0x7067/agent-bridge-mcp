@@ -1,1 +1,0 @@
-- Pivot experiment: reduce polling awkwardness by making `wait_final` the first running-task next action, keeping `observe` for diagnostics/stalls, and adding concise caller guidance to avoid narrating each wait timeout.
