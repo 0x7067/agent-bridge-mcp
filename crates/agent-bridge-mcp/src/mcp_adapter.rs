@@ -148,7 +148,7 @@ fn adapter_tool_definitions() -> Vec<Value> {
                     "properties": {
                         "candidates": {
                             "type": "array",
-                            "items": {"type": "string", "enum": ["codex", "claude", "cursor", "kimi", "pi", "forge", "antigravity"]}
+                            "items": {"type": "string", "enum": ["codex", "claude", "cursor", "kimi", "forge", "antigravity"]}
                         }
                     },
                     "required": ["candidates"]

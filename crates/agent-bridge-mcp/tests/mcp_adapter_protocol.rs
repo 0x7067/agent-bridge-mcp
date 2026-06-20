@@ -47,4 +47,11 @@ async fn tools_list_contains_delegate_and_no_lifecycle_tools() {
     assert!(!names.contains(&"agent_spawn"));
     assert!(!names.contains(&"agent_observe"));
     assert!(!names.contains(&"agent_result"));
+
+    let candidates = tools[0]["inputSchema"]["properties"]["policy"]["properties"]["candidates"]
+        ["items"]["enum"]
+        .as_array()
+        .unwrap();
+    assert!(candidates.contains(&json!("kimi")));
+    assert!(!candidates.contains(&json!("pi")));
 }
