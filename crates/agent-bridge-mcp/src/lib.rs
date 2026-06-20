@@ -6,6 +6,7 @@ pub mod config;
 pub mod domain;
 pub mod guidance;
 pub mod mcp;
+pub mod mcp_adapter;
 pub mod provider;
 pub mod router;
 pub mod router_runtime;

@@ -32,6 +32,8 @@ struct Cli {
 enum CliCommand {
     /// Ask a running Agent Bridge server to reload config from disk.
     Reload,
+    /// Run the minimal MCP adapter for hosts that cannot launch ACP agents directly.
+    McpAdapter,
     /// Run the Agent Bridge-owned Claude host runner on the given Unix socket.
     ClaudeHostRunner { socket: std::path::PathBuf },
 }
@@ -51,6 +53,12 @@ pub async fn main_entry() {
     }
     match cli.command {
         Some(CliCommand::Reload) => exit_with_reload(cli.config),
+        Some(CliCommand::McpAdapter) => {
+            if let Err(error) = crate::mcp_adapter::run().await {
+                tracing::error!(error = %error, "[agent-bridge] fatal {error}");
+                std::process::exit(1);
+            }
+        }
         Some(CliCommand::ClaudeHostRunner {
             socket: socket_path,
         }) => {

@@ -27,6 +27,115 @@ struct FixtureEnv {
     log_dir: PathBuf,
 }
 
+impl FixtureEnv {
+    fn new(label: &str) -> Self {
+        let guard = provider_readiness_test_guard();
+        let root = temp_dir(&format!("agent-bridge-root-{label}"));
+        let state_dir = temp_dir(&format!("agent-bridge-state-{label}"));
+        let log_dir = state_dir.join("provider-log");
+        std::fs::create_dir_all(&log_dir).unwrap();
+        let fake_provider = root.join("fake-provider");
+        std::fs::write(
+            &fake_provider,
+            [
+                "#!/bin/sh",
+                "if [ -n \"$AGENT_BRIDGE_STATE_DIR\" ]; then",
+                "  mkdir -p \"$AGENT_BRIDGE_STATE_DIR/provider-log\"",
+                "  printf '%s\\n' \"$*\" > \"$AGENT_BRIDGE_STATE_DIR/provider-log/argv.txt\"",
+                "fi",
+                "case \"$*\" in",
+                "  *--version*)",
+                "  echo fake-provider 1.0.0",
+                "  exit 0",
+                "    ;;",
+                "esac",
+                "read init || exit 1",
+                "printf '%s\\n' \"$init\" > \"$AGENT_BRIDGE_STATE_DIR/provider-log/stdin.txt\"",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
+                "read new_session || exit 1",
+                "printf '%s\\n' \"$new_session\" >> \"$AGENT_BRIDGE_STATE_DIR/provider-log/stdin.txt\"",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"test-session\"}}'",
+                "read prompt_request || exit 1",
+                "printf '%s\\n' \"$prompt_request\" >> \"$AGENT_BRIDGE_STATE_DIR/provider-log/stdin.txt\"",
+                "text='fixture ok'",
+                "case \"$prompt_request\" in",
+                "  *echo-api-key-fail*)",
+                "    echo \"$ANTHROPIC_API_KEY\" >&2",
+                "    echo 'not-json-from-provider'",
+                "    exit 0",
+                "    ;;",
+                "  *echo-api-key*) text=\"$ANTHROPIC_API_KEY\" ;;",
+                "  *claude-timeout*)",
+                "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"claude-task-started\"}}}}'",
+                "    sleep 2 &",
+                "    child=$!",
+                "    trap 'kill -TERM \"$child\" 2>/dev/null || true; wait \"$child\" 2>/dev/null || true; exit 143' TERM INT",
+                "    wait \"$child\"",
+                "    ;;",
+                "  *non-zero-exit*)",
+                "    echo 'provider refused task' >&2",
+                "    exit 42",
+                "    ;;",
+                "  *missing-result*) text='' ;;",
+                "  *terminal-noise*) text='terminal probe noisefixture oktrailing noise' ;;",
+                "  *malformed-output*)",
+                "    echo 'terminal noise' >&2",
+                "    echo 'not-json-from-provider'",
+                "    exit 0",
+                "    ;;",
+                "  *secret-token-for-redaction*) text='secret-token-for-redaction' ;;",
+                "  *.agent-bridge-unblocked-smoke*)",
+                "    printf 'agent-bridge-smoke' > .agent-bridge-unblocked-smoke || exit 1",
+                "    test \"$(cat .agent-bridge-unblocked-smoke)\" = 'agent-bridge-smoke' || exit 1",
+                "    rm -f .agent-bridge-unblocked-smoke",
+                "    text='AGENT_BRIDGE_PROVIDER_SMOKE_OK'",
+                "    ;;",
+                "  *AGENT_BRIDGE_PROVIDER_SMOKE_OK*) text='AGENT_BRIDGE_PROVIDER_SMOKE_OK' ;;",
+                "  *malformed-json*)",
+                "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"{\\\"type\\\":\\\"\\\"}}\"}}}}'",
+                "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'",
+                "    exit 0",
+                "    ;;",
+                "  *final-then-timeout*)",
+                "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"finished before timeout\"}}}}'",
+                "    sleep 2",
+                "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'",
+                "    exit 0",
+                "    ;;",
+                "  *sleep-long*)",
+                "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"started-long\"}}}}'",
+                "    echo waiting-long >&2",
+                "    sleep 2 &",
+                "    child=$!",
+                "    trap 'kill -TERM \"$child\" 2>/dev/null || true; wait \"$child\" 2>/dev/null || true; exit 143' TERM INT",
+                "    wait \"$child\"",
+                "    ;;",
+                "  *emit-logs*)",
+                "    text='lifecycle-stdout'",
+                "    echo lifecycle-stderr >&2",
+                "    ;;",
+                "esac",
+                "if [ -n \"$text\" ]; then",
+                "  printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"%s\"}}}}\\n' \"$text\"",
+                "fi",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'",
+                "exit 0",
+                "",
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        make_executable(&fake_provider);
+        FixtureEnv {
+            _guard: guard,
+            root,
+            state_dir,
+            fake_provider,
+            log_dir,
+        }
+    }
+}
+
 impl McpClient {
     fn start(env: &FixtureEnv) -> Self {
         let workspaces = std::env::join_paths([env.root.as_os_str()]).unwrap();
@@ -71,6 +180,19 @@ impl McpClient {
     fn start_with_extra_env(env: &FixtureEnv, extra_env: BTreeMap<String, OsString>) -> Self {
         let workspaces = std::env::join_paths([env.root.as_os_str()]).unwrap();
         Self::start_with_options(env, Some(workspaces), None, Some(&env.state_dir), extra_env)
+    }
+
+    fn start_with_command(mut command: Command) -> Self {
+        let mut child = command.spawn().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+        Self {
+            child,
+            stdin,
+            stdout,
+            next_id: 1,
+            notifications: Vec::new(),
+        }
     }
 
     fn start_with_options(
@@ -259,110 +381,7 @@ fn temp_dir(prefix: &str) -> PathBuf {
 }
 
 fn fixture_env() -> FixtureEnv {
-    let guard = provider_readiness_test_guard();
-    let root = temp_dir("agent-bridge-root");
-    let state_dir = temp_dir("agent-bridge-state");
-    let log_dir = state_dir.join("provider-log");
-    std::fs::create_dir_all(&log_dir).unwrap();
-    let fake_provider = root.join("fake-provider");
-    std::fs::write(
-        &fake_provider,
-        [
-            "#!/bin/sh",
-            "if [ -n \"$AGENT_BRIDGE_STATE_DIR\" ]; then",
-            "  mkdir -p \"$AGENT_BRIDGE_STATE_DIR/provider-log\"",
-            "  printf '%s\\n' \"$*\" > \"$AGENT_BRIDGE_STATE_DIR/provider-log/argv.txt\"",
-            "fi",
-            "case \"$*\" in",
-            "  *--version*)",
-            "  echo fake-provider 1.0.0",
-            "  exit 0",
-            "    ;;",
-            "esac",
-            "read init || exit 1",
-            "printf '%s\\n' \"$init\" > \"$AGENT_BRIDGE_STATE_DIR/provider-log/stdin.txt\"",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'",
-            "read new_session || exit 1",
-            "printf '%s\\n' \"$new_session\" >> \"$AGENT_BRIDGE_STATE_DIR/provider-log/stdin.txt\"",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"test-session\"}}'",
-            "read prompt_request || exit 1",
-            "printf '%s\\n' \"$prompt_request\" >> \"$AGENT_BRIDGE_STATE_DIR/provider-log/stdin.txt\"",
-            "text='fixture ok'",
-            "case \"$prompt_request\" in",
-            "  *echo-api-key-fail*)",
-            "    echo \"$ANTHROPIC_API_KEY\" >&2",
-            "    echo 'not-json-from-provider'",
-            "    exit 0",
-            "    ;;",
-            "  *echo-api-key*) text=\"$ANTHROPIC_API_KEY\" ;;",
-            "  *claude-timeout*)",
-            "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"claude-task-started\"}}}}'",
-            "    sleep 2 &",
-            "    child=$!",
-            "    trap 'kill -TERM \"$child\" 2>/dev/null || true; wait \"$child\" 2>/dev/null || true; exit 143' TERM INT",
-            "    wait \"$child\"",
-            "    ;;",
-            "  *non-zero-exit*)",
-            "    echo 'provider refused task' >&2",
-            "    exit 42",
-            "    ;;",
-            "  *missing-result*) text='' ;;",
-            "  *terminal-noise*) text='terminal probe noisefixture oktrailing noise' ;;",
-            "  *malformed-output*)",
-            "    echo 'terminal noise' >&2",
-            "    echo 'not-json-from-provider'",
-            "    exit 0",
-            "    ;;",
-            "  *secret-token-for-redaction*) text='secret-token-for-redaction' ;;",
-            "  *.agent-bridge-unblocked-smoke*)",
-            "    printf 'agent-bridge-smoke' > .agent-bridge-unblocked-smoke || exit 1",
-            "    test \"$(cat .agent-bridge-unblocked-smoke)\" = 'agent-bridge-smoke' || exit 1",
-            "    rm -f .agent-bridge-unblocked-smoke",
-            "    text='AGENT_BRIDGE_PROVIDER_SMOKE_OK'",
-            "    ;;",
-            "  *AGENT_BRIDGE_PROVIDER_SMOKE_OK*) text='AGENT_BRIDGE_PROVIDER_SMOKE_OK' ;;",
-            "  *malformed-json*)",
-            "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"{\\\"type\\\":\"}}}}'",
-            "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'",
-            "    exit 0",
-            "    ;;",
-            "  *final-then-timeout*)",
-            "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"finished before timeout\"}}}}'",
-            "    sleep 2",
-            "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'",
-            "    exit 0",
-            "    ;;",
-            "  *sleep-long*)",
-            "    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"started-long\"}}}}'",
-            "    echo waiting-long >&2",
-            "    sleep 2 &",
-            "    child=$!",
-            "    trap 'kill -TERM \"$child\" 2>/dev/null || true; wait \"$child\" 2>/dev/null || true; exit 143' TERM INT",
-            "    wait \"$child\"",
-            "    ;;",
-            "  *emit-logs*)",
-            "    text='lifecycle-stdout'",
-            "    echo lifecycle-stderr >&2",
-            "    ;;",
-            "esac",
-            "if [ -n \"$text\" ]; then",
-            "  printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"test-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"%s\"}}}}\\n' \"$text\"",
-            "fi",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'",
-            "exit 0",
-            "",
-        ]
-        .join("\n"),
-    )
-    .unwrap();
-    make_executable(&fake_provider);
-    FixtureEnv {
-        _guard: guard,
-        root,
-        state_dir,
-        fake_provider,
-        log_dir,
-    }
+    FixtureEnv::new("default")
 }
 
 fn write_fake_provider(env: &FixtureEnv, lines: &[&str]) {
@@ -415,6 +434,26 @@ fn acp_router_command_with_bins(env: &FixtureEnv, claude_bin: &Path, codex_bin: 
         .env("ANTHROPIC_API_KEY", "test-key")
         .env("ANTHROPIC_AUTH_TOKEN", "test-auth-token")
         .env("CLAUDE_CODE_OAUTH_TOKEN", "test-code-oauth-token")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+fn mcp_adapter_command(env: &FixtureEnv) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"));
+    command
+        .arg("mcp-adapter")
+        .env_remove("AGENT_BRIDGE_ALLOWED_ROOT")
+        .env_remove("AGENT_BRIDGE_WORKSPACES")
+        .env_remove("AGENT_BRIDGE_STATE_DIR")
+        .env("HOME", &env.root)
+        .env("AGENT_BRIDGE_WORKSPACES", &env.root)
+        .env("AGENT_BRIDGE_STATE_DIR", &env.state_dir)
+        .env("CODEX_ACP_BIN", &env.fake_provider)
+        .env("CLAUDE_ACP_BIN", &env.fake_provider)
+        .env("CODEX_BIN", &env.fake_provider)
+        .env("CLAUDE_BIN", &env.fake_provider)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -5262,4 +5301,57 @@ fn stdio_codex_agent_success_still_reports_success() {
     assert_eq!(result["reviewPacket"]["status"], "succeeded");
     assert_eq!(result["reviewPacket"]["isFinal"], true);
     assert_eq!(result["reviewPacket"]["errorType"], Value::Null);
+}
+
+#[test]
+fn mcp_adapter_lists_only_delegate_tool_before_evidence_task() {
+    let env = FixtureEnv::new("mcp-adapter-tool-list");
+    let mut client = McpClient::start_with_command(mcp_adapter_command(&env));
+    let response = client.request("tools/list", json!({}));
+    let tools = response["result"]["tools"].as_array().unwrap();
+    let names: Vec<_> = tools
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+
+    assert_eq!(names, vec!["agent_delegate"]);
+    for removed in [
+        "providers_list",
+        "doctor",
+        "agent_spawn",
+        "agent_list",
+        "agent_observe",
+        "agent_result",
+        "agent_stop",
+        "agent_remove",
+    ] {
+        assert!(!names.contains(&removed), "adapter exposed {removed}");
+    }
+}
+
+#[test]
+fn mcp_adapter_agent_delegate_returns_router_result() {
+    let env = FixtureEnv::new("mcp-adapter-agent-delegate");
+    let mut client = McpClient::start_with_command(mcp_adapter_command(&env));
+
+    let result = client.tool(
+        "agent_delegate",
+        json!({
+            "prompt": "review this change",
+            "cwd": env.root,
+            "mode": "review",
+            "timeoutSeconds": 5,
+            "policy": {"candidates": ["codex"]}
+        }),
+    );
+
+    assert_eq!(result["terminalKind"], "answer");
+    assert_eq!(result["provider"], "codex");
+    assert_eq!(result["verificationStatus"], "not_verified");
+    assert!(result["finalText"].as_str().unwrap().contains("fixture ok"));
+    assert!(!result["evidenceRefs"].as_array().unwrap().is_empty());
+    assert_eq!(
+        result["diagnostics"]["evidenceRefs"],
+        result["evidenceRefs"]
+    );
 }
