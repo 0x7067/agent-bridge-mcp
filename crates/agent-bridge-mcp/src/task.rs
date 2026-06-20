@@ -69,12 +69,6 @@ fn max_active_tasks() -> usize {
         .unwrap_or(crate::config::DEFAULT_MAX_ACTIVE_TASKS)
 }
 
-pub(crate) fn subscribe_completion_notifications() -> mpsc::UnboundedReceiver<JsonRpcNotification> {
-    let (sender, receiver) = mpsc::unbounded_channel();
-    let _ = COMPLETION_NOTIFICATIONS.set(sender);
-    receiver
-}
-
 fn has_completion_notification_receivers() -> bool {
     COMPLETION_NOTIFICATIONS
         .get()

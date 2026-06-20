@@ -4,14 +4,15 @@ use crate::router::{
     AttemptDisposition, AttemptEvidence, RoutedAttemptInput, RouterPolicy, RouterStopReason,
     classify_attempt,
 };
-use crate::server::handle_request;
 use crate::task::TaskManagerHandle;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use uuid::Uuid;
 
@@ -44,8 +45,6 @@ struct Cli {
 enum CliCommand {
     /// Ask a running Agent Bridge server to reload config from disk.
     Reload,
-    /// Run the ACP router runtime over newline-delimited JSON-RPC.
-    AcpRouter,
     /// Run the Agent Bridge-owned Claude host runner on the given Unix socket.
     ClaudeHostRunner { socket: std::path::PathBuf },
 }
@@ -65,13 +64,6 @@ pub async fn main_entry() {
     }
     match cli.command {
         Some(CliCommand::Reload) => exit_with_reload(cli.config),
-        Some(CliCommand::AcpRouter) => {
-            if let Err(error) = run_acp_router().await {
-                tracing::error!(error = %error, "[agent-bridge] fatal {error}");
-                std::process::exit(1);
-            }
-            return;
-        }
         Some(CliCommand::ClaudeHostRunner {
             socket: socket_path,
         }) => {
@@ -79,46 +71,12 @@ pub async fn main_entry() {
                 tracing::error!(error = %error, "[agent-bridge] fatal {error}");
                 std::process::exit(1);
             }
-            return;
         }
-        None => {}
-    }
-
-    let state_dir = match crate::config::Config::from_env(cli.config.clone()) {
-        Ok(config) => {
-            if let Err(error) = crate::config::install_runtime_config(&config) {
+        None => {
+            if let Err(error) = run_acp_router().await {
                 tracing::error!(error = %error, "[agent-bridge] fatal {error}");
                 std::process::exit(1);
             }
-            config.state_dir().to_path_buf()
-        }
-        Err(error) => {
-            tracing::error!(
-                error = %error,
-                "[agent-bridge] startup config load failed; starting with state-dir-only fallback so doctor can report diagnostics"
-            );
-            crate::config::reload_pid_state_dir(&cli.config)
-        }
-    };
-    let pid_lock = match PidLock::acquire(&state_dir) {
-        Ok(lock) => lock,
-        Err(error) => {
-            tracing::error!(error = %error, "[agent-bridge] fatal {error}");
-            std::process::exit(1);
-        }
-    };
-    install_reload_handler(cli.config);
-    match run_until_shutdown().await {
-        Ok(exit_code) => {
-            drop(pid_lock);
-            if exit_code != 0 {
-                std::process::exit(exit_code);
-            }
-        }
-        Err(error) => {
-            drop(pid_lock);
-            tracing::error!(error = %error, "[agent-bridge] fatal {error}");
-            std::process::exit(1);
         }
     }
 }
@@ -586,12 +544,14 @@ fn read_pid(path: &Path) -> Result<u32, String> {
         .map_err(|error| format!("failed to parse {}: {error}", path.display()))
 }
 
+#[cfg(test)]
 struct PidLock {
     path: PathBuf,
     pid: u32,
     registered: bool,
 }
 
+#[cfg(test)]
 impl PidLock {
     fn acquire(state_dir: &Path) -> Result<Self, String> {
         std::fs::create_dir_all(state_dir).map_err(|error| error.to_string())?;
@@ -616,6 +576,7 @@ impl PidLock {
     }
 }
 
+#[cfg(test)]
 impl Drop for PidLock {
     fn drop(&mut self) {
         if self.registered && read_pid(&self.path).ok() == Some(self.pid) {
@@ -624,27 +585,32 @@ impl Drop for PidLock {
     }
 }
 
+#[cfg(test)]
 #[cfg(unix)]
 fn process_is_alive(pid: u32) -> bool {
     let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
     result == 0 || std::io::Error::last_os_error().kind() == std::io::ErrorKind::PermissionDenied
 }
 
+#[cfg(test)]
 #[cfg(not(unix))]
 fn process_is_alive(_pid: u32) -> bool {
     false
 }
 
+#[cfg(test)]
 #[cfg(unix)]
 fn process_holds_pid_lock(pid: u32) -> bool {
     process_is_alive(pid) && process_command_is_agent_bridge(pid).unwrap_or(true)
 }
 
+#[cfg(test)]
 #[cfg(not(unix))]
 fn process_holds_pid_lock(pid: u32) -> bool {
     process_is_alive(pid)
 }
 
+#[cfg(test)]
 #[cfg(unix)]
 fn process_command_is_agent_bridge(pid: u32) -> Option<bool> {
     let output = std::process::Command::new("ps")
@@ -658,6 +624,7 @@ fn process_command_is_agent_bridge(pid: u32) -> Option<bool> {
     Some(command_line_is_agent_bridge(&command_line))
 }
 
+#[cfg(test)]
 #[cfg(unix)]
 fn command_line_is_agent_bridge(command_line: &str) -> bool {
     let Some(command) = command_line.split_whitespace().next() else {
@@ -668,35 +635,6 @@ fn command_line_is_agent_bridge(command_line: &str) -> bool {
         .and_then(|name| name.to_str())
         .is_some_and(|name| matches!(name, "agent-bridge-mcp" | "agent-bridge-mcp-rs"))
 }
-
-#[cfg(unix)]
-fn install_reload_handler(cli_config: crate::config::ConfigCliOverrides) {
-    tokio::spawn(async move {
-        let mut sighup = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
-        {
-            Ok(signal) => signal,
-            Err(error) => {
-                tracing::error!(error = %error, "[agent-bridge] failed to install SIGHUP handler");
-                return;
-            }
-        };
-        while sighup.recv().await.is_some() {
-            match crate::config::reload_runtime_config(cli_config.clone()) {
-                Ok(config) => tracing::info!(
-                    workspace_count = config.configured_workspace_roots().len(),
-                    "[agent-bridge] reloaded runtime config"
-                ),
-                Err(error) => tracing::error!(
-                    error = %error,
-                    "[agent-bridge] failed to reload runtime config; preserving incumbent workspace roots"
-                ),
-            }
-        }
-    });
-}
-
-#[cfg(not(unix))]
-fn install_reload_handler(_cli_config: crate::config::ConfigCliOverrides) {}
 
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
@@ -769,73 +707,6 @@ fn write_stdout_json(value: &Value) {
     serde_json::to_writer(&mut stdout, value).expect("serialize CLI JSON");
     stdout.write_all(b"\n").expect("write CLI JSON newline");
     stdout.flush().expect("flush CLI JSON");
-}
-
-async fn run_until_shutdown() -> io::Result<i32> {
-    tokio::select! {
-        result = run_stdio_server() => result.map(|_| 0),
-        exit_code = shutdown_signal() => {
-            if let Ok(manager) = TaskManagerHandle::from_env().await {
-                let _ = manager.shutdown().await;
-            }
-            Ok(exit_code)
-        }
-    }
-}
-
-async fn run_stdio_server() -> io::Result<()> {
-    let stdin = io::stdin();
-    let mut lines = BufReader::new(stdin).lines();
-    let mut stdout = io::stdout();
-    let mut completion_notifications = crate::task::subscribe_completion_notifications();
-
-    loop {
-        tokio::select! {
-            line = lines.next_line() => {
-                let Some(line) = line? else {
-                    return Ok(());
-                };
-                if line.trim().is_empty() {
-                    continue;
-                }
-
-                let request: Result<JsonRpcRequest, _> = serde_json::from_str(&line);
-                match request {
-                    Ok(request) => {
-                        if let Some(response) = handle_request(request).await {
-                            write_response(&mut stdout, &response).await?;
-                        }
-                    }
-                    Err(_) => {
-                        let response = JsonRpcResponse::error(JsonRpcId::Null, -32700, "Parse error");
-                        write_response(&mut stdout, &response).await?;
-                    }
-                }
-            }
-            notification = completion_notifications.recv() => {
-                if let Some(notification) = notification {
-                    write_json_message(&mut stdout, &notification).await?;
-                }
-            }
-        }
-    }
-}
-
-#[cfg(unix)]
-async fn shutdown_signal() -> i32 {
-    use tokio::signal::unix::{SignalKind, signal};
-
-    let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => 130,
-        _ = sigterm.recv() => 143,
-    }
-}
-
-#[cfg(not(unix))]
-async fn shutdown_signal() -> i32 {
-    let _ = tokio::signal::ctrl_c().await;
-    130
 }
 
 async fn write_response(stdout: &mut io::Stdout, response: &JsonRpcResponse) -> io::Result<()> {

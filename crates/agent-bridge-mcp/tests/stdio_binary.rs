@@ -399,22 +399,25 @@ fn acp_router_command(env: &FixtureEnv) -> Command {
     acp_router_command_with_bins(env, &env.fake_provider, &env.fake_provider)
 }
 
-fn acp_router_command_with_bins(
-    env: &FixtureEnv,
-    claude_acp_bin: &Path,
-    codex_acp_bin: &Path,
-) -> Command {
+fn acp_router_command_with_bins(env: &FixtureEnv, claude_bin: &Path, codex_bin: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"));
     command
-        .arg("acp-router")
         .env_remove("AGENT_BRIDGE_ALLOWED_ROOT")
+        .env_remove("AGENT_BRIDGE_WORKSPACES")
+        .env_remove("AGENT_BRIDGE_STATE_DIR")
         .env("HOME", &env.root)
         .env("AGENT_BRIDGE_WORKSPACES", &env.root)
         .env("AGENT_BRIDGE_STATE_DIR", &env.state_dir)
-        .env("CLAUDE_BIN", claude_acp_bin)
-        .env("CLAUDE_ACP_BIN", claude_acp_bin)
-        .env("CODEX_BIN", codex_acp_bin)
-        .env("CODEX_ACP_BIN", codex_acp_bin);
+        .env("CODEX_ACP_BIN", codex_bin)
+        .env("CLAUDE_ACP_BIN", claude_bin)
+        .env("CODEX_BIN", codex_bin)
+        .env("CLAUDE_BIN", claude_bin)
+        .env("ANTHROPIC_API_KEY", "test-key")
+        .env("ANTHROPIC_AUTH_TOKEN", "test-auth-token")
+        .env("CLAUDE_CODE_OAUTH_TOKEN", "test-code-oauth-token")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     command
 }
 
@@ -888,34 +891,75 @@ fn stdio_binary_prints_help_and_version_without_starting_mcp_loop() {
 }
 
 #[test]
-fn stdio_binary_exposes_acp_router_runtime_without_starting_mcp_loop() {
-    let help = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"))
-        .arg("--help")
-        .output()
-        .unwrap();
-    assert!(help.status.success());
-    let help_stdout = String::from_utf8(help.stdout).unwrap();
-    assert!(help_stdout.contains("acp-router"));
-
+fn stdio_binary_defaults_to_acp_router_without_starting_mcp_loop() {
     let env = fixture_env();
-    let output = Command::new(env!("CARGO_BIN_EXE_agent-bridge-mcp"))
-        .arg("acp-router")
-        .env_remove("AGENT_BRIDGE_ALLOWED_ROOT")
-        .env("AGENT_BRIDGE_WORKSPACES", &env.root)
-        .env("AGENT_BRIDGE_STATE_DIR", &env.state_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .unwrap();
+    let mut child = acp_router_command(&env)
+        .spawn()
+        .expect("spawn default ACP router");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
 
-    assert!(
-        output.status.success(),
-        "stderr = {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(output.stdout.is_empty());
+    writeln!(
+        stdin,
+        "{}",
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {}
+        })
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let response: Value = serde_json::from_str(&line).unwrap();
+
+    assert_eq!(response["id"], 1);
+    assert_eq!(response["result"]["protocolVersion"], 1);
+    assert!(response["result"]["agentCapabilities"].is_object());
     assert!(!env.state_dir.join("server.pid").exists());
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn default_acp_router_rejects_mcp_tools_list() {
+    let env = fixture_env();
+    let mut child = acp_router_command(&env)
+        .spawn()
+        .expect("spawn default ACP router");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(
+        stdin,
+        "{}",
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        })
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let response: Value = serde_json::from_str(&line).unwrap();
+
+    assert_eq!(response["id"], 1);
+    assert_eq!(response["error"]["code"], -32601);
+    assert_eq!(
+        response["error"]["message"],
+        "method not supported by Agent Bridge ACP router"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[test]
